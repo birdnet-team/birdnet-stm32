@@ -31,9 +31,9 @@ pip install -r requirements.txt
 
 ## Usage
 
-Deplyoing a model to the STM32N6570-DK is quite involved an requires us to:
+Deploying a model to the STM32N6570-DK is quite involved and requires us to:
 
-- prepare dataset
+- download and prepare the dataset
 - train a model
 - convert the model
 - deploy the model to the STM32N6570-DK
@@ -42,7 +42,7 @@ Deplyoing a model to the STM32N6570-DK is quite involved an requires us to:
 
 We'll use a subset of the iNatSounds dataset, which is available here: [iNatSounds on GitHub](https://github.com/visipedia/inat_sounds/tree/main/2024)
 
-After download, we'll sort files into folders with folder names as labels (i.e, species names) based on the train and test annotations. Therefore, this repo assumes that your data is structured as follows:
+After downloading, sort files into folders with folder names as labels (i.e., species names) based on the train and test annotations. Therefore, this repo assumes that your data is structured as follows:
 
 ```
 data/
