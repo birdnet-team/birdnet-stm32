@@ -1,0 +1,5 @@
+librosa
+tensorflow[and-cuda]
+tensorflow-model-optimization
+numpy
+matplotlib
