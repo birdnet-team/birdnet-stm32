@@ -1,7 +1,7 @@
 # Custom
 *.png
-*.h5
 *.wav
+best_model.h5
 
 # VSCode
 .vscode

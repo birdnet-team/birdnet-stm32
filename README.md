@@ -60,7 +60,9 @@ Each folder contains `.wav` files of the respective species. Since we're trainin
 
 ### Train the Model
 
-To train the model, run `train.py` with the desired arguments. The script will:
+This repo comes with a pre-trained checkpoint (`checkpoints/birdnet_stm32_tiny.h5`) that you can use to test the model conversion and deployment process. To train a custom model, run `train.py` with the desired arguments. 
+
+The script will:
 
 - Split your training data into train and validation sets (using `--val_split`).
 - Split audio files into fixed-length chunks.
