@@ -3,7 +3,6 @@ import librosa
 import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow as tf
-import tensorflow_model_optimization as tfmot
 import math
 
 from utils.audio import load_audio_file, get_spectrogram_from_audio, sort_by_s2n, pick_random_spectrogram, plot_spectrogram
@@ -360,12 +359,6 @@ if __name__ == "__main__":
     )
     model.summary()
     print("Model built successfully.")
-    
-    # Quantize awareness
-    print("Applying quantization-aware training...")
-    quantize_model = tfmot.quantization.keras.quantize_model
-    model = quantize_model(model)
-    print("Quantization-aware model created.")
 
     # Train model
     print("Starting training...")

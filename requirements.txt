@@ -1,5 +1,4 @@
-librosa
-tensorflow[and-cuda]
-tensorflow-model-optimization
-numpy
-matplotlib
+librosa==0.11.0
+tensorflow[and-cuda]==2.19.0
+numpy==1.26.4
+matplotlib==3.10.3
