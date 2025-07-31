@@ -1,4 +1,4 @@
-# iNat-tiny
+# birdnet-stm32
 
 This repository contains code and resources for training a tiny audio classification model for bioacoustics. The model is designed to run on the [STM32N6570-DK development board](https://www.st.com/en/evaluation-tools/stm32n6570-dk.html#overview).
 
@@ -7,8 +7,8 @@ This repository contains code and resources for training a tiny audio classifica
 Clone this repository and navigate to the project directory:
 
 ```bash
-git clone https://github.com/kahst/iNat-tiny.git
-cd iNat-tiny
+git clone https://github.com/kahst/birdnet-stm32.git
+cd birdnet-stm32
 ```
 
 We assume you have Python 3.12 installed. If not, you can install it using:
@@ -97,6 +97,65 @@ python train.py --data_path_train path/to/my/data --val_split 0.2 --checkpoint_p
 The script will print progress and save the best model.
 
 Note: The conversion script expects a `.h5` model file, so ensure you specify the correct `--checkpoint_path`.
+
+### Model conversion
+
+We'll use the STM32Cube.AI CLI to convert the trained model to a format suitable for deployment on the STM32N6570-DK. You can download the STM32Cube.AI CLI from the [STMicroelectronics website](https://www.st.com/en/embedded-software/x-cube-ai.html#get-software).
+
+After downloading, you should have `x-cube-ai-linux-v10.2.0.zip`, unzip and locate the CLI tool which is typically found in the `Utilities/linux` directory.
+
+```bash
+unzip x-cube-ai-linux-v10.2.0.zip X-CUBE-AI.10.2.0
+cd X-CUBE-AI.10.2.0
+unzip stedgeai-linux-10.2.0.zip
+```
+
+This should be your directory structure after unzipping both zips:
+
+```
+X-CUBE-AI.10.2.0/
+├── STMicroelectronics.X-CUBE-AI.10.2.0.pack
+├── Utilities/
+│   ├── linux/
+│   │   └── stedgeai  <-- CLI tool
+│   |   └── ...
+│   ├── windows/
+│   └── ...
+└── Middlewares/
+└── ...
+```
+
+Now, we need to run model conversion using the CLI tool. Make sure you have your trained model saved as a `.h5` file (e.g., `checkpoints/my_tiny_model.h5`).
+
+```bash
+cd Utilities/linux
+./stedgeai generate \
+  --model /path/to/best_model.h5 \
+  --name tiny_birdnet \
+  --type keras \
+  --target STM32N6570-DK \
+  --verbose
+```
+
+Note: After conversion, the tool will generate a `tiny_birdnet_generate_report.txt` in the output folder which you can consult to get some basic metrics on model computer requirements. If you run the command above with `analyze` instead of `generate`, it will analyze the model and provide more detailed information about its size, memory usage, and performance.
+
+To validate the model on the STM32N6570-DK, you can use the `validate` command:
+
+```bash
+./stedgeai validate \
+  --model /path/to/best_model.h5 \
+  --name tiny_birdnet \
+  --type keras \
+  --target STM32N6570-DK \
+  --mode target \
+  --verbose
+```
+
+### Model deployment
+
+TODO :)
+
+
 
 
 
