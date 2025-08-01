@@ -141,6 +141,48 @@ cd Utilities/linux
 
 Note: After conversion, the tool will generate a `tiny_birdnet_generate_report.txt` in the output folder which you can consult to get some basic metrics on model computer requirements. If you run the command above with `analyze` instead of `generate`, it will analyze the model and provide more detailed information about its size, memory usage, and performance.
 
+### Validate the Model on STM32N6570-DK
+
+First, install STM32CubeProgrammer on your computer. You can download it from the [STMicroelectronics website](https://www.st.com/en/development-tools/stm32cubeprog.html). Unzip and run `./SetupSTM32CubeProgrammer-2.20.0.linux` to install it. This will launch a GUI installer. Follow the instructions to complete the installation.
+
+Verify the installation by navigating to the installation directory and running the command:
+
+```bash
+<path-to-install-dir>/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI --version
+```
+
+Now, add the STM32CubeProgrammer CLI to your PATH:
+
+```bash
+export PATH=$PATH:/<path-to-install-dir>/STM32Cube/STM32CubeProgrammer/bin
+```
+
+Add your user to the plugdev and dialout groups:
+
+```bash
+sudo usermod -aG plugdev $USER
+sudo usermod -aG dialout $USER
+```
+
+Install STMicroelectronics udev rules: If you haven't already, copy the rules file:
+
+```bash
+sudo cd <path-to-install-dir>/STM32Cube/STM32CubeProgrammer/Drivers/rules/
+sudo cp *.* /etc/udev/rules.d
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+Unplug and replug your STM32N6570-DK board to apply the new rules, reboot your computer, or log out and log back in.
+
+Check if the board is connected and recognized by the STM32CubeProgrammer CLI:
+
+```bash
+STM32_Programmer_CLI --list
+```
+
+If everything is set up correctly, you should see your STM32N6570-DK board listed.
+
 To validate the model on the STM32N6570-DK, you can use the `validate` command:
 
 ```bash
@@ -152,6 +194,14 @@ To validate the model on the STM32N6570-DK, you can use the `validate` command:
   --mode target \
   --verbose
 ```
+
+Connect your STM32N6570-DK board to your computer and ensure it is recognized by running:
+
+```bash
+ls /dev/ttyACM*
+```
+
+If you see a device like `/dev/ttyUSB0`, you can proceed with the validation.
 
 ### Model deployment
 
