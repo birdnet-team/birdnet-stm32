@@ -136,6 +136,7 @@ cd Utilities/linux
   --type keras \
   --target stm32n6 \ 
   --st-neural-art \ (only for tflite)
+  --output validation/st_ai_output \
   --verbose
 ```
 
@@ -194,37 +195,53 @@ If everything is set up correctly, you should see your STM32N6570-DK board liste
 Now, we need to flash the pre-built firmware to the STM32N6570-DK board so the validate command can communicate with it. 
 Make sure you ran the `generate` command above to generate the model files, which will be used by the `validate` command - generated files are in `X-CUBE-AI.10.2.0/Utilities/linux/st_ai_output`. 
 
+**Install STM32CubeIDE**
+
+If you haven't installed STM32CubeIDE yet, you can download it from the [STMicroelectronics website](https://www.st.com/en/development-tools/stm32cubeide.html). Unzip and run the installer with `./st-stm32cubeide_1.19.0_25607_20250703_0907_amd64`. Follow the installation instructions for your platform.
+
 **Setting paths for N6 loader script**
 
-We need to set the path to our genereated files in `X-CUBE-AI.10.2.0/scripts/N6_scripts/config_n6l.json` under `network.c`.
+We need to set the paths to our genereated files in `X-CUBE-AI.10.2.0/scripts/N6_scripts/config_n6l.json`:
 
 ```json
-"network.c": "<path/to/X-CUBE-AI.10.2.0>/Utilities/linux/stm32ai_output/network.c"
+{
+	// The 2lines below are _only used if you call n6_loader.py ALONE (memdump is optional and will be the parent dir of network.c by default)
+	"network.c": "<path-to-install-dir>/X-CUBE-AI.10.2.0/Utilities/linux/st_ai_output/network.c",
+	//"memdump_path": "C:/Users/foobar/CODE/stm.ai/stm32ai_output",
+	// Location of the "validation" project  + build config name to be built (if applicable)
+	// "project_path": "<path-to-install-dir>/X-CUBE-AI.10.2.0/Projects/STM32N6570-DK/Applications/NPU_Validation/",
+	// If using the NPU_Validation project, valid build_conf names are "N6-DK", "N6-DK-USB", "N6-Nucleo", "N6-Nucleo-USB"
+	// "project_build_conf": "N6-DK",
+	// Skip programming weights to earn time (but lose accuracy) -- useful for performance tests
+	"skip_external_flash_programming": false,
+	"skip_ram_data_programming": false,
+	"objcopy_binary_path": "/usr/bin/arm-none-eabi-objcopy"
+}
 ```
 
-Update your `config_n6l.json` for Linux and GCC as follows:
+Update your `config.json` for Linux and GCC as follows (replace all Windows-style paths (`C:/...`) with Linux-style paths (`/home/...` or `/opt/...`) based on your installation):
 
 ```json
 {
     // Set Compiler_type to either gcc or iar
     "compiler_type": "gcc",
     // Path to gdbserver directory (ends up in bin/)
-    "gdb_server_path": "/opt/stm32cubeide/plugins/com.st.stm32cube.ide.mcu.externaltools.stlink-gdb-server.linux_2.0.500.202301161003/tools/bin/",
+    "gdb_server_path": "<path-to-install-dir>/stm32cubeide/plugins/com.st.stm32cube.ide.mcu.externaltools.stlink-gdb-server.linux64_2.2.200.202505060755/tools/bin/",
     // Path to gcc directory (ends up in bin/)
-    "gcc_binary_path": "/opt/stm32cubeide/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.11.3.rel1.linux_1.1.100.202309151323/tools/bin/",
+    "gcc_binary_path": "<path-to-install-dir>/stm32cubeide/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.linux64_1.0.0.202410170706/tools/bin/",
     // Path to IAR directory (ends up in bin/) (leave empty if not using IAR)
     "iar_binary_path": "",
     // Full path to arm-none-eabi-objcopy program
     "objcopy_binary_path": "/usr/bin/arm-none-eabi-objcopy",
     // Full path to STM32_Programmer_CLI program
-    "cubeProgrammerCLI_binary_path": "/opt/stm32cubeprogrammer/bin/STM32_Programmer_CLI",
-    // Path to CubeIDE directory (ends up in STM32CubeIDE)
-    "cubeide_path": "/opt/stm32cubeide/STM32CubeIDE"
+    "cubeProgrammerCLI_binary_path": "<path-to-install-dir>/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI",
+    // Path to CubeIDE directory (ends up in stm32cubeide)
+    "cubeide_path": "<path-to-install-dir>/stm32cubeide"
 }
 ```
 
 **Notes:**
-- Adjust `/opt/stm32cubeide/` and `/opt/stm32cubeprogrammer/` to match your actual installation paths.
+- Adjust `stm32cubeide/` and `stm32cubeprogrammer/` directories to match your actual installation paths.
 - Use `which arm-none-eabi-objcopy` to confirm the objcopy path.
 - Use `which STM32_Programmer_CLI` if you added it to your PATH, or specify the full path.
 - Install the ARM toolchain if you haven't already with `sudo apt-get install gcc-arm-none-eabi`
@@ -235,14 +252,24 @@ which arm-none-eabi-objcopy
 which STM32_Programmer_CLI
 ```
 
-**Replace all Windows-style paths (`C:/...`) with Linux-style paths (`/home/...` or `/opt/...`).**
+**Set board to DEV mode**
+
+ - disconnect the board from USB
+ - set BOOT0 to right
+ - set BOOT1 to left
+ - set JP2 to position 1-2
+ - reconnect the board to USB
+
+See the image below for reference:
+
+![Set STM32N6570-DK to dev mode](https://community.st.com/t5/image/serverpage/image-id/108308iD2AD18EF06920D91/image-size/large/is-moderation-mode/true?v=v2&px=999)
 
 **Running n6_loader.py**
 
-No you can run the `n6_loader.py` script from the X-CUBE-AI *scipt* directory:
+Navigate to the `validation` directory in this repo and run the `n6_loader.py` script from the X-CUBE-AI *scipt* directory:
 
 ```bash
-python <path-to-x-cube-ai>/scripts/N6_scripts/n6_loader.py
+python <path-to-install-dir>/X-CUBE-AI.10.2.0/scripts/N6_scripts/n6_loader.py
 ```
 
 To validate the model on the STM32N6570-DK, you can use the `validate` command:
@@ -250,18 +277,15 @@ To validate the model on the STM32N6570-DK, you can use the `validate` command:
 ```bash
 ./stedgeai validate \
   --model /path/to/best_model.h5 \
-  --name tiny_birdnet \
   --type keras \
   --target STM32N6570-DK \
   --mode target \
   --verbose
 ```
 
-In case you see the error `Invalid firmware - /dev/ttyAMC0:115200`, Locate the pre-built ST.AI firmware for your board in the X-CUBE-AI package (often in `Middlewares/ST/AI/STM32N6570-DK` or similar).
-
 Note: STM provides a "Getting Started" guide for the STM32N6, which you can find [here](https://stm32ai-cs.st.com/assets/embedded-docs/stneuralart_getting_started.html).
 
-### Model deployment
+### Build and deploy demo application
 
 TODO :)
 
