@@ -4,7 +4,7 @@ This repository contains code and resources for training a tiny audio classifica
 
 <img src="https://my.avnet.com/wcm/connect/c651fc2f-a5b2-489c-9d63-d3f064753690/STMicroelectronics+STM32N6570-DK.jpg?MOD=AJPERES&CACHEID=ROOTWORKSPACE-c651fc2f-a5b2-489c-9d63-d3f064753690-phBdXih" alt="STM32N6570-DK board" style="width: 100%;" />
 
-(Image source: [STMicroelectronics](https://www.st.com/en/evaluation-tools/stm32n6570-dk.html))
+(Image source: [EBV Electronik](https://my.avnet.com/ebv/products/new-products/npi/2024/stmicroelectronics-stm32n6570-dk))
 
 ## Setup (Ubuntu)
 
