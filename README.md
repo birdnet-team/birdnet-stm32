@@ -2,7 +2,7 @@
 
 This repository contains code and resources for training a tiny audio classification model for bioacoustics. The model is designed to run on the [STM32N6570-DK development board](https://www.st.com/en/evaluation-tools/stm32n6570-dk.html#overview).
 
-<img src="https://www.st.com/bin/ecommerce/api/image.PF275430.en.feature-description-include-personalized-no-cpn-large.jpg" alt="STM32N6570-DK board" style="width: 100%;" />
+<img src="https://my.avnet.com/wcm/connect/c651fc2f-a5b2-489c-9d63-d3f064753690/STMicroelectronics+STM32N6570-DK.jpg?MOD=AJPERES&CACHEID=ROOTWORKSPACE-c651fc2f-a5b2-489c-9d63-d3f064753690-phBdXih" alt="STM32N6570-DK board" style="width: 100%;" />
 
 (Image source: [STMicroelectronics](https://www.st.com/en/evaluation-tools/stm32n6570-dk.html))
 
