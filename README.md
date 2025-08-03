@@ -201,11 +201,11 @@ Make sure you ran the `generate` command above to generate the model files, whic
 
 **Install STM32CubeIDE**
 
-If you haven't installed STM32CubeIDE yet, you can download it from the [STMicroelectronics website](https://www.st.com/en/development-tools/stm32cubeide.html). Unzip and run the installer with `./st-stm32cubeide_1.19.0_25607_20250703_0907_amd64`. Follow the installation instructions for your platform.
+If you haven't installed STM32CubeIDE yet, you can download it from the [STMicroelectronics website](https://www.st.com/en/development-tools/stm32cubeide.html). Unzip and run the installer with `./st-stm32cubeide_1.19.0_25607_20250703_0907_amd64.sh`. Follow the installation instructions for your platform.
 
 **Setting paths for N6 loader script**
 
-We need to set the paths to our genereated files in `X-CUBE-AI.10.2.0/scripts/N6_scripts/config_n6l.json`:
+We need to set the paths to our genereated files in `X-CUBE-AI.10.2.0/scripts/N6_scripts/config_n6l.json`; comment out the `project_path` and `project_build_conf` lines if you are not using the NPU_Validation project, and set the `network.c` path to the generated `network.c` file.
 
 ```json
 {
@@ -278,6 +278,10 @@ Navigate to the `validation` directory in this repo and run the `n6_loader.py` s
 python <path-to-install-dir>/X-CUBE-AI.10.2.0/scripts/N6_scripts/n6_loader.py
 ```
 
+If the build fails, check the `n6_loader.log` and `compile.log` files in the `validation` directory for errors. If you encounter issues, ensure that the paths in `config.json` and `config_n6l.json` are correct and that the necessary tools are installed.
+
+**Run the validation command**
+
 To validate the model on the STM32N6570-DK, you can use the `validate` command:
 
 ```bash
@@ -289,7 +293,7 @@ To validate the model on the STM32N6570-DK, you can use the `validate` command:
   --verbose
 ```
 
-Note: STM provides a "Getting Started" guide for the STM32N6, which you can find [here](https://stm32ai-cs.st.com/assets/embedded-docs/stneuralart_getting_started.html).
+Note: STM provides a "Getting Started" guide for the STM32N6, which you can find [here](https://stm32ai-cs.st.com/assets/embedded-docs/stneuralart_getting_started.html) in case you need more detailed instructions on setting up the board and running the validation.
 
 ### Build and deploy demo application
 
