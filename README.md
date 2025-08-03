@@ -2,6 +2,10 @@
 
 This repository contains code and resources for training a tiny audio classification model for bioacoustics. The model is designed to run on the [STM32N6570-DK development board](https://www.st.com/en/evaluation-tools/stm32n6570-dk.html#overview).
 
+<img src="https://www.st.com/bin/ecommerce/api/image.PF275430.en.feature-description-include-personalized-no-cpn-large.jpg" alt="STM32N6570-DK board" style="width: 100%;" />
+
+(Image source: [STMicroelectronics](https://www.st.com/en/evaluation-tools/stm32n6570-dk.html))
+
 ## Setup (Ubuntu)
 
 Clone this repository and navigate to the project directory:
@@ -263,6 +267,8 @@ which STM32_Programmer_CLI
 See the image below for reference:
 
 ![Set STM32N6570-DK to dev mode](https://community.st.com/t5/image/serverpage/image-id/108308iD2AD18EF06920D91/image-size/large/is-moderation-mode/true?v=v2&px=999)
+
+(Image source: [ST Community](https://community.st.com/t5/stm32-mcus/how-to-debug-stm32n6-using-stm32cubeide/ta-p/800547))
 
 **Running n6_loader.py**
 
