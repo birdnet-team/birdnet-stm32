@@ -2,6 +2,8 @@
 *.png
 *.wav
 best_model.h5
+validation/
+main.c
 
 # VSCode
 .vscode
