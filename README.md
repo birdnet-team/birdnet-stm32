@@ -139,12 +139,42 @@ cd Utilities/linux
   --model /path/to/best_model.h5 \
   --type keras \
   --target stm32n6 \ 
+  --c-api st-ai \
   --st-neural-art \ (only for tflite)
   --output validation/st_ai_output \
   --verbose
 ```
 
+If you encounter the error `arm-none-eabi-gcc: error: unrecognized -mcpu target: cortex-m55`, it means you need to install the most recent ARM toolchain. You can do this by downloading the ARM toolchain from [ARM Developer](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads) or using a package manager:
+
+```bash
+wget https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz
+tar xf arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz
+export PATH=$PWD/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi/bin:$PATH
+```
+
+Make sure you have the correct `arm-none-eabi-gcc` compiler installed and available in your PATH. You can check this by running:
+
+```bash
+arm-none-eabi-gcc --version
+```
+
 Note: After conversion, the tool will generate a `network_generate_report.txt` in the output folder which you can consult to get some basic metrics on model computer requirements. If you run the command above with `analyze` instead of `generate`, it will analyze the model and provide more detailed information about its size, memory usage, and performance.
+
+
+### Validate the Model on STM32N6570-DK
+
+We'll use the `ai_runner` package to deploy and validate the model on the STM32N6570-DK board. 
+
+First, add the package to your PYTHONPATH:
+
+```bash
+export export PYTHONPATH=$/path/to/X-CUBE-AI.10.2.0/scripts/ai_runner:$PYTHONPATH
+```
+
+
+
+## Ignore everything from here down
 
 ### Validate the Model on STM32N6570-DK
 
@@ -286,6 +316,7 @@ To validate the model on the STM32N6570-DK, you can use the `validate` command:
   --type keras \
   --target STM32N6570-DK \
   --mode target \
+  --desc serial:921600 \
   --verbose
 ```
 
