@@ -156,6 +156,8 @@ ls /dev/ttyACM*
 
 If you see a device like `/dev/ttyUSB0`, you can proceed with the validation.
 
+**Install STM32CubeProgrammer**
+
 First, install STM32CubeProgrammer on your computer. You can download it from the [STMicroelectronics website](https://www.st.com/en/development-tools/stm32cubeprog.html). Unzip and run `./SetupSTM32CubeProgrammer-2.20.0.linux` to install it. This will launch a GUI installer. Follow the instructions to complete the installation.
 
 Verify the installation by navigating to the installation directory and running the command:
@@ -244,17 +246,11 @@ Update your `config.json` for Linux and GCC as follows (replace all Windows-styl
 }
 ```
 
-**Notes:**
+Notes:
 - Adjust `stm32cubeide/` and `stm32cubeprogrammer/` directories to match your actual installation paths.
 - Use `which arm-none-eabi-objcopy` to confirm the objcopy path.
 - Use `which STM32_Programmer_CLI` if you added it to your PATH, or specify the full path.
 - Install the ARM toolchain if you haven't already with `sudo apt-get install gcc-arm-none-eabi`
-
-**Example commands to find paths:**
-```bash
-which arm-none-eabi-objcopy
-which STM32_Programmer_CLI
-```
 
 **Set board to DEV mode**
 
@@ -334,6 +330,8 @@ Thank you!
 
 ![Logos of all partners](https://tuc.cloud/index.php/s/KSdWfX5CnSRpRgQ/download/box_logos.png)
 
+
+https://www.st.com/resource/en/user_manual/dm00570145.pdf
 
 
 
