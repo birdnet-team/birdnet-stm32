@@ -345,7 +345,7 @@ Now, we can finally validate the model on the STM32N6570-DK, you can use the `va
   --verbose
 ```
 
-Make sure to pass the .h5 model file you generated earlier, the validation script will validate on-device outputs vs. the reference model.
+Make sure to pass the .h5 model file you trained earlier, the validation script will validate on-device outputs vs. the reference model.
 
 You might have to run `sudo chmod a+rw /dev/ttyACM0` to give your user permission to access the serial port.
 
