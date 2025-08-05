@@ -108,21 +108,40 @@ Note: The conversion script expects a `.h5` model file, so ensure you specify th
 
 ## Model conversion & validation
 
-Run the `convert.py` script to convert the trained model to a format suitable for deployment on the STM32N6570-DK. This script will:
-- Load the trained model from the specified path.
-- quantize the model for deployment.
-- Convert the model to a TensorFlow Lite format. 
+Run the `convert.py` script to convert the trained model to a fully quantized TensorFlow Lite model (with float32 inputs and outputs, as required for STM32 deployment). The script will:
+- Load the trained Keras model from the specified path.
+- Quantize the model for deployment (weights and activations are quantized, but input/output remain float32).
+- Use a representative dataset (from your training data) for optimal quantization.
+- Save the converted model as a `.tflite` file.
+- Optionally validate the TFLite model after conversion.
 
-Run the script with the following command:
+**Example usage:**
 
 ```bash
-python convert.py --checkpoint_path checkpoints/birdnet_stm32_tiny.h5 --output_path checkpoints/birdnet_stm32_tiny.tflite
-``` 
+python convert.py \
+  --checkpoint_path checkpoints/birdnet_stm32_tiny.keras \
+  --output_path checkpoints/birdnet_stm32_tiny.tflite \
+  --data_path_train data/train \
+  --num_samples 100 \
+  --num_mels 64 \
+  --spec_width 128 \
+  --chunk_duration 3
+```
 
 **Arguments:**
 
-- `--checkpoint_path`: Path to the trained model checkpoint (default: `checkpoints/birdnet_stm32_tiny.h5`)
-- `--output_path`: Path to save the converted model (default: `checkpoints/birdnet_stm32_tiny.tflite`
+- `--checkpoint_path`: Path to the trained model checkpoint (reuired, should be a `.keras` file)
+- `--output_path`: Path to save the converted model. If not provided, it will save to the same directory as the checkpoint
+- `--data_path_train`: Path to your training data directory (used for representative dataset during quantization)
+- `--num_samples`: Number of samples from the training data to use for quantization (default: `100`)
+- `--num_mels`: Number of mel bins for spectrograms (should match training, default: `64`)
+- `--spec_width`: Spectrogram width (should match training, default: `128`)
+- `--chunk_duration`: Duration (seconds) of each audio chunk (should match training, default: `3`)
+- `--validate`: Whether to validate the TFLite model after conversion (default: `True`)
+
+If you do **not** provide `--data_path_train`, the script will generate random data for quantization (not recommended for best accuracy).
+
+After conversion, the script will also run a quick validation to ensure the TFLite model has float32 input/output and can run inference.
 
 ### The STM deployment process
 

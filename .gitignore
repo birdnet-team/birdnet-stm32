@@ -1,7 +1,8 @@
 # Custom
 *.png
 *.wav
-best_model.h5
+best_model.keras
+best_model_quantized.tflite
 test/
 validation/
 notes.txt

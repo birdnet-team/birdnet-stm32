@@ -298,7 +298,7 @@ def get_args():
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate')
     parser.add_argument('--patience', type=int, default=5, help='Early stopping patience')
     parser.add_argument('--val_split', type=float, default=0.2, help='Validation split ratio')
-    parser.add_argument('--checkpoint_path', type=str, default='checkpoints/best_model.h5', help='Path to save best model')
+    parser.add_argument('--checkpoint_path', type=str, default='checkpoints/best_model.keras', help='Path to save best model')
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -368,7 +368,7 @@ if __name__ == "__main__":
         learning_rate=args.learning_rate,
         batch_size=args.batch_size,
         patience=args.patience,
-        checkpoint_path=args.checkpoint_path,
+        checkpoint_path=args.checkpoint_path if args.checkpoint_path.endswith('.keras') else args.checkpoint_path + '.keras',
         steps_per_epoch=steps_per_epoch,
         val_steps=val_steps
     )
