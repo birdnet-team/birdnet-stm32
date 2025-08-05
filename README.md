@@ -256,12 +256,12 @@ Create a `config_n6l.json` file and copy the lines below; change the paths to po
 
 ```json
 {	
-	"network.c": "/path/to/birdnet-stm32/validation/st_ai_output/network.c",
-	"project_path": "/path/to/Code/X-CUBE-AI.10.2.0/Projects/STM32N6570-DK/Applications/NPU_Validation",
-	"project_build_conf": "N6-DK",
-	"skip_external_flash_programming": false,
-	"skip_ram_data_programming": false,
-	"objcopy_binary_path": "/usr/bin/arm-none-eabi-objcopy"
+  "network.c": "/path/to/birdnet-stm32/validation/st_ai_output/network.c",
+  "project_path": "/path/to/Code/X-CUBE-AI.10.2.0/Projects/STM32N6570-DK/Applications/NPU_Validation",
+  "project_build_conf": "N6-DK",
+  "skip_external_flash_programming": false,
+  "skip_ram_data_programming": false,
+  "objcopy_binary_path": "/usr/bin/arm-none-eabi-objcopy"
 }
 ```
 
