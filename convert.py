@@ -27,7 +27,7 @@ def representative_data_gen(file_paths, num_mels, spec_width, chunk_duration, nu
 
 def main():
     parser = argparse.ArgumentParser(description="Convert Keras model to fully quantized TFLite with float32 IO")
-    parser.add_argument('--checkpoint_path', type=str, required=True, help='Path to trained .keras model')
+    parser.add_argument('--checkpoint_path', type=str, required=True, help='Path to trained .h5 model')
     parser.add_argument('--output_path', type=str, default='', help='Path to save .tflite model. If not provided, will save to same directory as checkpoint.')
     parser.add_argument('--data_path_train', type=str, default='', help='Path to training data for representative dataset. If not provided, will generate random data.')
     parser.add_argument('--num_samples', type=int, default=100, help='Number of samples for representative dataset')

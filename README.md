@@ -119,13 +119,13 @@ Run the `convert.py` script to convert the trained model to a fully quantized Te
 
 ```bash
 python convert.py \
-  --checkpoint_path checkpoints/birdnet_stm32_tiny.keras \
+  --checkpoint_path checkpoints/birdnet_stm32_tiny.h5 \
   --data_path_train data/train
 ```
 
 **Arguments:**
 
-- `--checkpoint_path`: Path to the trained model checkpoint (reuired, should be a `.keras` file)
+- `--checkpoint_path`: Path to the trained model checkpoint (reuired, should be a `.h5` file)
 - `--output_path`: Path to save the converted model. If not provided, it will save to the same directory as the checkpoint
 - `--data_path_train`: Path to your training data directory (used for representative dataset during quantization)
 - `--num_samples`: Number of samples from the training data to use for quantization (default: `100`)
@@ -334,16 +334,18 @@ Now, we can finally validate the model on the STM32N6570-DK, you can use the `va
 
 ```bash
 ./stedgeai validate \
-  --model  /path/to/birdnet-stm32/checkpoints/birdnet-stm32-tiny.tflite \
+  --model  /path/to/birdnet-stm32/checkpoints/birdnet-stm32-tiny.h5 \
   --target stm32n6 \ 
   --mode target \
   --desc serial:921600 \
   --output /path/to/birdnet-stm32/validation/st_ai_output \
   --workspace /path/to/birdnet-stm32/validation/st_ai_ws \
-  --vi /path/to/birdnet-stm32/checkpoints/birdnet-stm32-tiny_validation_data.npz \
+  --valinput /path/to/birdnet-stm32/checkpoints/birdnet-stm32-tiny_validation_data.npz \
   --classifier \
   --verbose
 ```
+
+Make sure to pass the .h5 model file you generated earlier, the validation script will validate on-device outputs vs. the reference model.
 
 You might have to run `sudo chmod a+rw /dev/ttyACM0` to give your user permission to access the serial port.
 

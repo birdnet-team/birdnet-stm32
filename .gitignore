@@ -1,8 +1,8 @@
 # Custom
 *.png
 *.wav
-best_model.keras
-best_model_quantized.tflite
+*.keras
+*.tflite
 *.npz
 test/
 validation/
