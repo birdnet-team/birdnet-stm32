@@ -2,8 +2,11 @@
 *.png
 *.wav
 best_model.h5
+test/
 validation/
-main.c
+notes.txt
+config_n6l.json
+config.json
 
 # VSCode
 .vscode
