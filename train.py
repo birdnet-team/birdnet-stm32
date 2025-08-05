@@ -283,7 +283,7 @@ def get_args():
         argparse.Namespace: Parsed arguments.
     """
     parser = argparse.ArgumentParser(description="Train iNat-tiny audio classifier")
-    parser.add_argument('--data_path_train', type=str, default='/data3/iNatSounds/train_min10_dev', help='Path to train dataset')
+    parser.add_argument('--data_path_train', type=str, required=True, help='Path to train dataset')
     parser.add_argument('--num_mels', type=int, default=64, help='Number of mel bins for spectrogram')
     parser.add_argument('--spec_width', type=int, default=128, help='Spectrogram width')
     parser.add_argument('--chunk_duration', type=int, default=3, help='Audio chunk duration (seconds)')

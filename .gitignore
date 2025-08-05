@@ -1,6 +1,7 @@
 # Custom
 *.png
 *.wav
+best_model.h5
 *.keras
 *.tflite
 *.npz
