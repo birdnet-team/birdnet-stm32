@@ -129,8 +129,12 @@ python convert.py --checkpoint_path checkpoints/birdnet_stm32_tiny.h5 --output_p
 In order to deploy the model to the STM32N6570-DK, we will use STM's X-CUBE-AI framework, which provides tools for converting and deploying machine learning models on STM32 microcontrollers. The workflow involves several steps:
 
 1. **Generate the model files** using the STM32Cube.AI CLI tool.
-2. **Load the model onto the STM32N6570-DK** using the N6 loader script.
+2. **Load the model onto the board** using the N6 loader script.
 3. **Validate the model** on the STM32N6570-DK to ensure it works as expected.
+ 
+<img width="100%" alt="stm32_model_validation" src="https://github.com/user-attachments/assets/3dddfbd5-4c87-4e3c-ac59-6291545188af" />
+
+(Image source: [STM32ai](https://stm32ai-cs.st.com/assets/embedded-docs/stneuralart_getting_started.html))
 
 ### Generate the Model Files
 
