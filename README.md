@@ -341,6 +341,7 @@ Now, we can finally validate the model on the STM32N6570-DK, you can use the `va
   --output /path/to/birdnet-stm32/validation/st_ai_output \
   --workspace /path/to/birdnet-stm32/validation/st_ai_ws \
   --vi /path/to/birdnet-stm32/checkpoints/birdnet-stm32-tiny_validation_data.npz \
+  --classifier \
   --verbose
 ```
 
@@ -349,6 +350,8 @@ You might have to run `sudo chmod a+rw /dev/ttyACM0` to give your user permissio
 Note: STM provides a "Getting Started" guide for the STM32N6, which you can find [here](https://stm32ai-cs.st.com/assets/embedded-docs/stneuralart_getting_started.html) in case you need more detailed instructions on setting up the board and running the validation.
 
 If everything is set up correctly, the validate command will run inference on the STM32N6570-DK and print the results to the console. After the validation is complete, you should see a `network_validate_report.txt` file in the `validation/st_ai_output` directory with the validation results.
+
+For more command line options, visit the [ST Edge AI documentation](https://stm32ai-cs.st.com/assets/embedded-docs/command_line_interface.html).
 
 ## Build and deploy demo application
 
