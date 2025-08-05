@@ -325,7 +325,7 @@ XXX  __main__ -- Resetting the board...
 XXX  __main__ -- Flashing memory xSPI2 -- 1 659.665 kB
 XXX  __main__ -- Building project (conf= N6-DK)
 XXX  __main__ -- Loading internal memories & Running the program
-XX  __main__ -- Start operation achieved successfully
+XXX  __main__ -- Start operation achieved successfully
 ```
 
 ### Validate the Model on STM32N6570-DK
@@ -340,6 +340,7 @@ Now, we can finally validate the model on the STM32N6570-DK, you can use the `va
   --desc serial:921600 \
   --output /path/to/birdnet-stm32/validation/st_ai_output \
   --workspace /path/to/birdnet-stm32/validation/st_ai_ws \
+  --vi /path/to/birdnet-stm32/checkpoints/birdnet-stm32-tiny_validation_data.npz \
   --verbose
 ```
 

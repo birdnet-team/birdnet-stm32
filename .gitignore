@@ -3,6 +3,7 @@
 *.wav
 best_model.keras
 best_model_quantized.tflite
+*.npz
 test/
 validation/
 notes.txt

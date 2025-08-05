@@ -2,24 +2,24 @@ import argparse
 import tensorflow as tf
 import numpy as np
 import os
-from train import load_file_paths_from_directory, get_args
+from train import load_file_paths_from_directory
+from utils.audio import load_audio_file, get_spectrogram_from_audio, sort_by_s2n, pick_random_spectrogram
 
-def representative_data_gen(file_paths, num_mels, chunk_duration, spec_width, num_samples=100):
+def representative_data_gen(file_paths, num_mels, spec_width, chunk_duration, num_samples=100):
     """
     Generator for representative dataset for quantization.
     Yields spectrograms as input to the model.
     """
     count = 0
     for path in file_paths:
-        # Use the same audio preprocessing as in training
-        from utils.audio import load_audio_file, get_spectrogram_from_audio, sort_by_s2n, pick_random_spectrogram
+        # Use the same audio preprocessing as in training        
         audio_chunks = load_audio_file(path, sample_rate=16000, max_duration=30, chunk_duration=chunk_duration)
         spectrograms = [get_spectrogram_from_audio(chunk, 16000, mel_bins=num_mels, spec_width=spec_width) for chunk in audio_chunks]
         sorted_specs = sort_by_s2n(spectrograms, threshold=0.33)
         random_spec = pick_random_spectrogram(sorted_specs, num_samples=1)
         spec = random_spec[0] if isinstance(random_spec, list) else random_spec
         spec = np.expand_dims(spec, axis=-1).astype(np.float32)
-        spec = np.expand_dims(spec, axis=0)  # add batch dimension
+        spec = np.expand_dims(spec, axis=0)  # add batch dimension     
         yield [spec]
         count += 1
         if count >= num_samples:
@@ -94,6 +94,19 @@ def main():
         
         print(f"Sample input shape: {sample_input[0].shape}")
         print(f"Model output shape: {output_data.shape}")
+        
+    # Create validation data to run inference on the STM32N6570-DK
+    # We'll generate 100 representative samples and store as .npz file
+    if args.data_path_train:
+        validation_data = []
+        for _ in range(100):
+            sample_input = next(rep_data_gen())
+            validation_data.append(sample_input[0])
+        
+        validation_data = np.array(validation_data)
+        validation_output_path = os.path.splitext(args.output_path)[0] + "_validation_data.npz"
+        np.savez_compressed(validation_output_path, data=validation_data)
+        print(f"Validation data saved to {validation_output_path}")
 
 if __name__ == "__main__":
     main()
