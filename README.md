@@ -120,12 +120,7 @@ Run the `convert.py` script to convert the trained model to a fully quantized Te
 ```bash
 python convert.py \
   --checkpoint_path checkpoints/birdnet_stm32_tiny.keras \
-  --output_path checkpoints/birdnet_stm32_tiny.tflite \
-  --data_path_train data/train \
-  --num_samples 100 \
-  --num_mels 64 \
-  --spec_width 128 \
-  --chunk_duration 3
+  --data_path_train data/train
 ```
 
 **Arguments:**
