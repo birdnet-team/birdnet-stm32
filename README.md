@@ -6,6 +6,8 @@ This repository contains code and resources for training a tiny audio classifica
 
 (Image source: [EBV Electronik](https://my.avnet.com/ebv/products/new-products/npi/2024/stmicroelectronics-stm32n6570-dk))
 
+STM32N6570-DK user manual: [DM00570145](https://www.st.com/resource/en/user_manual/dm00570145.pdf)
+
 ## Setup (Ubuntu)
 
 Clone this repository and navigate to the project directory:
@@ -33,7 +35,7 @@ Install the required packages:
 pip install -r requirements.txt
 ```
 
-## Usage
+## Training
 
 Deploying a model to the STM32N6570-DK is quite involved and requires us to:
 
@@ -104,9 +106,35 @@ The script will print progress and save the best model.
 
 Note: The conversion script expects a `.h5` model file, so ensure you specify the correct `--checkpoint_path`.
 
-### Model conversion
+## Model conversion & validation
 
-We'll use the STM32Cube.AI CLI to convert the trained model to a format suitable for deployment on the STM32N6570-DK. You can download the STM32Cube.AI CLI from the [STMicroelectronics website](https://www.st.com/en/embedded-software/x-cube-ai.html#get-software).
+Run the `convert.py` script to convert the trained model to a format suitable for deployment on the STM32N6570-DK. This script will:
+- Load the trained model from the specified path.
+- quantize the model for deployment.
+- Convert the model to a TensorFlow Lite format. 
+
+Run the script with the following command:
+
+```bash
+python convert.py --checkpoint_path checkpoints/birdnet_stm32_tiny.h5 --output_path checkpoints/birdnet_stm32_tiny.tflite
+``` 
+
+**Arguments:**
+
+- `--checkpoint_path`: Path to the trained model checkpoint (default: `checkpoints/birdnet_stm32_tiny.h5`)
+- `--output_path`: Path to save the converted model (default: `checkpoints/birdnet_stm32_tiny.tflite`
+
+### The STM deployment process
+
+In order to deploy the model to the STM32N6570-DK, we will use STM's X-CUBE-AI framework, which provides tools for converting and deploying machine learning models on STM32 microcontrollers. The workflow involves several steps:
+
+1. **Generate the model files** using the STM32Cube.AI CLI tool.
+2. **Load the model onto the STM32N6570-DK** using the N6 loader script.
+3. **Validate the model** on the STM32N6570-DK to ensure it works as expected.
+
+### Generate the Model Files
+
+First, we'll use the STM32Cube.AI CLI to convert the trained model to a format suitable for deployment on the STM32N6570-DK. You can download the STM32Cube.AI CLI from the [STMicroelectronics website](https://www.st.com/en/embedded-software/x-cube-ai.html#get-software).
 
 After downloading, you should have `x-cube-ai-linux-v10.2.0.zip`, unzip and locate the CLI tool which is typically found in the `Utilities/linux` directory.
 
@@ -131,17 +159,18 @@ X-CUBE-AI.10.2.0/
 └── ...
 ```
 
-Now, we need to run model conversion using the CLI tool. Make sure you have your trained model saved as a `.h5` file (e.g., `checkpoints/my_tiny_model.h5`).
+Now, we need to run model conversion using the CLI tool. Make sure you have your trained and converted model saved as a `.tflite` file.
+
+Navigate to `/path/to/X-CUBE-AI.10.2.0/Utilities/linux` and run the `stedgeai` command to generate the model files for STM32N6570-DK:
 
 ```bash
 cd Utilities/linux
 ./stedgeai generate \
-  --model /path/to/best_model.h5 \
-  --type keras \
+  --model  /path/to/birdnet-stm32/checkpoints/birdnet-stm32-tiny.tflite \
   --target stm32n6 \ 
-  --c-api st-ai \
-  --st-neural-art \ (only for tflite)
-  --output validation/st_ai_output \
+  --st-neural-art \
+  --output /path/to/birdnet-stm32/validation/st_ai_output \
+  --workspace /path/to/birdnet-stm32/validation/st_ai_ws \
   --verbose
 ```
 
@@ -161,22 +190,7 @@ arm-none-eabi-gcc --version
 
 Note: After conversion, the tool will generate a `network_generate_report.txt` in the output folder which you can consult to get some basic metrics on model computer requirements. If you run the command above with `analyze` instead of `generate`, it will analyze the model and provide more detailed information about its size, memory usage, and performance.
 
-
-### Validate the Model on STM32N6570-DK
-
-We'll use the `ai_runner` package to deploy and validate the model on the STM32N6570-DK board. 
-
-First, add the package to your PYTHONPATH:
-
-```bash
-export export PYTHONPATH=$/path/to/X-CUBE-AI.10.2.0/scripts/ai_runner:$PYTHONPATH
-```
-
-
-
-## Ignore everything from here down
-
-### Validate the Model on STM32N6570-DK
+### Load the Model onto the STM32N6570-DK
 
 Connect your STM32N6570-DK board to your computer and ensure it is recognized by running:
 
@@ -184,11 +198,11 @@ Connect your STM32N6570-DK board to your computer and ensure it is recognized by
 ls /dev/ttyACM*
 ```
 
-If you see a device like `/dev/ttyUSB0`, you can proceed with the validation.
+If you see a device like `/dev/ttyACM0`, you can proceed with the validation.
 
 **Install STM32CubeProgrammer**
 
-First, install STM32CubeProgrammer on your computer. You can download it from the [STMicroelectronics website](https://www.st.com/en/development-tools/stm32cubeprog.html). Unzip and run `./SetupSTM32CubeProgrammer-2.20.0.linux` to install it. This will launch a GUI installer. Follow the instructions to complete the installation.
+Next, install STM32CubeProgrammer on your computer. You can download it from the [STMicroelectronics website](https://www.st.com/en/development-tools/stm32cubeprog.html). Unzip and run `./SetupSTM32CubeProgrammer-2.20.0.linux` to install it. This will launch a GUI installer. Follow the instructions to complete the installation.
 
 Verify the installation by navigating to the installation directory and running the command:
 
@@ -228,59 +242,33 @@ STM32_Programmer_CLI --list
 
 If everything is set up correctly, you should see your STM32N6570-DK board listed.
 
-Now, we need to flash the pre-built firmware to the STM32N6570-DK board so the validate command can communicate with it. 
-Make sure you ran the `generate` command above to generate the model files, which will be used by the `validate` command - generated files are in `X-CUBE-AI.10.2.0/Utilities/linux/st_ai_output`. 
-
 **Install STM32CubeIDE**
 
 If you haven't installed STM32CubeIDE yet, you can download it from the [STMicroelectronics website](https://www.st.com/en/development-tools/stm32cubeide.html). Unzip and run the installer with `./st-stm32cubeide_1.19.0_25607_20250703_0907_amd64.sh`. Follow the installation instructions for your platform.
 
 **Setting paths for N6 loader script**
 
-We need to set the paths to our genereated files in `X-CUBE-AI.10.2.0/scripts/N6_scripts/config_n6l.json`; comment out the `project_path` and `project_build_conf` lines if you are not using the NPU_Validation project, and set the `network.c` path to the generated `network.c` file.
+Create a `config_n6l.json` file and copy the lines below; change the paths to point to your generated `network.c`and the `NPU_Validation` project in the `X-CUBE-AI.10.2.0/Projects/STM32N6570-DK/Applications` directory.
 
 ```json
-{
-	// The 2lines below are _only used if you call n6_loader.py ALONE (memdump is optional and will be the parent dir of network.c by default)
-	"network.c": "<path-to-install-dir>/X-CUBE-AI.10.2.0/Utilities/linux/st_ai_output/network.c",
-	//"memdump_path": "C:/Users/foobar/CODE/stm.ai/stm32ai_output",
-	// Location of the "validation" project  + build config name to be built (if applicable)
-	// "project_path": "<path-to-install-dir>/X-CUBE-AI.10.2.0/Projects/STM32N6570-DK/Applications/NPU_Validation/",
-	// If using the NPU_Validation project, valid build_conf names are "N6-DK", "N6-DK-USB", "N6-Nucleo", "N6-Nucleo-USB"
-	// "project_build_conf": "N6-DK",
-	// Skip programming weights to earn time (but lose accuracy) -- useful for performance tests
+{	
+	"network.c": "/path/to/birdnet-stm32/validation/st_ai_output/network.c",
+	"project_path": "/path/to/Code/X-CUBE-AI.10.2.0/Projects/STM32N6570-DK/Applications/NPU_Validation",
+	"project_build_conf": "N6-DK",
 	"skip_external_flash_programming": false,
 	"skip_ram_data_programming": false,
 	"objcopy_binary_path": "/usr/bin/arm-none-eabi-objcopy"
 }
 ```
 
-Update your `config.json` for Linux and GCC as follows (replace all Windows-style paths (`C:/...`) with Linux-style paths (`/home/...` or `/opt/...`) based on your installation):
+Update the `config.json` in the `X-CUBE-AI.10.2.0/scripts/N6_scripts` directory to point to your STM32CubeIDE installation path:
 
 ```json
 {
-    // Set Compiler_type to either gcc or iar
-    "compiler_type": "gcc",
-    // Path to gdbserver directory (ends up in bin/)
-    "gdb_server_path": "<path-to-install-dir>/stm32cubeide/plugins/com.st.stm32cube.ide.mcu.externaltools.stlink-gdb-server.linux64_2.2.200.202505060755/tools/bin/",
-    // Path to gcc directory (ends up in bin/)
-    "gcc_binary_path": "<path-to-install-dir>/stm32cubeide/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.linux64_1.0.0.202410170706/tools/bin/",
-    // Path to IAR directory (ends up in bin/) (leave empty if not using IAR)
-    "iar_binary_path": "",
-    // Full path to arm-none-eabi-objcopy program
-    "objcopy_binary_path": "/usr/bin/arm-none-eabi-objcopy",
-    // Full path to STM32_Programmer_CLI program
-    "cubeProgrammerCLI_binary_path": "<path-to-install-dir>/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI",
-    // Path to CubeIDE directory (ends up in stm32cubeide)
-    "cubeide_path": "<path-to-install-dir>/stm32cubeide"
+  "compiler_type": "gcc",
+  "cubeide_path":"/path/to/stm32cubeide"
 }
 ```
-
-Notes:
-- Adjust `stm32cubeide/` and `stm32cubeprogrammer/` directories to match your actual installation paths.
-- Use `which arm-none-eabi-objcopy` to confirm the objcopy path.
-- Use `which STM32_Programmer_CLI` if you added it to your PATH, or specify the full path.
-- Install the ARM toolchain if you haven't already with `sudo apt-get install gcc-arm-none-eabi`
 
 **Set board to DEV mode**
 
@@ -298,38 +286,59 @@ See the image below for reference:
 
 **Running n6_loader.py**
 
-Navigate to the `validation` directory in this repo and run the `n6_loader.py` script from the X-CUBE-AI *scipt* directory:
+Navigate to the `validation` directory in this repo and run the `n6_loader.py` script from the X-CUBE-AI *scipt* directory and pass the `config_n6l.json` file as an argument:
 
 ```bash
-python <path-to-install-dir>/X-CUBE-AI.10.2.0/scripts/N6_scripts/n6_loader.py
+python <path-to-install-dir>/X-CUBE-AI.10.2.0/scripts/N6_scripts/n6_loader.py --n6-loader-config /path/to/birdnet-stm32/config_n6l.json
 ```
 
 If the build fails, check the `n6_loader.log` and `compile.log` files in the `validation` directory for errors. If you encounter issues, ensure that the paths in `config.json` and `config_n6l.json` are correct and that the necessary tools are installed.
 
-**Run the validation command**
+If successful, ouputs should look like this:
 
-To validate the model on the STM32N6570-DK, you can use the `validate` command:
+```
+XXX  __main__ -- Preparing compiler GCC
+XXX  __main__ -- Setting a breakpoint in main.c at line 137 (before the infinite loop)
+XXX  __main__ -- Copying network.c to project: -> /path/to/X-CUBE-AI.10.2.0/Projects/STM32N6570-DK/Applications/NPU_Validation/X-CUBE-AI/App/network.c
+XXX  __main__ -- Extracting information from the c-file
+XXX  __main__ -- Converting memory files in results/<model>/generation/ to Intel-hex with proper offsets
+XXX  __main__ -- arm-none-eabi-objcopy --change-addresses 0x71000000 -Ibinary -Oihex network_atonbuf.xSPI2.raw network_atonbuf.xSPI2.hex
+XXX  __main__ -- Resetting the board...
+XXX  __main__ -- Flashing memory xSPI2 -- 1 659.665 kB
+XXX  __main__ -- Building project (conf= N6-DK)
+XXX  __main__ -- Loading internal memories & Running the program
+XX  __main__ -- Start operation achieved successfully
+```
+
+### Validate the Model on STM32N6570-DK
+
+Now, we can finally validate the model on the STM32N6570-DK, you can use the `validate` command after navigating to the `X-CUBE-AI.10.2.0/Utilities/linux` directory:
 
 ```bash
 ./stedgeai validate \
-  --model /path/to/best_model.h5 \
-  --type keras \
-  --target STM32N6570-DK \
+  --model  /path/to/birdnet-stm32/checkpoints/birdnet-stm32-tiny.tflite \
+  --target stm32n6 \ 
   --mode target \
   --desc serial:921600 \
+  --output /path/to/birdnet-stm32/validation/st_ai_output \
+  --workspace /path/to/birdnet-stm32/validation/st_ai_ws \
   --verbose
 ```
 
+You might have to run `sudo chmod a+rw /dev/ttyACM0` to give your user permission to access the serial port.
+
 Note: STM provides a "Getting Started" guide for the STM32N6, which you can find [here](https://stm32ai-cs.st.com/assets/embedded-docs/stneuralart_getting_started.html) in case you need more detailed instructions on setting up the board and running the validation.
 
-### Build and deploy demo application
+If everything is set up correctly, the validate command will run inference on the STM32N6570-DK and print the results to the console. After the validation is complete, you should see a `network_validate_report.txt` file in the `validation/st_ai_output` directory with the validation results.
+
+## Build and deploy demo application
 
 TODO :)
 
 ## License
 
  - **Source Code & models**: The source code and models for this project is licensed under the [MIT License](https://opensource.org/licenses/MIT).
-
+ - **STM tools and scripts**: The STM tools and scripts used in this project are licensed under different licenses, please refer to the respective documentation for details.
  - **Citation**: Feel free to use the code or models in your research. If you do, please cite as:
 
 ```bibtex
@@ -360,9 +369,6 @@ Without these partnerships, this project would not have been possible.
 Thank you!
 
 ![Logos of all partners](https://tuc.cloud/index.php/s/KSdWfX5CnSRpRgQ/download/box_logos.png)
-
-
-https://www.st.com/resource/en/user_manual/dm00570145.pdf
 
 
 
