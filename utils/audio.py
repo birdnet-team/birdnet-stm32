@@ -177,6 +177,8 @@ def plot_spectrogram(spectrogram, title='Spectrogram'):
     plt.tight_layout()
     plt.show()
     # save the plot to a file
+    plt.savefig(f"samples/{title}.png")
+    
     
 def save_wav(audio, path, sample_rate=16000):
     """
