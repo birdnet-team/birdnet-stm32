@@ -469,18 +469,18 @@ def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.00
         optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
         loss='binary_crossentropy',
         metrics=[
-            # Optionally keep AUC or TopKCategoricalAccuracy
-            tf.keras.metrics.AUC(multi_label=True, name="auc"),
+            # tf.keras.metrics.AUC(curve='PR', multi_label=True, name="pr_auc"),
+            tf.keras.metrics.AUC(curve='ROC', multi_label=True, name="roc_auc"),
             # tf.keras.metrics.TopKCategoricalAccuracy(k=3, name="top3_acc")
         ]
     )
 
     callbacks = [
         tf.keras.callbacks.EarlyStopping(
-            monitor='val_auc', patience=patience, restore_best_weights=True, mode='max'
+            monitor='val_roc_auc', patience=patience, restore_best_weights=True, mode='max'
         ),
         tf.keras.callbacks.ModelCheckpoint(
-            checkpoint_path, monitor='val_auc', save_best_only=True, mode='max'
+            checkpoint_path, monitor='val_roc_auc', save_best_only=True, mode='max'
         ),
         tf.keras.callbacks.ReduceLROnPlateau(
             monitor='val_loss', factor=0.5, patience=patience//2, min_lr=1e-6, verbose=1
