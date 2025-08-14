@@ -75,7 +75,6 @@ The script will:
 - Generate mel spectrograms from the audio chunks.
 - Build a compact CNN model for audio spectrogram classification.
 - Optionally apply mixup augmentation to the training data.
-- Enable quantization-aware training for deployment on embedded hardware.
 - Train the model with early stopping, learning rate scheduling, and checkpointing.
 - Save the best model to the specified path.
 
@@ -136,7 +135,10 @@ python convert.py \
 - `--validate`: Whether to validate the TFLite model after conversion (default: `True`)
 - `--audio_frontend`: Audio frontend to use for spectrogram generation (`librosa` or `tf`, default: `librosa`)
 
-If you do **not** provide `--data_path_train`, the script will generate random data for quantization (not recommended for best accuracy).
+Note:
+- Match --audio_frontend, --num_mels, --spec_width, and --chunk_duration to training.
+- Provide ≥ 512 diverse representative samples for better activation calibration and higher cosine similarity.
+- If you don’t pass --data_path_train, random data is used (conversion works but accuracy/fidelity may suffer).
 
 After conversion, the script will also run a quick validation to ensure the TFLite model has float32 input/output and can run inference.
 

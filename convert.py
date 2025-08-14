@@ -7,9 +7,34 @@ from utils.audio import load_audio_file, get_spectrogram_from_audio, sort_by_s2n
 
 def representative_data_gen(file_paths, sample_rate, num_mels, spec_width, chunk_duration, audio_frontend, num_samples=100):
     """
-    Generator for representative dataset for quantization.
-    - librosa: yields (1, num_mels, spec_width, 1)
-    - tf: yields (1, chunk_samples, 1)
+    Build a representative dataset generator for TFLite PTQ calibration.
+
+    Data sources:
+      - If audio_frontend == 'librosa':
+          Loads audio, computes mel spectrograms (num_mels x spec_width),
+          filters by SNR, picks one random spectrogram per file, and yields
+          (1, num_mels, spec_width, 1) float32 tensors.
+      - If audio_frontend == 'tf':
+          Loads audio, splits into chunk_duration-second chunks, filters by SNR,
+          picks one random chunk per file, and yields (1, T, 1) float32 tensors
+          where T = sample_rate * chunk_duration.
+
+    Args:
+        file_paths (list[str]): Paths to wav files (class layout not required here).
+        sample_rate (int): Target sample rate for loading/processing audio.
+        num_mels (int): Mel bins for librosa frontend (ignored for 'tf').
+        spec_width (int): Time frames for librosa frontend (ignored for 'tf').
+        chunk_duration (int): Chunk size in seconds for 'tf' raw-audio inputs.
+        audio_frontend (str): 'librosa' or 'tf' to match the trained model input.
+        num_samples (int): Max number of samples to yield for calibration.
+
+    Yields:
+        list[np.ndarray]: A single-element list containing one input batch tensor
+            shaped either (1, num_mels, spec_width, 1) or (1, T, 1), dtype float32.
+
+    Notes:
+        - Samples are SNR-filtered and randomly selected to better cover typical inputs.
+        - Provide ≥ 512 diverse samples for stable activation range calibration.
     """
     count = 0
     for path in file_paths:
@@ -37,6 +62,18 @@ def representative_data_gen(file_paths, sample_rate, num_mels, spec_width, chunk
             break
 
 def _cosine(a, b, eps=1e-12):
+    """
+    Compute cosine similarity between two 1D arrays.
+
+    Args:
+        a (np.ndarray): Flattened predictions from Keras.
+        b (np.ndarray): Flattened predictions from TFLite.
+        eps (float): Small value to avoid division by zero.
+
+    Returns:
+        float: Cosine similarity in [-1, 1]. Returns 1.0 if both vectors are near-zero,
+               else 0.0 if only one vector is near-zero.
+    """
     an = np.linalg.norm(a)
     bn = np.linalg.norm(b)
     if an < eps or bn < eps:
@@ -44,6 +81,17 @@ def _cosine(a, b, eps=1e-12):
     return float(np.dot(a, b) / (an * bn))
 
 def _pearson(a, b, eps=1e-12):
+    """
+    Compute Pearson correlation coefficient between two 1D arrays.
+
+    Args:
+        a (np.ndarray): Flattened predictions from Keras.
+        b (np.ndarray): Flattened predictions from TFLite.
+        eps (float): Small value to guard against zero variance.
+
+    Returns:
+        float: Pearson's r in [-1, 1]. Returns 1.0 if both vectors have near-zero variance.
+    """
     a = a - np.mean(a)
     b = b - np.mean(b)
     denom = (np.linalg.norm(a) * np.linalg.norm(b))
@@ -53,8 +101,24 @@ def _pearson(a, b, eps=1e-12):
 
 def validate_models(keras_model, tflite_model_path, rep_data_gen, num_samples=50):
     """
-    Compare Keras vs TFLite outputs on rep_data_gen() samples.
-    Prints cosine/MSE/MAE/Pearson stats.
+    Validate TFLite vs. Keras outputs on representative samples.
+
+    Runs both models on up to num_samples inputs from rep_data_gen() and reports:
+      - cosine similarity
+      - mean squared error (mse)
+      - mean absolute error (mae)
+      - Pearson correlation coefficient (pearson_r)
+
+    Assumptions:
+      - The TFLite model uses float32 I/O (converter.inference_input/output_type=float32).
+      - Internal ops may be int8 (PTQ), which this compares against float32 Keras.
+
+    Args:
+        keras_model (tf.keras.Model): Loaded Keras model (.h5 or .keras).
+        tflite_model_path (str): Path to the converted .tflite file.
+        rep_data_gen (Callable[[], Iterator[list[np.ndarray]]]): Generator factory that
+            yields single-element lists with one input batch tensor per iteration.
+        num_samples (int): Max number of samples to evaluate.
     """
     interpreter = tf.lite.Interpreter(model_path=tflite_model_path)
     interpreter.allocate_tensors()
@@ -105,7 +169,20 @@ def validate_models(keras_model, tflite_model_path, rep_data_gen, num_samples=50
     _summ("pearson_r", pcc_list)
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert Keras model to fully quantized TFLite with float32 IO")
+    """
+    CLI entry point: load a trained Keras model, convert to TFLite with PTQ,
+    optionally validate fidelity, and save representative samples.
+
+    Steps:
+      1) Load the .h5/.keras model (register AudioFrontendLayer if needed).
+      2) Build a representative dataset:
+           - From --data_path_train (preferred), or random data as fallback.
+      3) Convert to TFLite with Optimize.DEFAULT, float32 I/O (int8 internals allowed).
+      4) Save the .tflite model to --output_path (or alongside checkpoint).
+      5) If --validate, run Keras vs. TFLite comparison on a subset of samples.
+      6) Save all representative samples used to <model>_validation_data.npz.
+    """
+    parser = argparse.ArgumentParser(description="Convert a trained Keras model to TFLite with PTQ (float32 IO, int8 internals).")
     parser.add_argument('--checkpoint_path', type=str, required=True, help='Path to trained .h5 model')
     parser.add_argument('--output_path', type=str, default='', help='Path to save .tflite model. If not provided, will save to same directory as checkpoint.')
     parser.add_argument('--data_path_train', type=str, default='', help='Path to training data for representative dataset. If not provided, will generate random data.')

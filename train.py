@@ -24,22 +24,30 @@ if gpus:
     
 def dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=30, chunk_duration=3, spec_width=128, mel_bins=64, audio_frontend='librosa', tf_frontend_layer=None):
     """
-    Load and plot spectrograms from a few audio files for sanity checking.
+    Run a quick sanity check and save spectrogram images for a few files.
+
+    - If audio_frontend == 'librosa':
+        Loads audio, computes mel spectrograms per chunk using librosa helpers,
+        filters by SNR, then plots a random spectrogram.
+    - If audio_frontend == 'tf':
+        Loads raw audio chunks and passes one chunk through the TF AudioFrontendLayer.
+        If tf_frontend_layer is provided (e.g., from a trained model), it is used
+        so plots reflect trained parameters (e.g., mag_scale, clamp); otherwise a
+        fresh layer is built with default settings.
 
     Args:
-        file_paths (list of str): List of audio file paths.
-        classes (list of str): List of class names.
-        sample_rate (int): Sample rate for audio loading.
-        max_duration (int): Maximum duration per file.
-        chunk_duration (int): Duration per chunk.
-        spec_width (int): Spectrogram width.
-        mel_bins (int): Number of mel bins.
-        audio_frontend (str): Audio frontend to use ('librosa' or 'tf').
-        tf_frontend_layer (tf.keras.layers.Layer, optional): If provided and audio_frontend=='tf',
-            use this trained AudioFrontendLayer (e.g., from the trained model) instead of creating a new one.
+        file_paths: List of audio file paths.
+        classes: List of class names (unused here, only for labeling).
+        sample_rate: Target sample rate for loading audio.
+        max_duration: Max seconds to load from each file.
+        chunk_duration: Seconds per chunk.
+        spec_width: Target number of time frames in the spectrogram.
+        mel_bins: Number of mel bins.
+        audio_frontend: 'librosa' or 'tf'.
+        tf_frontend_layer: Optional, a pre-built/trained AudioFrontendLayer.
 
     Returns:
-        None
+        None. Saves plots under samples/ via utils.plot_spectrogram().
     """
     # Prepare output dir
     out_dir = os.path.join("samples")
@@ -105,14 +113,19 @@ def dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=30
 
 def load_file_paths_from_directory(directory, classes=None):
     """
-    Recursively load all .wav file paths from a directory, optionally filtering by class.
+    Recursively collect .wav files from a dataset directory.
+
+    Directory structure is expected to be class-sublabeled (root/class_x/*.wav).
+    If classes is None, class names are inferred from subdirectories of 'directory'.
 
     Args:
-        directory (str): Root directory to search.
-        classes (list of str, optional): List of class names to filter.
+        directory: Root dataset directory.
+        classes: Optional list of class names to include.
 
     Returns:
-        tuple: (list of file paths, list of classes)
+        (file_paths, classes_sorted)
+        - file_paths: Shuffled list of absolute file paths.
+        - classes_sorted: Sorted list of class names.
     """
     # Load all audio file paths from the specified directory
     file_paths = []
@@ -129,23 +142,40 @@ def load_file_paths_from_directory(directory, classes=None):
 
 def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa', sample_rate=16000, max_duration=30, chunk_duration=3, spec_width=128, mixup_alpha=0.2, mixup_probability=0.25, mel_bins=48):
     """
-    Generator that yields batches of spectrograms and one-hot labels, with optional mixup augmentation.
+    Yield batches of model-ready samples and one-hot labels with optional mixup.
+
+    For each selected file:
+      - Loads up to max_duration seconds at sample_rate.
+      - Splits into chunk_duration-second chunks.
+      - Filters by SNR and picks one random chunk/spectrogram.
+
+    Output shapes per frontend:
+      - audio_frontend='librosa': sample shape (mel_bins, spec_width, 1)
+      - audio_frontend='tf':      sample shape (sample_rate*chunk_duration, 1)
+
+    Mixup:
+      - If enabled, applies mixup to a random subset of the batch on both inputs
+        and one-hot labels.
 
     Args:
-        file_paths (list of str): List of audio file paths.
-        classes (list of str): List of class names.
-        batch_size (int): Number of samples per batch.
-        audio_frontend (str): Audio frontend to use ('librosa' or 'tf').
-        sample_rate (int): Sample rate for audio loading.
-        max_duration (int): Maximum duration per file.
-        chunk_duration (int): Duration per chunk.
-        spec_width (int): Spectrogram width.
-        mixup_alpha (float): Mixup beta distribution parameter.
-        mixup_probability (float): Fraction of batch to apply mixup.
-        mel_bins (int): Number of mel bins.
+        file_paths: List of .wav file paths.
+        classes: List of class names; used to build one-hot labels.
+        batch_size: Number of samples per batch.
+        audio_frontend: 'librosa' or 'tf' (raw-audio frontend).
+        sample_rate: Audio sample rate for loading.
+        max_duration: Max seconds per file to load.
+        chunk_duration: Seconds per training chunk.
+        spec_width: Target number of frames for spectrograms (librosa path).
+        mixup_alpha: Beta distribution parameter; 0 disables mixup.
+        mixup_probability: Fraction of batch to mix.
+        mel_bins: Number of mel bins (librosa path).
 
     Yields:
-        tuple: (batch_samples, batch_labels)
+        (batch_samples, batch_labels)
+        - batch_samples: float32 array of shape
+            (B, mel_bins, spec_width, 1) for 'librosa'
+            (B, sample_rate*chunk_duration, 1) for 'tf'
+        - batch_labels: float32 array of shape (B, num_classes)
     """
     while True:
         idxs = np.random.permutation(len(file_paths))
@@ -196,7 +226,28 @@ def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa',
 
 def load_dataset(file_paths, classes, audio_frontend='librosa', batch_size=32, spec_width=128, mel_bins=48, **kwargs):
     """
-    Create a tf.data.Dataset from a data generator for spectrograms or raw audio.
+    Wrap the Python generator into a tf.data.Dataset with fixed signatures.
+
+    Input spec depends on the chosen frontend:
+      - 'librosa': (None, mel_bins, spec_width, 1)
+      - 'tf':      (None, sample_rate*chunk_duration, 1)
+
+    Args:
+        file_paths: List of .wav file paths.
+        classes: List of class names.
+        audio_frontend: 'librosa' or 'tf'.
+        batch_size: Batch size.
+        spec_width: Number of time frames for spectrograms.
+        mel_bins: Number of mel bins for spectrograms.
+        **kwargs:
+            sample_rate (int): Audio sample rate (default 16000).
+            chunk_duration (int): Seconds per training chunk (default 3).
+            max_duration (int): Max seconds to read per file (default 30).
+            mixup_alpha (float): Mixup Beta parameter.
+            mixup_probability (float): Fraction of samples to mix.
+
+    Returns:
+        A tf.data.Dataset yielding (inputs, labels) with the shapes listed above.
     """
     sr = kwargs.get('sample_rate', 16000)
     cd = kwargs.get('chunk_duration', 3)
@@ -235,14 +286,40 @@ def load_dataset(file_paths, classes, audio_frontend='librosa', batch_size=32, s
 
 class AudioFrontendLayer(tf.keras.layers.Layer):
     """
-    TF audio frontend (quantization-friendly, deterministic across train/eval):
-      - STFT magnitude
-      - Normalize by Hann window L1 norm
-      - Global compression: mag ** (1 / (1 + exp(mag_scale))) [scalar]
-      - FFT -> mel (linear)
-      - Optional affine clamp: clip(gain * mel + bias, 0, 1) for range alignment
-      - Pad/crop to spec_width
-      - Output [B, mel_bins, spec_width, 1]
+    Quantization-friendly audio frontend producing mel spectrogram tensors.
+
+    Processing:
+      1) STFT with Hann window: complex STFT -> magnitude.
+      2) Normalize by Hann window L1 norm (amplitude-correct).
+      3) Global compression on magnitudes:
+           y = max(mag, 1e-4) ** (1 / (1 + exp(mag_scale)))    [scalar mag_scale]
+      4) Linear mel projection using a 1x1 Conv1D initialized with
+         tf.signal.linear_to_mel_weight_matrix.
+      5) Optional affine clamp for display/range alignment:
+           y = clip(out_gain * y + out_bias, 0, 1)
+         (out_gain/out_bias are non-trainable and default to identity.)
+      6) Pad/crop frames to spec_width and transpose to NHWC-like:
+         Output shape [B, mel_bins, spec_width, 1].
+
+    Trainable parameters:
+      - mag_scale (scalar), if trainable_mag_scale=True.
+      - mel projection weights, if trainable_mel=True.
+      - out_gain/out_bias are non-trainable.
+
+    Args:
+        sample_rate: Audio sample rate.
+        chunk_duration: Seconds per input chunk.
+        mel_bins: Number of mel bins.
+        spec_width: Number of output time frames.
+        frame_length: STFT frame length.
+        fft_length: FFT length (defines spectrogram bins).
+        mag_scale_init: Initial value for mag_scale scalar.
+        trainable_mag_scale: Whether mag_scale is learnable.
+        trainable_mel: Whether mel projection weights are learnable.
+        name: Layer name.
+
+    Returns:
+        Tensor of shape [B, mel_bins, spec_width, 1] suitable for CNN backbones.
     """
     def __init__(
         self,
@@ -373,6 +450,12 @@ class AudioFrontendLayer(tf.keras.layers.Layer):
         }
 
 def _make_divisible(v, divisor=8):
+    """
+    Round channel/width values to be divisible by 'divisor' (>= divisor).
+
+    This is useful for TFLite/int8 kernels that prefer channel counts
+    aligned to 8 or 16 for better performance.
+    """
     v = int(v + divisor / 2) // divisor * divisor
     return max(divisor, v)
 
@@ -390,9 +473,42 @@ def build_tiny_model(
     round_to=8,
 ):
     """
-    Build a small CNN model for audio spectrogram classification with fewer params.
-    """
+    Build a compact CNN for audio classification with fewer parameters.
 
+    Frontends:
+      - 'librosa': model input is a mel spectrogram [mel_bins, spec_width, 1].
+      - 'tf':      model input is raw audio [T, 1]; AudioFrontendLayer produces mel.
+
+    Architecture:
+      - Lightweight stem Conv2D with BatchNorm + ReLU6.
+      - Repeated bottlenecked depthwise-separable blocks:
+          1x1 reduce -> Depthwise (factorized 1x3 + 3x1 or 3x3) -> 1x1 project.
+      - Optional residual connections on non-downsampling blocks.
+      - Final block to reach desired embeddings_size.
+      - Head:
+          conv_head=True  -> 1x1 conv to classes, GlobalAveragePooling2D, sigmoid.
+          conv_head=False -> GAP, Dropout, Dense to classes, sigmoid.
+
+    Args:
+        num_mels: Number of mel bins.
+        spec_width: Number of time frames.
+        sample_rate: Sample rate for raw-audio input (tf frontend).
+        chunk_duration: Seconds per raw-audio input (tf frontend).
+        num_classes: Number of output classes.
+        audio_frontend: 'librosa' or 'tf'.
+        alpha: Width multiplier for channels.
+        depth_multiplier: Number of block stages (depth).
+        embeddings_size: Channel size before the head.
+        use_residual: Enable residual in non-strided blocks if shapes match.
+        factorized_dw: Use (1x3)+(3x1) depthwise factorization.
+        conv_head: Use fully-convolutional classification head.
+        stem_channels: Base channels of the stem before applying alpha/rounding.
+        bottleneck_ratio: Ratio for 1x1 reduction inside blocks.
+        round_to: Round channel counts to multiples of this value.
+
+    Returns:
+        A compiled tf.keras.Model ready for training.
+    """
     def ds_bottleneck_block(x, out_filters, residual=False, strides=(1, 1), factorized=True, bn_ratio=0.25):
         in_c = int(x.shape[-1])
         out_c = _make_divisible(out_filters, round_to)
@@ -470,22 +586,29 @@ def build_tiny_model(
 
 def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.001, batch_size=64, patience=5, checkpoint_path="best_model.h5", steps_per_epoch=None, val_steps=None):
     """
-    Train the model with cosine annealing, early stopping, and checkpointing.
+    Train the model with cosine-annealed learning rate, early stopping, and checkpointing.
+
+    Uses Adam optimizer with a CosineDecayRestarts schedule; no ReduceLROnPlateau
+    is used because the optimizer's learning rate is a schedule (not settable).
+
+    Metrics:
+      - ROC AUC (multi-label) monitored on the validation set for early stopping
+        and model checkpointing (monitor='val_roc_auc', mode='max').
 
     Args:
-        model (tf.keras.Model): Model to train.
-        train_dataset (tf.data.Dataset): Training dataset.
-        val_dataset (tf.data.Dataset): Validation dataset.
-        epochs (int): Number of epochs.
-        learning_rate (float): Initial learning rate.
-        batch_size (int): Batch size.
-        patience (int): Early stopping patience.
-        checkpoint_path (str): Path to save best model.
-        steps_per_epoch (int, optional): Training steps per epoch.
-        val_steps (int, optional): Validation steps per epoch.
+        model: A tf.keras.Model.
+        train_dataset: tf.data.Dataset yielding (inputs, labels) for training.
+        val_dataset: tf.data.Dataset yielding (inputs, labels) for validation.
+        epochs: Number of epochs to train.
+        learning_rate: Initial learning rate for the cosine schedule.
+        batch_size: Unused inside (kept for API consistency).
+        patience: Early stopping patience (epochs).
+        checkpoint_path: Where to save the best model.
+        steps_per_epoch: Number of training steps per epoch (required by LR schedule).
+        val_steps: Number of validation steps per epoch.
 
     Returns:
-        History: Keras training history object.
+        tf.keras.callbacks.History: Training history.
     """
 
     # Cosine annealing learning rate schedule
