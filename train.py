@@ -503,7 +503,6 @@ def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.00
         metrics=[
             # tf.keras.metrics.AUC(curve='PR', multi_label=True, name="pr_auc"),
             tf.keras.metrics.AUC(curve='ROC', multi_label=True, name="roc_auc"),
-            # tf.keras.metrics.TopKCategoricalAccuracy(k=3, name="top3_acc")
         ]
     )
 
@@ -514,15 +513,13 @@ def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.00
         tf.keras.callbacks.ModelCheckpoint(
             checkpoint_path, monitor='val_roc_auc', save_best_only=True, mode='max'
         ),
-        tf.keras.callbacks.ReduceLROnPlateau(
-            monitor='val_loss', factor=0.5, patience=patience//2, min_lr=1e-6, verbose=1
-        )
+        # Removed ReduceLROnPlateau because optimizer uses a LearningRateSchedule
     ]
 
     history = model.fit(
         train_dataset,
         validation_data=val_dataset,
-        epochs=args.epochs,
+        epochs=epochs,
         steps_per_epoch=steps_per_epoch,
         validation_steps=val_steps,
         callbacks=callbacks
