@@ -22,7 +22,7 @@ if gpus:
     except Exception as e:
         print(f"Could not set memory growth: {e}")
     
-def dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=30, chunk_duration=3, spec_width=128, mel_bins=64, audio_frontend='librosa'):
+def dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=30, chunk_duration=3, spec_width=128, mel_bins=64, audio_frontend='librosa', tf_frontend_layer=None):
     """
     Load and plot spectrograms from a few audio files for sanity checking.
 
@@ -35,10 +35,33 @@ def dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=30
         spec_width (int): Spectrogram width.
         mel_bins (int): Number of mel bins.
         audio_frontend (str): Audio frontend to use ('librosa' or 'tf').
+        tf_frontend_layer (tf.keras.layers.Layer, optional): If provided and audio_frontend=='tf',
+            use this trained AudioFrontendLayer (e.g., from the trained model) instead of creating a new one.
 
     Returns:
         None
     """
+    # Prepare output dir
+    out_dir = os.path.join("samples")
+    os.makedirs(out_dir, exist_ok=True)
+
+    # If using TF frontend, initialize or reuse trained layer
+    tf_frontend = None
+    if audio_frontend == 'tf':
+        if tf_frontend_layer is not None:
+            tf_frontend = tf_frontend_layer
+        else:
+            tf_frontend = AudioFrontendLayer(
+                sample_rate=sample_rate,
+                chunk_duration=chunk_duration,
+                mel_bins=mel_bins,
+                spec_width=spec_width,
+                name="audio_frontend_sanity"
+            )
+            # Build layer with a dummy input to ensure variables exist
+            dummy = tf.zeros([1, sample_rate * chunk_duration, 1], dtype=tf.float32)
+            _ = tf_frontend(dummy, training=False)
+
     # shuffle file paths
     np.random.shuffle(file_paths)
     for i, path in enumerate(file_paths[:5]):  # Check first 5 files
@@ -59,8 +82,7 @@ def dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=30
                 print(f"No valid spectrograms found for file {path}.")
                 continue
             
-            random_spec = pick_random_samples(sorted_specs, num_samples=1)        
-            plot_spectrogram(random_spec, title=f"Spectrogram for {os.path.basename(path)} - Class: {path.split('/')[-2]}")
+            spec = pick_random_samples(sorted_specs, num_samples=1)     
             
         elif audio_frontend == 'tf':
             sorted_chunks = sort_by_s2n(audio_chunks, threshold=0.5)
@@ -71,11 +93,16 @@ def dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=30
                 continue
             
             random_chunk = pick_random_samples(sorted_chunks, num_samples=1)
-            
-            # save as wav file for inspection
-            output_path = f"samples/{os.path.basename(path)}_{i}.wav"
-            save_wav(random_chunk, output_path, sample_rate=sample_rate)
-    
+            chunk = random_chunk[0] if isinstance(random_chunk, list) else random_chunk
+
+            # Run through TF frontend (use trained layer if provided)
+            inp = np.expand_dims(chunk.astype(np.float32), axis=(0, -1))  # [1, T, 1]
+            spec = tf_frontend(inp, training=False).numpy()[0, :, :, 0]   # [mel_bins, spec_width]
+        else:
+            raise ValueError("Invalid audio frontend. Choose 'librosa' or 'tf'.")
+        
+        plot_spectrogram(spec, title=f"Spectrogram for {os.path.basename(path)} - Class: {path.split('/')[-2]}")
+
 def load_file_paths_from_directory(directory, classes=None):
     """
     Recursively load all .wav file paths from a directory, optionally filtering by class.
@@ -208,14 +235,15 @@ def load_dataset(file_paths, classes, audio_frontend='librosa', batch_size=32, s
 
 class AudioFrontendLayer(tf.keras.layers.Layer):
     """
-    TF audio frontend that is more quantization-friendly:
+    TF audio frontend (quantization-friendly, deterministic across train/eval):
       - STFT magnitude
-      - Optional power compression (e.g., sqrt)
-      - 1x1 Conv1D to project FFT bins -> mel bins (initialized with mel weights)
-      - BatchNorm + ReLU6
-      - Pad/crop frames to spec_width
+      - Normalize by frame_length (fixed scalar)
+      - Global compression: mag ** (1 / (1 + exp(mag_scale))) [scalar]
+      - Clip to [0, 1] to stabilize calibration
+      - 1x1 Conv1D (FFT -> mel), init with mel weights (not trainable by default)
+      - Linear output (no BN/ReLU here)
+      - Pad/crop to spec_width
       - Output [B, mel_bins, spec_width, 1]
-    Avoids per-sample min-max normalization and log() which can hurt int8 quantization.
     """
     def __init__(
         self,
@@ -225,9 +253,9 @@ class AudioFrontendLayer(tf.keras.layers.Layer):
         spec_width,
         frame_length=1024,
         fft_length=1024,
-        quantize_friendly=True,
-        power=0.5,              # None to disable, 0.5 ~ sqrt compression
-        trainable_mel=True,     # allow learning the mel projection
+        mag_scale_init=1.2,       # scalar, applied pre-mel
+        trainable_mag_scale=False,
+        trainable_mel=False,
         name="audio_frontend",
         **kwargs
     ):
@@ -239,20 +267,9 @@ class AudioFrontendLayer(tf.keras.layers.Layer):
         self.frame_length = frame_length
         self.fft_length = fft_length
         self.frame_step = (sample_rate * chunk_duration) // spec_width
-        self.quantize_friendly = quantize_friendly
-        self.power = power
         self.trainable_mel = trainable_mel
 
-        # Sub-layers (created in build to set proper kernel shapes)
-        self.mel_conv = None
-        self.bn = None
-
-    def build(self, input_shape):
-        # Number of FFT spectrogram bins (for real FFT)
-        num_spec_bins = self.fft_length // 2 + 1
-
-        # 1x1 Conv along channels (fft bins) -> mel bins
-        # Input to Conv1D will be [B, frames, fft_bins] with channels_last
+        # Sub-layer created in __init__ for stable serialization
         self.mel_conv = tf.keras.layers.Conv1D(
             filters=self.mel_bins,
             kernel_size=1,
@@ -261,59 +278,88 @@ class AudioFrontendLayer(tf.keras.layers.Layer):
             name="mel_conv",
             trainable=self.trainable_mel,
         )
-        # Manually build to set initial weights
-        self.mel_conv.build(tf.TensorShape([None, None, num_spec_bins]))
+        # compression param (scalar)
+        self.mag_scale_init = float(mag_scale_init)
+        self.trainable_mag_scale = bool(trainable_mag_scale)
+        self.mag_scale = None  # created in build
 
-        # Initialize conv kernel with the mel weight matrix
+    def build(self, input_shape):
+        num_spec_bins = self.fft_length // 2 + 1
+
+        # Build mel conv and initialize with mel weights
+        self.mel_conv.build(tf.TensorShape([None, None, num_spec_bins]))
         mel_w = tf.signal.linear_to_mel_weight_matrix(
             num_mel_bins=self.mel_bins,
             num_spectrogram_bins=num_spec_bins,
             sample_rate=self.sample_rate,
             lower_edge_hertz=150.0,
             upper_edge_hertz=self.sample_rate // 2,
-        ).numpy()  # [fft_bins, mel_bins]
-        # Conv1D kernel shape: [kernel_width=1, in_channels=fft_bins, out_channels=mel_bins]
-        kernel = mel_w.reshape((1, num_spec_bins, self.mel_bins))
+        ).numpy()
+        kernel = mel_w.reshape((1, num_spec_bins, self.mel_bins)).astype(np.float32)
         self.mel_conv.set_weights([kernel])
 
-        self.bn = tf.keras.layers.BatchNormalization(name="mel_bn")
+        # Scalar mag_scale
+        self.mag_scale = self.add_weight(
+            name="mag_scale",
+            shape=(),
+            dtype=tf.float32,
+            initializer=tf.keras.initializers.Constant(self.mag_scale_init),
+            trainable=self.trainable_mag_scale,
+        )
         super().build(input_shape)
 
     def call(self, inputs, training=None):
         # inputs: [B, T, 1]
-        x = tf.squeeze(inputs, axis=-1)  # [B, T]
+        x1d = tf.squeeze(inputs, axis=-1)  # [B, T]
 
-        # STFT -> magnitude
+        # STFT -> magnitude (explicit Hann window for determinism across TF versions)
         stft = tf.signal.stft(
-            x,
+            x1d,
             frame_length=self.frame_length,
             frame_step=self.frame_step,
             fft_length=self.fft_length,
+            window_fn=tf.signal.hann_window,
             pad_end=True,
-        )  # [B, frames, fft_bins] (complex64)
-        mag = tf.abs(stft)  # [B, frames, fft_bins]
+        )  # [B, frames, fft_bins]
+        mag = tf.abs(stft)
 
-        # Optional power-law compression (sqrt by default)
-        if self.power is not None:
-            x = tf.pow(tf.maximum(mag, 1e-6), self.power)
-        else:
-            x = mag
+        # Fixed normalization: roughly bounds magnitudes to [0, ~1]
+        mag = mag / tf.cast(self.frame_length, tf.float32)
 
-        # Project FFT bins -> mel bins with 1x1 Conv1D (quant-friendly)
-        x = self.mel_conv(x)              # [B, frames, mel_bins]
-        x = self.bn(x, training=training) # BN folds into Conv in inference
-        x = tf.nn.relu6(x)                # activation friendly to quantization
+        # Global simple compression on entire spectrogram
+        alpha = tf.math.reciprocal(1.0 + tf.math.exp(self.mag_scale))  # scalar
+        mag = tf.math.pow(tf.maximum(mag, 1e-6), alpha)
 
-        # Pad or crop frames to spec_width
+        # Clip to [0,1] to stabilize quant calibration before first quantized op
+        mag = tf.clip_by_value(mag, 0.0, 1.0)
+
+        # FFT -> mel (linear; no BN/ReLU in frontend)
+        x = self.mel_conv(mag)                 # [B, frames, mel_bins]
+
+        # Pad/crop frames to spec_width
         frames = tf.shape(x)[1]
         pad = tf.maximum(0, self.spec_width - frames)
-        x = tf.pad(x, [[0, 0], [0, pad], [0, 0]])  # [B, >=spec_width, mel_bins]
-        x = x[:, : self.spec_width, :]             # [B, spec_width, mel_bins]
+        x = tf.pad(x, [[0, 0], [0, pad], [0, 0]])
+        x = x[:, : self.spec_width, :]
 
-        # Reorder to [B, mel_bins, spec_width, 1] to match conv input
+        # [B, mel_bins, spec_width, 1]
         x = tf.expand_dims(x, axis=-1)        # [B, spec_width, mel_bins, 1]
         x = tf.transpose(x, [0, 2, 1, 3])     # [B, mel_bins, spec_width, 1]
         return x
+
+    def get_config(self):
+        return {
+            "sample_rate": self.sample_rate,
+            "chunk_duration": self.chunk_duration,
+            "mel_bins": self.mel_bins,
+            "spec_width": self.spec_width,
+            "frame_length": self.frame_length,
+            "fft_length": self.fft_length,
+            "mag_scale_init": self.mag_scale_init,
+            "trainable_mag_scale": self.trainable_mag_scale,
+            "trainable_mel": self.trainable_mel,
+            "name": self.name,
+        }
 
 def build_tiny_model(num_mels, spec_width, sample_rate, chunk_duration, num_classes, audio_frontend='librosa', alpha=0.5, depth_multiplier=2, embeddings_size=256, use_residual=True):
     """
@@ -547,3 +593,18 @@ if __name__ == "__main__":
         val_steps=val_steps
     )
     print(f"Training complete. Model saved to '{args.checkpoint_path}'.")
+
+    # Post-training sanity check with trained TF frontend (mag_scale/BN) if applicable
+    if args.audio_frontend == 'tf':
+        print("Post-training sanity check using trained TF audio frontend...")
+        trained_frontend = model.get_layer("audio_frontend")
+        dataset_sanity_check(
+            file_paths, classes,
+            sample_rate=16000,
+            max_duration=args.max_duration,
+            chunk_duration=args.chunk_duration,
+            spec_width=args.spec_width,
+            mel_bins=args.num_mels,
+            audio_frontend='tf',
+            tf_frontend_layer=trained_frontend
+        )
