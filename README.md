@@ -134,6 +134,7 @@ python convert.py \
 - `--spec_width`: Spectrogram width (should match training, default: `128`)
 - `--chunk_duration`: Duration (seconds) of each audio chunk (should match training, default: `3`)
 - `--validate`: Whether to validate the TFLite model after conversion (default: `True`)
+- `--audio_frontend`: Audio frontend to use for spectrogram generation (`librosa` or `tf`, default: `librosa`)
 
 If you do **not** provide `--data_path_train`, the script will generate random data for quantization (not recommended for best accuracy).
 
