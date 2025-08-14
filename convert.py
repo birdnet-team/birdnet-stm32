@@ -5,7 +5,7 @@ import os
 from train import load_file_paths_from_directory, AudioFrontendLayer 
 from utils.audio import load_audio_file, get_spectrogram_from_audio, sort_by_s2n, pick_random_samples
 
-def representative_data_gen(file_paths, num_mels, spec_width, chunk_duration, audio_frontend, num_samples=100):
+def representative_data_gen(file_paths, sample_rate, num_mels, spec_width, chunk_duration, audio_frontend, num_samples=100):
     """
     Generator for representative dataset for quantization.
     - librosa: yields (1, num_mels, spec_width, 1)
@@ -16,7 +16,7 @@ def representative_data_gen(file_paths, num_mels, spec_width, chunk_duration, au
         audio_chunks = load_audio_file(path, sample_rate=sample_rate, max_duration=30, chunk_duration=chunk_duration)
 
         if audio_frontend == 'librosa':
-            spectrograms = [get_spectrogram_from_audio(chunk, sample_rate, mel_bins=mel_bins, spec_width=spec_width) for chunk in audio_chunks]
+            spectrograms = [get_spectrogram_from_audio(chunk, sample_rate, mel_bins=num_mels, spec_width=spec_width) for chunk in audio_chunks]
             sorted_specs = sort_by_s2n(spectrograms, threshold=0.5)                
             random_spec = pick_random_samples(sorted_specs, num_samples=1)
             sample = random_spec[0] if isinstance(random_spec, list) else random_spec
@@ -28,6 +28,8 @@ def representative_data_gen(file_paths, num_mels, spec_width, chunk_duration, au
             raise ValueError("Invalid audio frontend. Choose 'librosa' or 'tf'.")
 
         sample = np.expand_dims(sample, axis=-1)
+        sample = np.expand_dims(sample, axis=0)  # Add batch dimension
+        
         yield [sample.astype(np.float32)]
 
         count += 1
@@ -52,7 +54,7 @@ def _pearson(a, b, eps=1e-12):
 def validate_models(keras_model, tflite_model_path, rep_data_gen, num_samples=50):
     """
     Compare Keras vs TFLite outputs on rep_data_gen() samples.
-    Prints cosine/MSE/MAE/Pearson stats (also after softmax if shapes match).
+    Prints cosine/MSE/MAE/Pearson stats.
     """
     interpreter = tf.lite.Interpreter(model_path=tflite_model_path)
     interpreter.allocate_tensors()
@@ -125,7 +127,7 @@ def main():
     if os.path.isdir(args.data_path_train):
         file_paths, _ = load_file_paths_from_directory(args.data_path_train)
         rep_data_gen = lambda: representative_data_gen(
-            file_paths, args.num_mels, args.spec_width, args.chunk_duration, args.audio_frontend, num_samples=args.num_samples
+            file_paths, 16000, args.num_mels, args.spec_width, args.chunk_duration, args.audio_frontend, num_samples=args.num_samples
         )
     else:
         print(f"No training data directory provided, generating random representative dataset with {args.num_samples} samples.")
