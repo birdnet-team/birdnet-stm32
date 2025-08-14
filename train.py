@@ -253,8 +253,8 @@ class AudioFrontendLayer(tf.keras.layers.Layer):
         frame_length=1024,
         fft_length=1024,
         mag_scale_init=1.2,
-        trainable_mag_scale=False,
-        trainable_mel=False,
+        trainable_mag_scale=True,
+        trainable_mel=True,
         name="audio_frontend",
         **kwargs
     ):
@@ -372,39 +372,60 @@ class AudioFrontendLayer(tf.keras.layers.Layer):
             "name": self.name,
         }
 
-def build_tiny_model(num_mels, spec_width, sample_rate, chunk_duration, num_classes, audio_frontend='librosa', alpha=0.5, depth_multiplier=2, embeddings_size=256, use_residual=True):
-    """
-    Build a small CNN model for audio spectrogram classification.
+def _make_divisible(v, divisor=8):
+    v = int(v + divisor / 2) // divisor * divisor
+    return max(divisor, v)
 
-    Args:
-        num_mels (int): Number of mel frequency bins.
-        spec_width (int): Width of the spectrogram.
-        sample_rate (int): Sample rate of the audio.
-        chunk_duration (int): Duration of each audio chunk in seconds.
-        num_classes (int): Number of output classes.
-        audio_frontend (str): Audio frontend to use ('librosa' or 'tf').
-        alpha (float): Scaling factor for model size.
-        depth_multiplier (int): Depth multiplier for model.
-        embeddings_size (int): Size of the final embeddings layer.
-        use_residual (bool): Whether to use residual connections.
-    Returns:
-        tf.keras.Model: Keras model.
+def build_tiny_model(
+    num_mels, spec_width, sample_rate, chunk_duration, num_classes,
+    audio_frontend='librosa',
+    alpha=0.75,
+    depth_multiplier=2,
+    embeddings_size=192,
+    use_residual=True,
+    factorized_dw=True,
+    conv_head=True,
+    stem_channels=16,
+    bottleneck_ratio=0.25,
+    round_to=8,
+):
     """
-    
-    def depthwise_separable_block(x, filters, kernel_size=(3, 3), residual=False, strides=1):
-        shortcut = x
-        x = tf.keras.layers.DepthwiseConv2D(kernel_size, padding='same', use_bias=False, strides=strides)(x)
-        x = tf.keras.layers.BatchNormalization()(x)
-        x = tf.keras.layers.ReLU(max_value=6)(x)
-        x = tf.keras.layers.Conv2D(filters, (1, 1), padding='same', use_bias=False)(x)
-        x = tf.keras.layers.BatchNormalization()(x)
-        x = tf.keras.layers.ReLU(max_value=6)(x)
-        # Only add residual if shapes match and strides==1
-        if residual and shortcut.shape[-1] == filters and strides == 1:
-            x = tf.keras.layers.Add()([x, shortcut])
-        return x    
-      
-    # Input layers
+    Build a small CNN model for audio spectrogram classification with fewer params.
+    """
+
+    def ds_bottleneck_block(x, out_filters, residual=False, strides=(1, 1), factorized=True, bn_ratio=0.25):
+        in_c = int(x.shape[-1])
+        out_c = _make_divisible(out_filters, round_to)
+        mid_c = _make_divisible(max(8, int(min(in_c, out_c) * bn_ratio)), round_to)
+
+        # 1x1 reduce
+        y = tf.keras.layers.Conv2D(mid_c, (1, 1), padding='same', use_bias=False)(x)
+        y = tf.keras.layers.BatchNormalization()(y)
+        y = tf.keras.layers.ReLU(max_value=6)(y)
+
+        # Depthwise (optionally factorized)
+        if factorized:
+            y = tf.keras.layers.DepthwiseConv2D((1, 3), padding='same', use_bias=False, strides=strides)(y)
+            y = tf.keras.layers.BatchNormalization()(y)
+            y = tf.keras.layers.ReLU(max_value=6)(y)
+            y = tf.keras.layers.DepthwiseConv2D((3, 1), padding='same', use_bias=False)(y)
+            y = tf.keras.layers.BatchNormalization()(y)
+            y = tf.keras.layers.ReLU(max_value=6)(y)
+        else:
+            y = tf.keras.layers.DepthwiseConv2D((3, 3), padding='same', use_bias=False, strides=strides)(y)
+            y = tf.keras.layers.BatchNormalization()(y)
+            y = tf.keras.layers.ReLU(max_value=6)(y)
+
+        # 1x1 project
+        y = tf.keras.layers.Conv2D(out_c, (1, 1), padding='same', use_bias=False)(y)
+        y = tf.keras.layers.BatchNormalization()(y)
+        y = tf.keras.layers.ReLU(max_value=6)(y)
+
+        if residual and strides == (1, 1) and in_c == out_c:
+            y = tf.keras.layers.Add()([y, x])
+        return y
+
+    # Inputs and frontend
     if audio_frontend == 'tf':
         inputs = tf.keras.Input(shape=(chunk_duration * sample_rate, 1), name='raw_audio_input')
         x = AudioFrontendLayer(sample_rate, chunk_duration, num_mels, spec_width, name="audio_frontend")(inputs)
@@ -414,25 +435,36 @@ def build_tiny_model(num_mels, spec_width, sample_rate, chunk_duration, num_clas
     else:
         raise ValueError("Invalid audio frontend. Choose 'librosa' or 'tf'.")
 
-    # First convolutional layer
-    x = tf.keras.layers.Conv2D(int(32 * alpha), (3, 3), strides=2, padding='same', use_bias=False)(x)
+    # Stem
+    stem_c = _make_divisible(stem_channels * alpha, round_to)
+    x = tf.keras.layers.Conv2D(stem_c, (3, 3), strides=2, padding='same', use_bias=False)(x)
     x = tf.keras.layers.BatchNormalization()(x)
     x = tf.keras.layers.ReLU(max_value=6)(x)
 
-    # DWS conv blocks
-    filters = int(64 * alpha)
+    # Stages
+    c = _make_divisible(48 * alpha, round_to)  # start lower than 64
     for i in range(depth_multiplier):
-        x = depthwise_separable_block(x, filters, residual=use_residual, strides=2)
-        x = depthwise_separable_block(x, filters, residual=use_residual, strides=1)
-        filters = min(filters * 2, int(256 * alpha))
+        # Downsample block
+        x = ds_bottleneck_block(x, c, residual=False, strides=(2, 2), factorized=factorized_dw, bn_ratio=bottleneck_ratio)
+        # Non-downsampling block
+        x = ds_bottleneck_block(x, c, residual=use_residual, strides=(1, 1), factorized=factorized_dw, bn_ratio=bottleneck_ratio)
+        c = _make_divisible(min(c * 2, 256 * alpha), round_to)
 
-    # Final conv block to match embeddings size
-    x = depthwise_separable_block(x, embeddings_size, residual=False, strides=2)
+    # Final block
+    x = ds_bottleneck_block(x, embeddings_size, residual=False, strides=(2, 2), factorized=factorized_dw, bn_ratio=bottleneck_ratio)
 
-    # Global average pooling and output layer
-    x = tf.keras.layers.GlobalAveragePooling2D()(x)
-    x = tf.keras.layers.Dropout(0.5)(x)
-    outputs = tf.keras.layers.Dense(num_classes, activation='sigmoid')(x)
+    # Head
+    if conv_head:
+        x = tf.keras.layers.Conv2D(embeddings_size, (1, 1), padding='same', use_bias=False)(x)
+        x = tf.keras.layers.BatchNormalization()(x)
+        x = tf.keras.layers.ReLU(max_value=6)(x)
+        logits = tf.keras.layers.Conv2D(num_classes, (1, 1), padding='same', use_bias=True)(x)
+        x = tf.keras.layers.GlobalAveragePooling2D()(logits)
+        outputs = tf.keras.layers.Activation('sigmoid')(x)
+    else:
+        x = tf.keras.layers.GlobalAveragePooling2D()(x)
+        x = tf.keras.layers.Dropout(0.5)(x)
+        outputs = tf.keras.layers.Dense(num_classes, activation='sigmoid')(x)
 
     return tf.keras.models.Model(inputs, outputs)
 
@@ -514,7 +546,7 @@ def get_args():
     parser.add_argument('--max_duration', type=int, default=30, help='Max audio duration (seconds)')
     parser.add_argument('--audio_frontend', type=str, default='librosa', choices=['librosa', 'tf'], help='Audio frontend to use. Options: "librosa" or "tf", when using "tf" the fft will be part of the model.')
     parser.add_argument('--embeddings_size', type=int, default=256, help='Size of the final embeddings layer')
-    parser.add_argument('--alpha', type=float, default=1.0, help='Alpha for model scaling')
+    parser.add_argument('--alpha', type=float, default=0.75, help='Alpha for model scaling')
     parser.add_argument('--depth_multiplier', type=int, default=2, help='Depth multiplier for model')
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Mixup alpha')
     parser.add_argument('--mixup_probability', type=float, default=0.25, help='Fraction of batch to apply mixup')
