@@ -207,7 +207,30 @@ def load_dataset(file_paths, classes, audio_frontend='librosa', batch_size=32, s
     return dataset
 
 class AudioFrontendLayer(tf.keras.layers.Layer):
-    def __init__(self, sample_rate, chunk_duration, mel_bins, spec_width, frame_length=1024, fft_length=1024, name="audio_frontend", **kwargs):
+    """
+    TF audio frontend that is more quantization-friendly:
+      - STFT magnitude
+      - Optional power compression (e.g., sqrt)
+      - 1x1 Conv1D to project FFT bins -> mel bins (initialized with mel weights)
+      - BatchNorm + ReLU6
+      - Pad/crop frames to spec_width
+      - Output [B, mel_bins, spec_width, 1]
+    Avoids per-sample min-max normalization and log() which can hurt int8 quantization.
+    """
+    def __init__(
+        self,
+        sample_rate,
+        chunk_duration,
+        mel_bins,
+        spec_width,
+        frame_length=1024,
+        fft_length=1024,
+        quantize_friendly=True,
+        power=0.5,              # None to disable, 0.5 ~ sqrt compression
+        trainable_mel=True,     # allow learning the mel projection
+        name="audio_frontend",
+        **kwargs
+    ):
         super().__init__(name=name, **kwargs)
         self.sample_rate = sample_rate
         self.chunk_duration = chunk_duration
@@ -215,43 +238,77 @@ class AudioFrontendLayer(tf.keras.layers.Layer):
         self.spec_width = spec_width
         self.frame_length = frame_length
         self.fft_length = fft_length
-        # Choose frame_step so that we get ~spec_width frames
         self.frame_step = (sample_rate * chunk_duration) // spec_width
+        self.quantize_friendly = quantize_friendly
+        self.power = power
+        self.trainable_mel = trainable_mel
 
-    def call(self, inputs):
-        # inputs: [B, T, 1]
-        x = tf.squeeze(inputs, axis=-1)  # [B, T]
-        stft = tf.signal.stft(
-            x,
-            frame_length=self.frame_length,
-            frame_step=self.frame_step,
-            fft_length=self.fft_length,
-            pad_end=True,
-        )  # [B, frames, fft_bins]
-        mag = tf.abs(stft)
+        # Sub-layers (created in build to set proper kernel shapes)
+        self.mel_conv = None
+        self.bn = None
 
-        num_spec_bins = tf.shape(mag)[-1]
+    def build(self, input_shape):
+        # Number of FFT spectrogram bins (for real FFT)
+        num_spec_bins = self.fft_length // 2 + 1
+
+        # 1x1 Conv along channels (fft bins) -> mel bins
+        # Input to Conv1D will be [B, frames, fft_bins] with channels_last
+        self.mel_conv = tf.keras.layers.Conv1D(
+            filters=self.mel_bins,
+            kernel_size=1,
+            use_bias=False,
+            padding='valid',
+            name="mel_conv",
+            trainable=self.trainable_mel,
+        )
+        # Manually build to set initial weights
+        self.mel_conv.build(tf.TensorShape([None, None, num_spec_bins]))
+
+        # Initialize conv kernel with the mel weight matrix
         mel_w = tf.signal.linear_to_mel_weight_matrix(
             num_mel_bins=self.mel_bins,
             num_spectrogram_bins=num_spec_bins,
             sample_rate=self.sample_rate,
             lower_edge_hertz=150.0,
             upper_edge_hertz=self.sample_rate // 2,
-        )  # [fft_bins, mel_bins]
-        mel = tf.linalg.matmul(mag, mel_w)  # [B, frames, mel_bins]
+        ).numpy()  # [fft_bins, mel_bins]
+        # Conv1D kernel shape: [kernel_width=1, in_channels=fft_bins, out_channels=mel_bins]
+        kernel = mel_w.reshape((1, num_spec_bins, self.mel_bins))
+        self.mel_conv.set_weights([kernel])
 
-        logmel = tf.math.log(tf.maximum(mel, 1e-6))  # [B, frames, mel_bins]
+        self.bn = tf.keras.layers.BatchNormalization(name="mel_bn")
+        super().build(input_shape)
 
-        # Per-sample min-max normalize
-        min_v = tf.reduce_min(logmel, axis=[1, 2], keepdims=True)
-        max_v = tf.reduce_max(logmel, axis=[1, 2], keepdims=True)
-        x = (logmel - min_v) / (max_v - min_v + 1e-6)  # [B, frames, mel_bins]
+    def call(self, inputs, training=None):
+        # inputs: [B, T, 1]
+        x = tf.squeeze(inputs, axis=-1)  # [B, T]
+
+        # STFT -> magnitude
+        stft = tf.signal.stft(
+            x,
+            frame_length=self.frame_length,
+            frame_step=self.frame_step,
+            fft_length=self.fft_length,
+            pad_end=True,
+        )  # [B, frames, fft_bins] (complex64)
+        mag = tf.abs(stft)  # [B, frames, fft_bins]
+
+        # Optional power-law compression (sqrt by default)
+        if self.power is not None:
+            x = tf.pow(tf.maximum(mag, 1e-6), self.power)
+        else:
+            x = mag
+
+        # Project FFT bins -> mel bins with 1x1 Conv1D (quant-friendly)
+        x = self.mel_conv(x)              # [B, frames, mel_bins]
+        x = self.bn(x, training=training) # BN folds into Conv in inference
+        x = tf.nn.relu6(x)                # activation friendly to quantization
 
         # Pad or crop frames to spec_width
         frames = tf.shape(x)[1]
         pad = tf.maximum(0, self.spec_width - frames)
         x = tf.pad(x, [[0, 0], [0, pad], [0, 0]])  # [B, >=spec_width, mel_bins]
-        x = x[:, : self.spec_width, :]  # [B, spec_width, mel_bins]
+        x = x[:, : self.spec_width, :]             # [B, spec_width, mel_bins]
 
         # Reorder to [B, mel_bins, spec_width, 1] to match conv input
         x = tf.expand_dims(x, axis=-1)        # [B, spec_width, mel_bins, 1]
