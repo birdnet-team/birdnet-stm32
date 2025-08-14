@@ -34,6 +34,74 @@ def representative_data_gen(file_paths, num_mels, spec_width, chunk_duration, au
         if count >= num_samples:
             break
 
+def _cosine(a, b, eps=1e-12):
+    an = np.linalg.norm(a)
+    bn = np.linalg.norm(b)
+    if an < eps or bn < eps:
+        return 1.0 if an < eps and bn < eps else 0.0
+    return float(np.dot(a, b) / (an * bn))
+
+def _pearson(a, b, eps=1e-12):
+    a = a - np.mean(a)
+    b = b - np.mean(b)
+    denom = (np.linalg.norm(a) * np.linalg.norm(b))
+    if denom < eps:
+        return 1.0
+    return float(np.dot(a, b) / denom)
+
+def validate_models(keras_model, tflite_model_path, rep_data_gen, num_samples=50):
+    """
+    Compare Keras vs TFLite outputs on rep_data_gen() samples.
+    Prints cosine/MSE/MAE/Pearson stats (also after softmax if shapes match).
+    """
+    interpreter = tf.lite.Interpreter(model_path=tflite_model_path)
+    interpreter.allocate_tensors()
+    in_det = interpreter.get_input_details()[0]
+    out_det = interpreter.get_output_details()[0]
+    assert in_det['dtype'] == np.float32, "Input type is not float32"
+    assert out_det['dtype'] == np.float32, "Output type is not float32"
+
+    cos_list, mse_list, mae_list, pcc_list = [], [], [], []
+    cos_sm_list, mse_sm_list, mae_sm_list, pcc_sm_list = [], [], [], []
+
+    gen = rep_data_gen()
+    n_eval = 0
+    for i in range(num_samples):
+        try:
+            sample = next(gen)[0]  # (1, ... )
+        except StopIteration:
+            break
+
+        # Keras forward
+        yk = keras_model(sample, training=False).numpy()
+        # TFLite forward
+        interpreter.set_tensor(in_det['index'], sample.astype(np.float32))
+        interpreter.invoke()
+        yt = interpreter.get_tensor(out_det['index'])
+
+        a = yk.reshape(-1).astype(np.float64)
+        b = yt.reshape(-1).astype(np.float64)
+
+        cos_list.append(_cosine(a, b))
+        mse_list.append(float(np.mean((a - b) ** 2)))
+        mae_list.append(float(np.mean(np.abs(a - b))))
+        pcc_list.append(_pearson(a, b))
+
+        n_eval += 1
+
+    print(f"Validated on {n_eval} samples.")
+    if n_eval == 0:
+        return
+
+    def _summ(name, vals):
+        if vals:
+            print(f"{name}: mean={np.mean(vals):.6f}  std={np.std(vals):.6f}  min={np.min(vals):.6f}  max={np.max(vals):.6f}")
+
+    _summ("cosine", cos_list)
+    _summ("mse", mse_list)
+    _summ("mae", mae_list)
+    _summ("pearson_r", pcc_list)
+
 def main():
     parser = argparse.ArgumentParser(description="Convert Keras model to fully quantized TFLite with float32 IO")
     parser.add_argument('--checkpoint_path', type=str, required=True, help='Path to trained .h5 model')
@@ -88,22 +156,10 @@ def main():
         f.write(tflite_model)
     print(f"TFLite model saved to {args.output_path}")
     
-    # Sanity check
+    # Validation (wrapped)
     if args.validate:
         print("Validating the TFLite model...")
-        interpreter = tf.lite.Interpreter(model_path=args.output_path)
-        interpreter.allocate_tensors()
-        input_details = interpreter.get_input_details()
-        output_details = interpreter.get_output_details()
-        assert input_details[0]['dtype'] == np.float32, "Input type is not float32"
-        assert output_details[0]['dtype'] == np.float32, "Output type is not float32"
-        sample_input = next(rep_data_gen())
-        interpreter.set_tensor(input_details[0]['index'], sample_input[0])
-        interpreter.invoke()
-        output_data = interpreter.get_tensor(output_details[0]['index'])
-        print("Validation successful!")
-        print(f"Sample input shape: {sample_input[0].shape}")
-        print(f"Model output shape: {output_data.shape}")
+        validate_models(model, args.output_path, rep_data_gen, num_samples=min(args.num_samples, 50))
         
     # Always save representative samples as .npz
     validation_data = []
