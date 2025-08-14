@@ -90,6 +90,7 @@ python train.py --data_path_train path/to/my/data --val_split 0.2 --checkpoint_p
 - `--spec_width`: Spectrogram width (frames) (default: `128`)
 - `--chunk_duration`: Duration (seconds) of each audio chunk (default: `3`)
 - `--max_duration`: Maximum duration (seconds) per audio file (default: `30`)
+- `--audio_frontend`: Audio frontend to use (`librosa` or `tf`, default: `librosa`)
 - `--embeddings_size`: Size of the final embeddings layer (default: `256`)
 - `--alpha`: Model width scaling factor (default: `1.0`)
 - `--depth_multiplier`: Number of block repetitions in the model (default: `2`)

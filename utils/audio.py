@@ -1,6 +1,7 @@
 import librosa
 import numpy as np
 import matplotlib.pyplot as plt
+import soundfile as sf
 
 # random seed for reproducibility
 np.random.seed(42)
@@ -72,65 +73,90 @@ def get_spectrogram_from_audio(audio, sample_rate=16000, n_fft=1024, mel_bins=48
 
 def get_s2n_from_spectrogram(spectrogram):
     """
-    Compute a normalized signal-to-noise ratio (SNR) from a spectrogram.
+    Compute a signal-to-noise ratio (SNR) from a spectrogram.
 
     Args:
         spectrogram (np.ndarray): 2D spectrogram array.
 
     Returns:
-        np.ndarray: 1D array of normalized SNR values.
+        np.ndarray: SNR value for the spectrogram.
     """
     # get a simple signal to noise ratio from the spectrogram
-    signal = np.mean(spectrogram, axis=1)
-    noise = np.std(spectrogram, axis=1)
+    signal = np.mean(spectrogram)
+    noise = np.std(spectrogram)
     s2n = signal / (noise + 1e-10)  # Avoid division by zero
-    
-    # Normalize SNR to a range of 0 to 1
-    s2n = (s2n - s2n.min()) / (s2n.max() - s2n.min() + 1e-10)
     
     return s2n
 
-def sort_by_s2n(specs, threshold=0.1):
+def get_s2n_from_audio(audio):
     """
-    Sort a list of spectrograms by their mean SNR and filter out low-SNR specs.
+    Compute a signal-to-noise ratio (SNR) from an audio signal.
 
     Args:
-        specs (list of np.ndarray): List of spectrograms.
-        threshold (float): Minimum mean SNR to keep a spectrogram.
+        audio (np.ndarray): 1D audio signal.
 
     Returns:
-        list of np.ndarray: Sorted and filtered spectrograms.
+        float: SNR value.
     """
-    s2n_values = np.array([get_s2n_from_spectrogram(spec).mean() for spec in specs])
-    sorted_indices = np.argsort(s2n_values)[::-1]  # Sort in descending order
-    sorted_specs = [specs[i] for i in sorted_indices]
+    # get a simple signal to noise ratio from the audio
+    signal = np.mean(audio)
+    noise = np.std(audio)
+    s2n = signal / (noise + 1e-10)  # Avoid division by zero
     
-    # Filter out specs with SNR below the threshold but keep at least one chunk
-    filtered_specs = [spec for i, spec in enumerate(sorted_specs) if s2n_values[sorted_indices[i]] >= threshold]
-    if not filtered_specs:
-        filtered_specs = [sorted_specs[0]]           
-    
-    return filtered_specs
+    return s2n
 
-def pick_random_spectrogram(specs, num_samples=1):
+def sort_by_s2n(samples, threshold=0.1):
     """
-    Randomly select one or more spectrograms from a list.
+    Sort a list of samples (spectrograms or raw audio) by their mean SNR and filter out low-SNR specs.
 
     Args:
-        specs (list of np.ndarray): List of spectrograms.
-        num_samples (int): Number of spectrograms to select.
+        samples (list of np.ndarray): List of samples.
+        threshold (float): Minimum mean SNR to keep a sample.
+
+    Returns:
+        list of np.ndarray: Sorted and filtered samples.
+    """
+    
+    if len(samples[0].shape) == 2:
+        s2n_values = np.array([get_s2n_from_spectrogram(spec) for spec in samples])
+    elif len(samples[0].shape) == 1:
+        s2n_values = np.array([get_s2n_from_audio(audio) for audio in samples])
+    else:
+        raise ValueError("Samples must be 1D or 2D arrays (raw audio or spectrograms).")
+    
+    # Normalize SNR values to [0, 1]
+    s2n_values /= (s2n_values.max() + 1e-10)  # Avoid division by zero
+    
+    sorted_indices = np.argsort(s2n_values)[::-1]  # Sort in descending order
+    sorted_samples = [samples[i] for i in sorted_indices]
+    
+    # Filter out samples with SNR below the threshold but keep at least one chunk
+    filtered_samples = [sample for sample, s2n in zip(sorted_samples, s2n_values[sorted_indices]) if s2n >= threshold]
+    if len(filtered_samples) == 0:
+        filtered_samples = [sorted_samples[0]]  # Ensure at least one sample is returned   
+    
+    return filtered_samples
+
+def pick_random_samples(samples, num_samples=1):
+    """
+    Randomly select one or more samples from a list.
+
+    Args:
+        samples (list of np.ndarray): List of samples.
+        num_samples (int): Number of samples to select.
 
     Returns:
         list or np.ndarray: Selected spectrogram(s).
     """
-    # Pick random spectrograms from the list
-    if len(specs) == 0:
+    
+    # Pick random samples from the list
+    if len(samples) == 0:
         return []
-    if num_samples > len(specs):
-        num_samples = len(specs)   
+    if num_samples > len(samples):
+        num_samples = len(samples)   
         
-    indices = np.random.choice(len(specs), size=num_samples, replace=False)
-    return [specs[i] for i in indices] if num_samples > 1 else specs[indices[0]]
+    indices = np.random.choice(len(samples), size=num_samples, replace=False)
+    return [samples[i] for i in indices] if num_samples > 1 else samples[indices[0]]
 
 def plot_spectrogram(spectrogram, title='Spectrogram'):
     """
@@ -151,4 +177,17 @@ def plot_spectrogram(spectrogram, title='Spectrogram'):
     plt.tight_layout()
     plt.show()
     # save the plot to a file
-    plt.savefig(f"specs/{title.replace(' ', '_').lower()}.png")
+    
+def save_wav(audio, path, sample_rate=16000):
+    """
+    Save an audio signal to a WAV file.
+
+    Args:
+        audio (np.ndarray): 1D audio signal.
+        path (str): Path to save the WAV file.
+        sample_rate (int): Sample rate for saving the audio.
+
+    Returns:
+        None
+    """
+    sf.write(path, audio, sample_rate)

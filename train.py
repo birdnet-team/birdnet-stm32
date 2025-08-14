@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import math
 
-from utils.audio import load_audio_file, get_spectrogram_from_audio, sort_by_s2n, pick_random_spectrogram, plot_spectrogram
+from utils.audio import load_audio_file, get_spectrogram_from_audio, sort_by_s2n, pick_random_samples, plot_spectrogram, save_wav
 
 # Mute TensorFlow warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -22,7 +22,7 @@ if gpus:
     except Exception as e:
         print(f"Could not set memory growth: {e}")
     
-def dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=30, chunk_duration=3, spec_width=128, mel_bins=64):
+def dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=30, chunk_duration=3, spec_width=128, mel_bins=64, audio_frontend='librosa'):
     """
     Load and plot spectrograms from a few audio files for sanity checking.
 
@@ -34,6 +34,7 @@ def dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=30
         chunk_duration (int): Duration per chunk.
         spec_width (int): Spectrogram width.
         mel_bins (int): Number of mel bins.
+        audio_frontend (str): Audio frontend to use ('librosa' or 'tf').
 
     Returns:
         None
@@ -45,16 +46,35 @@ def dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=30
         if len(audio_chunks) == 0:
             print(f"File {path} has no valid audio chunks.")
             continue
+        print(f"File {path} has {len(audio_chunks)} chunks of duration {chunk_duration} seconds each.")
         
-        spectrograms = [get_spectrogram_from_audio(chunk, sample_rate, mel_bins=mel_bins, spec_width=spec_width) for chunk in audio_chunks]
-        sorted_specs = sort_by_s2n(spectrograms, threshold=0.33)
-        
-        if len(sorted_specs) == 0:
-            print(f"No valid spectrograms found for file {path}.")
-            continue
-        
-        random_spec = pick_random_spectrogram(sorted_specs, num_samples=1)
-        plot_spectrogram(random_spec, title=f"Spectrogram for {os.path.basename(path)} - Class: {path.split('/')[-2]}")
+        if audio_frontend == 'librosa':
+            spectrograms = [get_spectrogram_from_audio(chunk, sample_rate, mel_bins=mel_bins, spec_width=spec_width) for chunk in audio_chunks]
+            print(f"File {path} has {len(spectrograms)} spectrograms of shape {spectrograms[0].shape}.")
+            
+            sorted_specs = sort_by_s2n(spectrograms, threshold=0.5)
+            print(f"File {path} has {len(sorted_specs)} spectrograms after SNR filtering.")
+                    
+            if len(sorted_specs) == 0:
+                print(f"No valid spectrograms found for file {path}.")
+                continue
+            
+            random_spec = pick_random_samples(sorted_specs, num_samples=1)        
+            plot_spectrogram(random_spec, title=f"Spectrogram for {os.path.basename(path)} - Class: {path.split('/')[-2]}")
+            
+        elif audio_frontend == 'tf':
+            sorted_chunks = sort_by_s2n(audio_chunks, threshold=0.5)
+            print(f"File {path} has {len(sorted_chunks)} audio chunks after SNR filtering.")
+            
+            if len(sorted_chunks) == 0:
+                print(f"No valid audio chunks found for file {path}.")
+                continue
+            
+            random_chunk = pick_random_samples(sorted_chunks, num_samples=1)
+            
+            # save as wav file for inspection
+            output_path = f"samples/{os.path.basename(path)}_{i}.wav"
+            save_wav(random_chunk, output_path, sample_rate=sample_rate)
     
 def load_file_paths_from_directory(directory, classes=None):
     """
@@ -80,7 +100,7 @@ def load_file_paths_from_directory(directory, classes=None):
     
     return file_paths, sorted(classes)
 
-def data_generator(file_paths, classes, batch_size=32, sample_rate=16000, max_duration=30, chunk_duration=3, spec_width=128, mixup_alpha=0.2, mixup_probability=0.25, mel_bins=48):
+def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa', sample_rate=16000, max_duration=30, chunk_duration=3, spec_width=128, mixup_alpha=0.2, mixup_probability=0.25, mel_bins=48):
     """
     Generator that yields batches of spectrograms and one-hot labels, with optional mixup augmentation.
 
@@ -88,6 +108,7 @@ def data_generator(file_paths, classes, batch_size=32, sample_rate=16000, max_du
         file_paths (list of str): List of audio file paths.
         classes (list of str): List of class names.
         batch_size (int): Number of samples per batch.
+        audio_frontend (str): Audio frontend to use ('librosa' or 'tf').
         sample_rate (int): Sample rate for audio loading.
         max_duration (int): Maximum duration per file.
         chunk_duration (int): Duration per chunk.
@@ -97,89 +118,165 @@ def data_generator(file_paths, classes, batch_size=32, sample_rate=16000, max_du
         mel_bins (int): Number of mel bins.
 
     Yields:
-        tuple: (batch_specs, batch_labels)
+        tuple: (batch_samples, batch_labels)
     """
     while True:
         idxs = np.random.permutation(len(file_paths))
         for batch_start in range(0, len(idxs), batch_size):
             batch_idxs = idxs[batch_start:batch_start + batch_size]
-            batch_specs = []
+            batch_samples = []
             batch_labels = []
             for idx in batch_idxs:
                 path = file_paths[idx]
                 audio_chunks = load_audio_file(path, sample_rate, max_duration, chunk_duration)
-                spectrograms = [get_spectrogram_from_audio(chunk, sample_rate, mel_bins=mel_bins, spec_width=spec_width) for chunk in audio_chunks]
-                sorted_specs = sort_by_s2n(spectrograms, threshold=0.33)
-                random_spec = pick_random_spectrogram(sorted_specs, num_samples=1)
-                spec = random_spec[0] if isinstance(random_spec, list) else random_spec
+                
+                if audio_frontend == 'librosa':
+                    spectrograms = [get_spectrogram_from_audio(chunk, sample_rate, mel_bins=mel_bins, spec_width=spec_width) for chunk in audio_chunks]
+                    sorted_specs = sort_by_s2n(spectrograms, threshold=0.5)                
+                    random_spec = pick_random_samples(sorted_specs, num_samples=1)
+                    sample = random_spec[0] if isinstance(random_spec, list) else random_spec
+                elif audio_frontend == 'tf':
+                    sorted_chunks = sort_by_s2n(audio_chunks, threshold=0.5)
+                    random_chunk = pick_random_samples(sorted_chunks, num_samples=1)
+                    sample = random_chunk[0] if isinstance(random_chunk, list) else random_chunk
+                else:
+                    raise ValueError("Invalid audio frontend. Choose 'librosa' or 'tf'.")
 
                 label_str = path.split('/')[-2]
                 one_hot_label = tf.one_hot(classes.index(label_str), depth=len(classes)).numpy()
-
-                spec = np.expand_dims(spec, axis=-1)
-                batch_specs.append(spec.astype(np.float32))
+                
+                sample = np.expand_dims(sample, axis=-1)
+                batch_samples.append(sample.astype(np.float32))
                 batch_labels.append(one_hot_label.astype(np.float32))
 
-            batch_specs = np.stack(batch_specs)
+            batch_samples = np.stack(batch_samples)
             batch_labels = np.stack(batch_labels)
 
-            # Batch-level mixup: only a fraction of samples per batch
+            # Mixup for both shapes (3D raw or 4D spectrogram)
             if mixup_alpha > 0 and mixup_probability > 0:
-                num_mix = int(batch_specs.shape[0] * mixup_probability)
+                num_mix = int(batch_samples.shape[0] * mixup_probability)
                 if num_mix > 0:
-                    mix_indices = np.random.choice(batch_specs.shape[0], size=num_mix, replace=False)
-                    permuted_indices = np.random.permutation(batch_specs.shape[0])
-                    lam = np.random.beta(mixup_alpha, mixup_alpha, size=(num_mix, 1, 1, 1))
-                    lam_labels = lam.squeeze(axis=(2, 3))  # shape (num_mix, 1)
+                    mix_indices = np.random.choice(batch_samples.shape[0], size=num_mix, replace=False)
+                    permuted_indices = np.random.permutation(batch_samples.shape[0])
+                    lam = np.random.beta(mixup_alpha, mixup_alpha, size=(num_mix,))
+                    lam_inp = lam.reshape((num_mix,) + (1,) * (batch_samples.ndim - 1))
+                    lam_lbl = lam.reshape((num_mix, 1))
 
-                    # Mixup only selected samples
-                    batch_specs[mix_indices] = lam * batch_specs[mix_indices] + (1 - lam) * batch_specs[permuted_indices[mix_indices]]
-                    batch_labels[mix_indices] = lam_labels * batch_labels[mix_indices] + (1 - lam_labels) * batch_labels[permuted_indices[mix_indices]]
+                    batch_samples[mix_indices] = lam_inp * batch_samples[mix_indices] + (1 - lam_inp) * batch_samples[permuted_indices[mix_indices]]
+                    batch_labels[mix_indices] = lam_lbl * batch_labels[mix_indices] + (1 - lam_lbl) * batch_labels[permuted_indices[mix_indices]]
 
-            yield batch_specs, batch_labels
+            yield batch_samples, batch_labels
 
-def load_dataset(file_paths, classes, batch_size=32, spec_width=128, mel_bins=48, **kwargs):
+def load_dataset(file_paths, classes, audio_frontend='librosa', batch_size=32, spec_width=128, mel_bins=48, **kwargs):
     """
-    Create a tf.data.Dataset from a data generator for spectrograms and labels.
-
-    Args:
-        file_paths (list of str): List of audio file paths.
-        classes (list of str): List of class names.
-        batch_size (int): Number of samples per batch.
-        spec_width (int): Spectrogram width.
-        mel_bins (int): Number of mel bins.
-        **kwargs: Additional arguments for data_generator.
-
-    Returns:
-        tf.data.Dataset: Prefetched, repeated dataset.
+    Create a tf.data.Dataset from a data generator for spectrograms or raw audio.
     """
+    sr = kwargs.get('sample_rate', 16000)
+    cd = kwargs.get('chunk_duration', 3)
+    chunk_len = sr * cd
+
+    if audio_frontend == 'librosa':
+        input_spec = tf.TensorSpec(shape=(None, mel_bins, spec_width, 1), dtype=tf.float32)
+    elif audio_frontend == 'tf':
+        # Fixed-length raw audio matching model input
+        input_spec = tf.TensorSpec(shape=(None, chunk_len, 1), dtype=tf.float32)
+    else:
+        raise ValueError("Invalid audio frontend. Choose 'librosa' or 'tf'.")
+
     output_signature = (
-        tf.TensorSpec(shape=(None, mel_bins, spec_width, 1), dtype=tf.float32),
-        tf.TensorSpec(shape=(None, len(classes)), dtype=tf.float32)
+        input_spec,
+        tf.TensorSpec(shape=(None, len(classes)), dtype=tf.float32),
     )
+
     dataset = tf.data.Dataset.from_generator(
-        lambda: data_generator(file_paths, classes, batch_size=batch_size, spec_width=spec_width, mel_bins=mel_bins, **kwargs),
+        lambda: data_generator(
+            file_paths, classes,
+            batch_size=batch_size,
+            audio_frontend=audio_frontend,   # forward the frontend
+            sample_rate=sr,
+            max_duration=kwargs.get('max_duration', 30),
+            chunk_duration=cd,
+            spec_width=spec_width,
+            mixup_alpha=kwargs.get('mixup_alpha', 0.0),
+            mixup_probability=kwargs.get('mixup_probability', 0.0),
+            mel_bins=mel_bins,
+        ),
         output_signature=output_signature
     )
-    dataset = dataset.repeat()
-    dataset = dataset.prefetch(tf.data.AUTOTUNE)
+    dataset = dataset.repeat().prefetch(tf.data.AUTOTUNE)
     return dataset
 
-def build_tiny_model(input_shape=(48, 128, 1), num_classes=100, alpha=0.5, depth_multiplier=2, embeddings_size=256, use_residual=True):
+class AudioFrontendLayer(tf.keras.layers.Layer):
+    def __init__(self, sample_rate, chunk_duration, mel_bins, spec_width, frame_length=1024, fft_length=1024, name="audio_frontend", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.sample_rate = sample_rate
+        self.chunk_duration = chunk_duration
+        self.mel_bins = mel_bins
+        self.spec_width = spec_width
+        self.frame_length = frame_length
+        self.fft_length = fft_length
+        # Choose frame_step so that we get ~spec_width frames
+        self.frame_step = (sample_rate * chunk_duration) // spec_width
+
+    def call(self, inputs):
+        # inputs: [B, T, 1]
+        x = tf.squeeze(inputs, axis=-1)  # [B, T]
+        stft = tf.signal.stft(
+            x,
+            frame_length=self.frame_length,
+            frame_step=self.frame_step,
+            fft_length=self.fft_length,
+            pad_end=True,
+        )  # [B, frames, fft_bins]
+        mag = tf.abs(stft)
+
+        num_spec_bins = tf.shape(mag)[-1]
+        mel_w = tf.signal.linear_to_mel_weight_matrix(
+            num_mel_bins=self.mel_bins,
+            num_spectrogram_bins=num_spec_bins,
+            sample_rate=self.sample_rate,
+            lower_edge_hertz=150.0,
+            upper_edge_hertz=self.sample_rate // 2,
+        )  # [fft_bins, mel_bins]
+        mel = tf.linalg.matmul(mag, mel_w)  # [B, frames, mel_bins]
+
+        logmel = tf.math.log(tf.maximum(mel, 1e-6))  # [B, frames, mel_bins]
+
+        # Per-sample min-max normalize
+        min_v = tf.reduce_min(logmel, axis=[1, 2], keepdims=True)
+        max_v = tf.reduce_max(logmel, axis=[1, 2], keepdims=True)
+        x = (logmel - min_v) / (max_v - min_v + 1e-6)  # [B, frames, mel_bins]
+
+        # Pad or crop frames to spec_width
+        frames = tf.shape(x)[1]
+        pad = tf.maximum(0, self.spec_width - frames)
+        x = tf.pad(x, [[0, 0], [0, pad], [0, 0]])  # [B, >=spec_width, mel_bins]
+        x = x[:, : self.spec_width, :]  # [B, spec_width, mel_bins]
+
+        # Reorder to [B, mel_bins, spec_width, 1] to match conv input
+        x = tf.expand_dims(x, axis=-1)        # [B, spec_width, mel_bins, 1]
+        x = tf.transpose(x, [0, 2, 1, 3])     # [B, mel_bins, spec_width, 1]
+        return x
+
+def build_tiny_model(num_mels, spec_width, sample_rate, chunk_duration, num_classes, audio_frontend='librosa', alpha=0.5, depth_multiplier=2, embeddings_size=256, use_residual=True):
     """
     Build a small CNN model for audio spectrogram classification.
 
     Args:
-        input_shape (tuple): Shape of input spectrograms (mel_bins, spec_width, 1).
+        num_mels (int): Number of mel frequency bins.
+        spec_width (int): Width of the spectrogram.
+        sample_rate (int): Sample rate of the audio.
+        chunk_duration (int): Duration of each audio chunk in seconds.
         num_classes (int): Number of output classes.
-        alpha (float): Scaling factor for model width.
-        depth_multiplier (int): Number of block repetitions.
-        embeddings_size (int): Size of final embedding layer.
+        audio_frontend (str): Audio frontend to use ('librosa' or 'tf').
+        alpha (float): Scaling factor for model size.
+        depth_multiplier (int): Depth multiplier for model.
+        embeddings_size (int): Size of the final embeddings layer.
         use_residual (bool): Whether to use residual connections.
-
     Returns:
-        tf.keras.Model: Compiled Keras model.
+        tf.keras.Model: Keras model.
     """
+    
     def depthwise_separable_block(x, filters, kernel_size=(3, 3), residual=False, strides=1):
         shortcut = x
         x = tf.keras.layers.DepthwiseConv2D(kernel_size, padding='same', use_bias=False, strides=strides)(x)
@@ -191,21 +288,34 @@ def build_tiny_model(input_shape=(48, 128, 1), num_classes=100, alpha=0.5, depth
         # Only add residual if shapes match and strides==1
         if residual and shortcut.shape[-1] == filters and strides == 1:
             x = tf.keras.layers.Add()([x, shortcut])
-        return x
+        return x    
+      
+    # Input layers
+    if audio_frontend == 'tf':
+        inputs = tf.keras.Input(shape=(chunk_duration * sample_rate, 1), name='raw_audio_input')
+        x = AudioFrontendLayer(sample_rate, chunk_duration, num_mels, spec_width, name="audio_frontend")(inputs)
+    elif audio_frontend == 'librosa':
+        inputs = tf.keras.Input(shape=(num_mels, spec_width, 1), name='spectrogram_input')
+        x = inputs
+    else:
+        raise ValueError("Invalid audio frontend. Choose 'librosa' or 'tf'.")
 
-    inputs = tf.keras.layers.Input(shape=input_shape)
-    x = tf.keras.layers.Conv2D(int(32 * alpha), (3, 3), strides=2, padding='same', use_bias=False)(inputs)
+    # First convolutional layer
+    x = tf.keras.layers.Conv2D(int(32 * alpha), (3, 3), strides=2, padding='same', use_bias=False)(x)
     x = tf.keras.layers.BatchNormalization()(x)
     x = tf.keras.layers.ReLU(max_value=6)(x)
 
+    # DWS conv blocks
     filters = int(64 * alpha)
     for i in range(depth_multiplier):
         x = depthwise_separable_block(x, filters, residual=use_residual, strides=2)
         x = depthwise_separable_block(x, filters, residual=use_residual, strides=1)
         filters = min(filters * 2, int(256 * alpha))
 
+    # Final conv block to match embeddings size
     x = depthwise_separable_block(x, embeddings_size, residual=False, strides=2)
 
+    # Global average pooling and output layer
     x = tf.keras.layers.GlobalAveragePooling2D()(x)
     x = tf.keras.layers.Dropout(0.5)(x)
     outputs = tf.keras.layers.Dense(num_classes, activation='sigmoid')(x)
@@ -288,6 +398,7 @@ def get_args():
     parser.add_argument('--spec_width', type=int, default=128, help='Spectrogram width')
     parser.add_argument('--chunk_duration', type=int, default=3, help='Audio chunk duration (seconds)')
     parser.add_argument('--max_duration', type=int, default=30, help='Max audio duration (seconds)')
+    parser.add_argument('--audio_frontend', type=str, default='librosa', choices=['librosa', 'tf'], help='Audio frontend to use. Options: "librosa" or "tf", when using "tf" the fft will be part of the model.')
     parser.add_argument('--embeddings_size', type=int, default=256, help='Size of the final embeddings layer')
     parser.add_argument('--alpha', type=float, default=1.0, help='Alpha for model scaling')
     parser.add_argument('--depth_multiplier', type=int, default=2, help='Depth multiplier for model')
@@ -308,7 +419,7 @@ if __name__ == "__main__":
     file_paths, classes = load_file_paths_from_directory(args.data_path_train)
     
     # Perform sanity check on the dataset
-    dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=args.max_duration, chunk_duration=args.chunk_duration, spec_width=args.spec_width, mel_bins=args.num_mels)
+    dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=args.max_duration, chunk_duration=args.chunk_duration, spec_width=args.spec_width, mel_bins=args.num_mels, audio_frontend=args.audio_frontend)
 
     # Split dataset into training and validation sets
     val_split = args.val_split
@@ -320,6 +431,7 @@ if __name__ == "__main__":
     # Create training dataset (with mixup)
     train_dataset = load_dataset(
         train_paths, classes,
+        audio_frontend=args.audio_frontend,
         sample_rate=16000,
         max_duration=args.max_duration,
         chunk_duration=args.chunk_duration,
@@ -333,6 +445,7 @@ if __name__ == "__main__":
     # Create validation dataset (without mixup)
     val_dataset = load_dataset(
         val_paths, classes,
+        audio_frontend=args.audio_frontend,
         sample_rate=16000,
         max_duration=args.max_duration,
         chunk_duration=args.chunk_duration,
@@ -350,7 +463,11 @@ if __name__ == "__main__":
     # Build model
     print("Building model...")
     model = build_tiny_model(
-        input_shape=(args.num_mels, args.spec_width, 1),
+        num_mels=args.num_mels,
+        spec_width=args.spec_width,
+        sample_rate=16000,
+        chunk_duration=args.chunk_duration,
+        audio_frontend=args.audio_frontend,
         num_classes=len(classes),
         alpha=args.alpha,
         depth_multiplier=args.depth_multiplier,
