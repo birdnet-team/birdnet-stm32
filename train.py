@@ -237,11 +237,10 @@ class AudioFrontendLayer(tf.keras.layers.Layer):
     """
     TF audio frontend (quantization-friendly, deterministic across train/eval):
       - STFT magnitude
-      - Normalize by frame_length (fixed scalar)
+      - Normalize by Hann window L1 norm
       - Global compression: mag ** (1 / (1 + exp(mag_scale))) [scalar]
-      - Clip to [0, 1] to stabilize calibration
-      - 1x1 Conv1D (FFT -> mel), init with mel weights (not trainable by default)
-      - Linear output (no BN/ReLU here)
+      - FFT -> mel (linear)
+      - Optional affine clamp: clip(gain * mel + bias, 0, 1) for range alignment
       - Pad/crop to spec_width
       - Output [B, mel_bins, spec_width, 1]
     """
@@ -253,7 +252,7 @@ class AudioFrontendLayer(tf.keras.layers.Layer):
         spec_width,
         frame_length=1024,
         fft_length=1024,
-        mag_scale_init=1.2,       # scalar, applied pre-mel
+        mag_scale_init=1.2,
         trainable_mag_scale=False,
         trainable_mel=False,
         name="audio_frontend",
@@ -269,7 +268,6 @@ class AudioFrontendLayer(tf.keras.layers.Layer):
         self.frame_step = (sample_rate * chunk_duration) // spec_width
         self.trainable_mel = trainable_mel
 
-        # Sub-layer created in __init__ for stable serialization
         self.mel_conv = tf.keras.layers.Conv1D(
             filters=self.mel_bins,
             kernel_size=1,
@@ -278,15 +276,26 @@ class AudioFrontendLayer(tf.keras.layers.Layer):
             name="mel_conv",
             trainable=self.trainable_mel,
         )
-        # compression param (scalar)
         self.mag_scale_init = float(mag_scale_init)
         self.trainable_mag_scale = bool(trainable_mag_scale)
         self.mag_scale = None  # created in build
 
+        # Affine clamp params (non-trainable; set by calibration)
+        self.out_gain = self.add_weight(
+            name="out_gain", shape=(), dtype=tf.float32,
+            initializer=tf.keras.initializers.Constant(1.0), trainable=False
+        )
+        self.out_bias = self.add_weight(
+            name="out_bias", shape=(), dtype=tf.float32,
+            initializer=tf.keras.initializers.Constant(0.0), trainable=False
+        )
+
+        # Precompute Hann window L1 norm for normalization
+        self._hann_l1 = None
+
     def build(self, input_shape):
         num_spec_bins = self.fft_length // 2 + 1
 
-        # Build mel conv and initialize with mel weights
         self.mel_conv.build(tf.TensorShape([None, None, num_spec_bins]))
         mel_w = tf.signal.linear_to_mel_weight_matrix(
             num_mel_bins=self.mel_bins,
@@ -298,7 +307,6 @@ class AudioFrontendLayer(tf.keras.layers.Layer):
         kernel = mel_w.reshape((1, num_spec_bins, self.mel_bins)).astype(np.float32)
         self.mel_conv.set_weights([kernel])
 
-        # Scalar mag_scale
         self.mag_scale = self.add_weight(
             name="mag_scale",
             shape=(),
@@ -306,13 +314,16 @@ class AudioFrontendLayer(tf.keras.layers.Layer):
             initializer=tf.keras.initializers.Constant(self.mag_scale_init),
             trainable=self.trainable_mag_scale,
         )
+
+        # Hann L1 norm (sum of window) as a constant scalar
+        hann = tf.signal.hann_window(self.frame_length)
+        self._hann_l1 = tf.reduce_sum(hann)
         super().build(input_shape)
 
     def call(self, inputs, training=None):
         # inputs: [B, T, 1]
         x1d = tf.squeeze(inputs, axis=-1)  # [B, T]
 
-        # STFT -> magnitude (explicit Hann window for determinism across TF versions)
         stft = tf.signal.stft(
             x1d,
             frame_length=self.frame_length,
@@ -323,18 +334,19 @@ class AudioFrontendLayer(tf.keras.layers.Layer):
         )  # [B, frames, fft_bins]
         mag = tf.abs(stft)
 
-        # Fixed normalization: roughly bounds magnitudes to [0, ~1]
-        mag = mag / tf.cast(self.frame_length, tf.float32)
+        # Normalize by Hann L1 norm (amplitude-correct)
+        mag = mag / tf.cast(self._hann_l1, tf.float32)
 
-        # Global simple compression on entire spectrogram
+        # Scalar power compression
         alpha = tf.math.reciprocal(1.0 + tf.math.exp(self.mag_scale))  # scalar
-        mag = tf.math.pow(tf.maximum(mag, 1e-6), alpha)
+        mag = tf.math.pow(tf.maximum(mag, 1e-4), alpha)
 
-        # Clip to [0,1] to stabilize quant calibration before first quantized op
-        mag = tf.clip_by_value(mag, 0.0, 1.0)
+        # FFT -> mel (linear)
+        x = self.mel_conv(mag)  # [B, frames, mel_bins]
 
-        # FFT -> mel (linear; no BN/ReLU in frontend)
-        x = self.mel_conv(mag)                 # [B, frames, mel_bins]
+        # Optional affine clamp (defaults to identity)
+        x = self.out_gain * x + self.out_bias
+        x = tf.clip_by_value(x, 0.0, 1.0)
 
         # Pad/crop frames to spec_width
         frames = tf.shape(x)[1]
@@ -342,7 +354,6 @@ class AudioFrontendLayer(tf.keras.layers.Layer):
         x = tf.pad(x, [[0, 0], [0, pad], [0, 0]])
         x = x[:, : self.spec_width, :]
 
-        # [B, mel_bins, spec_width, 1]
         x = tf.expand_dims(x, axis=-1)        # [B, spec_width, mel_bins, 1]
         x = tf.transpose(x, [0, 2, 1, 3])     # [B, mel_bins, spec_width, 1]
         return x
