@@ -648,7 +648,7 @@ def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.00
     # Cosine annealing learning rate schedule
     lr_schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
         initial_learning_rate=learning_rate,
-        first_decay_steps=steps_per_epoch * epochs // 4,
+        first_decay_steps=steps_per_epoch * epochs // 10, 
         t_mul=2.0,
         m_mul=1.0,
         alpha=1e-4
@@ -700,8 +700,8 @@ def get_args():
     parser.add_argument('--chunk_duration', type=int, default=3, help='Audio chunk duration (seconds)')
     parser.add_argument('--max_duration', type=int, default=30, help='Max audio duration (seconds)')
     parser.add_argument('--audio_frontend', type=str, default='librosa', choices=['librosa', 'tf'], help='Audio frontend to use. Options: "librosa" or "tf", when using "tf" the fft will be part of the model.')
-    parser.add_argument('--embeddings_size', type=int, default=256, help='Size of the final embeddings layer')
-    parser.add_argument('--alpha', type=float, default=0.75, help='Alpha for model scaling')
+    parser.add_argument('--embeddings_size', type=int, default=512, help='Size of the final embeddings layer')
+    parser.add_argument('--alpha', type=float, default=1.0, help='Alpha for model scaling')
     parser.add_argument('--depth_multiplier', type=int, default=2, help='Depth multiplier for model')
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Mixup alpha')
     parser.add_argument('--mixup_probability', type=float, default=0.25, help='Fraction of batch to apply mixup')

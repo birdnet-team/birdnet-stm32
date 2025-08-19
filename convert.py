@@ -238,7 +238,7 @@ def main():
     # Validation (wrapped)
     if args.validate:
         print("Validating the TFLite model...")
-        validate_models(model, args.output_path, rep_data_gen, num_samples=min(args.num_samples, 50))
+        validate_models(model, args.output_path, rep_data_gen, num_samples=min(args.num_samples, 100))
         
     # Always save representative samples as .npz
     validation_data = []
