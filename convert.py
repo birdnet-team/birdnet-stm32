@@ -191,7 +191,7 @@ def main():
     parser.add_argument('--data_path_train', type=str, default='', help='Path to training data for representative dataset. If not provided, will generate random data.')
     parser.add_argument('--snr_threshold', type=float, default=None, help='SNR threshold for representative data (None disables filtering; recommended).')
     parser.add_argument('--reps_per_file', type=int, default=4, help='How many representative samples to draw per file.')
-    parser.add_argument('--num_samples', type=int, default=1024, help='Number of samples for representative dataset')  # increased default
+    parser.add_argument('--num_samples', type=int, default=1024, help='Number of samples for representative dataset')
     parser.add_argument('--num_mels', type=int, default=64, help='Number of mel bins (should match training)')
     parser.add_argument('--spec_width', type=int, default=128, help='Spectrogram width (should match training)')
     parser.add_argument('--chunk_duration', type=int, default=3, help='Audio chunk duration in seconds (should match training)')

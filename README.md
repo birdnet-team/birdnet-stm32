@@ -131,7 +131,9 @@ python convert.py \
 - `--checkpoint_path`: Path to the trained model checkpoint (reuired, should be a `.h5` file)
 - `--output_path`: Path to save the converted model. If not provided, it will save to the same directory as the checkpoint
 - `--data_path_train`: Path to your training data directory (used for representative dataset during quantization)
-- `--num_samples`: Number of samples from the training data to use for quantization (default: `100`)
+- `--snr_threshold`: SNR threshold for representative data (default: `None`, which disables filtering)
+- `--reps_per_file`: How many representative samples to draw per file (default: `4`)
+- `--num_samples`: Number of samples from the training data to use for quantization (default: `1024`)
 - `--num_mels`: Number of mel bins for spectrograms (should match training, default: `64`)
 - `--spec_width`: Spectrogram width (should match training, default: `128`)
 - `--chunk_duration`: Duration (seconds) of each audio chunk (should match training, default: `3`)
