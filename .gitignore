@@ -10,6 +10,8 @@ validation/
 notes.txt
 config_n6l.json
 config.json
+test/
+dev/
 
 # VSCode
 .vscode

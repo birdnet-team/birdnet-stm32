@@ -186,7 +186,7 @@ def main():
     parser.add_argument('--checkpoint_path', type=str, required=True, help='Path to trained .h5 model')
     parser.add_argument('--output_path', type=str, default='', help='Path to save .tflite model. If not provided, will save to same directory as checkpoint.')
     parser.add_argument('--data_path_train', type=str, default='', help='Path to training data for representative dataset. If not provided, will generate random data.')
-    parser.add_argument('--num_samples', type=int, default=100, help='Number of samples for representative dataset')
+    parser.add_argument('--num_samples', type=int, default=256, help='Number of samples for representative dataset')
     parser.add_argument('--num_mels', type=int, default=64, help='Number of mel bins (should match training)')
     parser.add_argument('--spec_width', type=int, default=128, help='Spectrogram width (should match training)')
     parser.add_argument('--chunk_duration', type=int, default=3, help='Audio chunk duration in seconds (should match training)')

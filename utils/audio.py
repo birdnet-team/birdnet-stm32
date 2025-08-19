@@ -19,15 +19,23 @@ def load_audio_file(path, sample_rate=16000, max_duration=30, chunk_duration=3):
     Returns:
         np.ndarray: Array of shape (num_chunks, chunk_size) containing audio chunks.
     """
-    # Load the audio file
-    audio, sr = librosa.load(path, sr=sample_rate, mono=True, duration=max_duration)
     
+    try: 
+        # Load the audio file
+        audio, sr = librosa.load(path, sr=sample_rate, mono=True, duration=max_duration)
+        
+    except:
+        print(f"Error loading audio file {path}. Returning random noise.")
+        # If loading fails, return random noise
+        audio = np.random.randn(sample_rate * chunk_duration)
+        sr = sample_rate
+        
     # Split into chunks and pad if necessary
     chunk_size = sample_rate * chunk_duration
     num_chunks = len(audio) // chunk_size + (1 if len(audio) % chunk_size > 0 else 0)
     audio = librosa.util.fix_length(audio, size=num_chunks * chunk_size)
     audio = audio[:num_chunks * chunk_size]  # Ensure the audio length is a multiple of chunk size
-    chunks = audio.reshape(num_chunks, chunk_size)
+    chunks = audio.reshape(num_chunks, chunk_size)       
         
     return chunks
 

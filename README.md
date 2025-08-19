@@ -85,6 +85,7 @@ python train.py --data_path_train path/to/my/data --val_split 0.2 --checkpoint_p
 
 **Arguments:**
 - `--data_path_train`: Path to your training dataset (default: `/data/train`)
+- `--max_samples`: Maximum number of samples per class for training (default: `None`, which means all samples will be used)
 - `--num_mels`: Number of mel bins for spectrograms (default: `64`)
 - `--spec_width`: Spectrogram width (frames) (default: `128`)
 - `--chunk_duration`: Duration (seconds) of each audio chunk (default: `3`)
@@ -105,6 +106,8 @@ python train.py --data_path_train path/to/my/data --val_split 0.2 --checkpoint_p
 The script will print progress and save the best model.
 
 Note: The conversion script expects a `.h5` model file, so ensure you specify the correct `--checkpoint_path`.
+
+Hint: You can specify dedicated **Noise** classes in your training data to help the model learn to ignore background noise. Files in folders named 'noise', 'silence', 'background', or 'other' will be treated as noise samples.
 
 ## Model conversion & validation
 

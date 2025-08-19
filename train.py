@@ -111,34 +111,60 @@ def dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=30
         
         plot_spectrogram(spec, title=f"Spectrogram for {os.path.basename(path)} - Class: {path.split('/')[-2]}")
 
-def load_file_paths_from_directory(directory, classes=None):
+def load_file_paths_from_directory(directory, classes=None, max_samples=None):
     """
     Recursively collect .wav files from a dataset directory.
 
     Directory structure is expected to be class-sublabeled (root/class_x/*.wav).
-    If classes is None, class names are inferred from subdirectories of 'directory'.
+    If classes is provided, only those class names are included.
+    If max_samples is set (>0), up to max_samples files are taken per class (uniform random).
+
+    Note:
+      Noise-like classes ('noise', 'silence', 'background', 'other') are removed from the
+      returned classes list, but their files remain in file_paths (treated as negatives later).
 
     Args:
         directory: Root dataset directory.
         classes: Optional list of class names to include.
+        max_samples: Optional limit on the number of files per class.
 
     Returns:
         (file_paths, classes_sorted)
-        - file_paths: Shuffled list of absolute file paths.
-        - classes_sorted: Sorted list of class names.
+        - file_paths: Shuffled list of absolute file paths (limited per class if requested).
+        - classes_sorted: Sorted list of class names (noise-like classes removed).
     """
-    # Load all audio file paths from the specified directory
-    file_paths = []
-    classes = tf.io.gfile.listdir(directory) if classes is None else classes
+    per_class = {}
+
+    # Walk and bucket files by their immediate parent directory (class)
     for root, _, files in tf.io.gfile.walk(directory):
-        for file in files:
-            if file.endswith('.wav') and (classes is None or tf.io.gfile.join(root, file).split('/')[-2] in classes):
-                file_paths.append(tf.io.gfile.join(root, file))
-                
-    # Shuffle the file paths
-    np.random.shuffle(file_paths)            
-    
-    return file_paths, sorted(classes)
+        for fname in files:
+            if not fname.endswith('.wav'):
+                continue
+            full_path = tf.io.gfile.join(root, fname)
+            parent_class = os.path.basename(os.path.dirname(full_path))
+
+            # Filter by provided classes (if any)
+            if classes is not None and parent_class not in classes:
+                continue
+
+            per_class.setdefault(parent_class, []).append(full_path)
+
+    # Enforce max_samples per class (uniform random)
+    all_paths = []
+    for cls, paths in per_class.items():
+        if max_samples is not None and max_samples > 0 and len(paths) > max_samples:
+            idx = np.random.permutation(len(paths))[:max_samples]
+            paths = [paths[i] for i in idx]
+        all_paths.extend(paths)
+
+    # Shuffle combined paths for randomness
+    np.random.shuffle(all_paths)
+
+    # Build classes list from collected keys, excluding noise-like labels
+    noise_classes = {'noise', 'silence', 'background', 'other'}
+    classes_out = sorted([c for c in per_class.keys() if c.lower() not in noise_classes])
+
+    return all_paths, classes_out
 
 def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa', sample_rate=16000, max_duration=30, chunk_duration=3, spec_width=128, mixup_alpha=0.2, mixup_probability=0.25, mel_bins=48):
     """
@@ -186,6 +212,9 @@ def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa',
             for idx in batch_idxs:
                 path = file_paths[idx]
                 audio_chunks = load_audio_file(path, sample_rate, max_duration, chunk_duration)
+                if len(audio_chunks) == 0:
+                    print(f"File {path} has no valid audio chunks.")
+                    continue
                 
                 if audio_frontend == 'librosa':
                     spectrograms = [get_spectrogram_from_audio(chunk, sample_rate, mel_bins=mel_bins, spec_width=spec_width) for chunk in audio_chunks]
@@ -200,7 +229,11 @@ def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa',
                     raise ValueError("Invalid audio frontend. Choose 'librosa' or 'tf'.")
 
                 label_str = path.split('/')[-2]
-                one_hot_label = tf.one_hot(classes.index(label_str), depth=len(classes)).numpy()
+                if label_str.lower() in ['noise', 'silence', 'background', 'other']:
+                    # Noise classes get all-zero one-hot labels
+                    one_hot_label = np.zeros(len(classes), dtype=np.float32)
+                else:
+                    one_hot_label = tf.one_hot(classes.index(label_str), depth=len(classes)).numpy()
                 
                 sample = np.expand_dims(sample, axis=-1)
                 batch_samples.append(sample.astype(np.float32))
@@ -562,7 +595,8 @@ def build_tiny_model(
     for i in range(depth_multiplier):
         # Downsample block
         x = ds_bottleneck_block(x, c, residual=False, strides=(2, 2), factorized=factorized_dw, bn_ratio=bottleneck_ratio)
-        # Non-downsampling block
+        # Non-downsampling blocks
+        x = ds_bottleneck_block(x, c, residual=use_residual, strides=(1, 1), factorized=factorized_dw, bn_ratio=bottleneck_ratio)
         x = ds_bottleneck_block(x, c, residual=use_residual, strides=(1, 1), factorized=factorized_dw, bn_ratio=bottleneck_ratio)
         c = _make_divisible(min(c * 2, 256 * alpha), round_to)
 
@@ -660,6 +694,7 @@ def get_args():
     """
     parser = argparse.ArgumentParser(description="Train iNat-tiny audio classifier")
     parser.add_argument('--data_path_train', type=str, required=True, help='Path to train dataset')
+    parser.add_argument('--max_samples', type=int, default=None, help='Max samples per class for training (None for all)')
     parser.add_argument('--num_mels', type=int, default=64, help='Number of mel bins for spectrogram')
     parser.add_argument('--spec_width', type=int, default=128, help='Spectrogram width')
     parser.add_argument('--chunk_duration', type=int, default=3, help='Audio chunk duration (seconds)')
@@ -682,7 +717,7 @@ if __name__ == "__main__":
     args = get_args()
 
     # Load file paths and classes
-    file_paths, classes = load_file_paths_from_directory(args.data_path_train)
+    file_paths, classes = load_file_paths_from_directory(args.data_path_train, max_samples=args.max_samples)
     
     # Perform sanity check on the dataset
     dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=args.max_duration, chunk_duration=args.chunk_duration, spec_width=args.spec_width, mel_bins=args.num_mels, audio_frontend=args.audio_frontend)
@@ -756,6 +791,12 @@ if __name__ == "__main__":
         val_steps=val_steps
     )
     print(f"Training complete. Model saved to '{args.checkpoint_path}'.")
+    
+    # Save labels to txt file
+    labels_file = args.checkpoint_path.replace('.h5', '_labels.txt')
+    with open(labels_file, 'w') as f:
+        for cls in classes:
+            f.write(f"{cls}\n")
 
     # Post-training sanity check with trained TF frontend (mag_scale/BN) if applicable
     if args.audio_frontend == 'tf':
