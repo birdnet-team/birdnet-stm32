@@ -2,64 +2,67 @@ import argparse
 import tensorflow as tf
 import numpy as np
 import os
+import random
 from train import load_file_paths_from_directory, AudioFrontendLayer 
 from utils.audio import load_audio_file, get_spectrogram_from_audio, sort_by_s2n, pick_random_samples
 
-def representative_data_gen(file_paths, sample_rate, num_mels, spec_width, chunk_duration, audio_frontend, num_samples=100):
+def representative_data_gen(file_paths, sample_rate, num_mels, spec_width, chunk_duration, audio_frontend, num_samples=100, snr_threshold=None, reps_per_file=4):
     """
     Build a representative dataset generator for TFLite PTQ calibration.
 
-    Data sources:
-      - If audio_frontend == 'librosa':
-          Loads audio, computes mel spectrograms (num_mels x spec_width),
-          filters by SNR, picks one random spectrogram per file, and yields
-          (1, num_mels, spec_width, 1) float32 tensors.
-      - If audio_frontend == 'tf':
-          Loads audio, splits into chunk_duration-second chunks, filters by SNR,
-          picks one random chunk per file, and yields (1, T, 1) float32 tensors
-          where T = sample_rate * chunk_duration.
-
-    Args:
-        file_paths (list[str]): Paths to wav files (class layout not required here).
-        sample_rate (int): Target sample rate for loading/processing audio.
-        num_mels (int): Mel bins for librosa frontend (ignored for 'tf').
-        spec_width (int): Time frames for librosa frontend (ignored for 'tf').
-        chunk_duration (int): Chunk size in seconds for 'tf' raw-audio inputs.
-        audio_frontend (str): 'librosa' or 'tf' to match the trained model input.
-        num_samples (int): Max number of samples to yield for calibration.
-
-    Yields:
-        list[np.ndarray]: A single-element list containing one input batch tensor
-            shaped either (1, num_mels, spec_width, 1) or (1, T, 1), dtype float32.
-
-    Notes:
-        - Samples are SNR-filtered and randomly selected to better cover typical inputs.
-        - Provide ≥ 512 diverse samples for stable activation range calibration.
+    - snr_threshold=None: no filtering (recommended for PTQ; captures full dynamic range)
+    - reps_per_file: how many random samples to draw per file (improves coverage)
     """
-    count = 0
+    random.seed(42)
+    np.random.seed(42)
+    T = int(sample_rate * chunk_duration)
+    yielded = 0
+
     for path in file_paths:
+        if yielded >= num_samples:
+            break
+
         audio_chunks = load_audio_file(path, sample_rate=sample_rate, max_duration=30, chunk_duration=chunk_duration)
 
+        # Choose source sequences based on frontend and normalize to a list
         if audio_frontend == 'librosa':
-            spectrograms = [get_spectrogram_from_audio(chunk, sample_rate, mel_bins=num_mels, spec_width=spec_width) for chunk in audio_chunks]
-            sorted_specs = sort_by_s2n(spectrograms, threshold=0.5)                
-            random_spec = pick_random_samples(sorted_specs, num_samples=1)
-            sample = random_spec[0] if isinstance(random_spec, list) else random_spec
+            specs = [get_spectrogram_from_audio(ch, sample_rate, mel_bins=num_mels, spec_width=spec_width) for ch in audio_chunks]
+            if snr_threshold is not None:
+                specs = sort_by_s2n(specs, threshold=snr_threshold)
+            # Keep only valid arrays
+            pool = [s for s in specs if s is not None and np.size(s) > 0]
         elif audio_frontend == 'tf':
-            sorted_chunks = sort_by_s2n(audio_chunks, threshold=0.5)
-            random_chunk = pick_random_samples(sorted_chunks, num_samples=1)
-            sample = random_chunk[0] if isinstance(random_chunk, list) else random_chunk
+            if snr_threshold is not None:
+                audio_chunks = sort_by_s2n(audio_chunks, threshold=snr_threshold)
+            # Convert ndarray (N, chunk_len) to list-of-1D arrays
+            if isinstance(audio_chunks, np.ndarray):
+                pool = [audio_chunks[i] for i in range(audio_chunks.shape[0])]
+            else:
+                pool = list(audio_chunks)
+            pool = [c for c in pool if c is not None and np.size(c) > 0]
         else:
             raise ValueError("Invalid audio frontend. Choose 'librosa' or 'tf'.")
 
-        sample = np.expand_dims(sample, axis=-1)
-        sample = np.expand_dims(sample, axis=0)  # Add batch dimension
-        
-        yield [sample.astype(np.float32)]
+        if len(pool) == 0:
+            continue
 
-        count += 1
-        if count >= num_samples:
-            break
+        # Draw multiple reps per file for better coverage
+        k = min(reps_per_file, len(pool))
+        sel_idx = np.random.choice(len(pool), size=k, replace=len(pool) < k)
+        for j in sel_idx:
+            if yielded >= num_samples:
+                break
+            sample = pool[j]
+            # Ensure proper input shape
+            if audio_frontend == 'tf':
+                x = sample[:T]
+                if x.shape[0] < T:
+                    x = np.pad(x, (0, T - x.shape[0]))
+                x = x.astype(np.float32)[None, :, None]
+            else:
+                x = sample.astype(np.float32)[None, :, :, None]
+            yield [x]
+            yielded += 1
 
 def _cosine(a, b, eps=1e-12):
     """
@@ -186,7 +189,9 @@ def main():
     parser.add_argument('--checkpoint_path', type=str, required=True, help='Path to trained .h5 model')
     parser.add_argument('--output_path', type=str, default='', help='Path to save .tflite model. If not provided, will save to same directory as checkpoint.')
     parser.add_argument('--data_path_train', type=str, default='', help='Path to training data for representative dataset. If not provided, will generate random data.')
-    parser.add_argument('--num_samples', type=int, default=256, help='Number of samples for representative dataset')
+    parser.add_argument('--snr_threshold', type=float, default=None, help='SNR threshold for representative data (None disables filtering; recommended).')
+    parser.add_argument('--reps_per_file', type=int, default=4, help='How many representative samples to draw per file.')
+    parser.add_argument('--num_samples', type=int, default=1024, help='Number of samples for representative dataset')  # increased default
     parser.add_argument('--num_mels', type=int, default=64, help='Number of mel bins (should match training)')
     parser.add_argument('--spec_width', type=int, default=128, help='Spectrogram width (should match training)')
     parser.add_argument('--chunk_duration', type=int, default=3, help='Audio chunk duration in seconds (should match training)')
@@ -204,7 +209,8 @@ def main():
     if os.path.isdir(args.data_path_train):
         file_paths, _ = load_file_paths_from_directory(args.data_path_train)
         rep_data_gen = lambda: representative_data_gen(
-            file_paths, 16000, args.num_mels, args.spec_width, args.chunk_duration, args.audio_frontend, num_samples=args.num_samples
+            file_paths, 16000, args.num_mels, args.spec_width, args.chunk_duration, args.audio_frontend,
+            num_samples=args.num_samples, snr_threshold=args.snr_threshold, reps_per_file=args.reps_per_file
         )
     else:
         print(f"No training data directory provided, generating random representative dataset with {args.num_samples} samples.")
@@ -221,6 +227,11 @@ def main():
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     converter.representative_dataset = rep_data_gen
+
+    # Use new quantizer for stability across checkpoints
+    converter._experimental_new_quantizer = True  # uses MLIR quantizer
+
+    # Keep float32 IO; quantize internals
     converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8, tf.lite.OpsSet.TFLITE_BUILTINS]
     converter.inference_input_type = tf.float32
     converter.inference_output_type = tf.float32
