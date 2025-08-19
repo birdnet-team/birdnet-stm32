@@ -2,6 +2,7 @@
 *.png
 *.wav
 best_model.h5
+best_model_labels.txt
 *.keras
 *.tflite
 *.npz
