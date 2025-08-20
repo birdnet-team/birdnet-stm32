@@ -488,7 +488,7 @@ def ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name="ds"):
     y = tf.keras.layers.ReLU(max_value=6, name=f"{name}_pw_relu")(y)
     return y
 
-def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, num_classes, audio_frontend='librosa', alpha=1.0, depth_multiplier=1):
+def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddings_size, num_classes, audio_frontend='librosa', alpha=1.0, depth_multiplier=1):
     """
     Depthwise-separable CNN adhering to STM32N6 constraints.
     - 3x3 depthwise with strides in both frequency (height) and time (width) where needed.
@@ -530,13 +530,20 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, num_cla
         x = ds_conv_block(x, out_ch, stride_f=sf, stride_t=st, name=f"stage{si}_ds1")
         for bi in range(2, reps + 1):
             x = ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name=f"stage{si}_ds{bi}")
+            
+    # Final 1x1 conv to embeddings
+    emb_ch = _make_divisible(int(embeddings_size * alpha), 8)
+    x = tf.keras.layers.Conv2D(emb_ch, (1, 1), strides=(1, 1), padding='same', use_bias=False, name="emb_conv")(x)
+    x = tf.keras.layers.BatchNormalization(name="emb_bn")(x)
+    x = tf.keras.layers.ReLU(max_value=6, name="emb_relu")(x)
 
     # Head
     x = tf.keras.layers.GlobalAveragePooling2D(name="gap")(x)
+    x = tf.keras.layers.Dropout(0.5, name="dropout")(x)
     outputs = tf.keras.layers.Dense(num_classes, activation='sigmoid', name="pred")(x)
     return tf.keras.models.Model(inputs, outputs, name="dscnn_audio")
 
-def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.001, batch_size=64, patience=5, checkpoint_path="best_model.h5", steps_per_epoch=None, val_steps=None):
+def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.001, batch_size=64, patience=10, checkpoint_path="best_model.h5", steps_per_epoch=None, val_steps=None):
     """
     Train the model with cosine-annealed learning rate, early stopping, and checkpointing.
 
@@ -610,17 +617,17 @@ def get_args():
     parser.add_argument('--num_mels', type=int, default=64, help='Number of mel bins for spectrogram')
     parser.add_argument('--spec_width', type=int, default=128, help='Spectrogram width')
     parser.add_argument('--chunk_duration', type=int, default=3, help='Audio chunk duration (seconds)')
-    parser.add_argument('--max_duration', type=int, default=30, help='Max audio duration (seconds)')
+    parser.add_argument('--max_duration', type=int, default=60, help='Max audio duration (seconds)')
     parser.add_argument('--audio_frontend', type=str, default='librosa', choices=['librosa', 'tf'], help='Audio frontend to use. Options: "librosa" or "tf", when using "tf" the fft will be part of the model.')
-    parser.add_argument('--embeddings_size', type=int, default=512, help='Size of the final embeddings layer')
+    parser.add_argument('--embeddings_size', type=int, default=256, help='Size of the final embeddings layer')
     parser.add_argument('--alpha', type=float, default=1.0, help='Alpha for model scaling')
-    parser.add_argument('--depth_multiplier', type=int, default=2, help='Depth multiplier for model')
+    parser.add_argument('--depth_multiplier', type=int, default=1, help='Depth multiplier for model')
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Mixup alpha')
     parser.add_argument('--mixup_probability', type=float, default=0.25, help='Fraction of batch to apply mixup')
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
     parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate')
-    parser.add_argument('--patience', type=int, default=5, help='Early stopping patience')
+    parser.add_argument('--patience', type=int, default=10, help='Early stopping patience')
     parser.add_argument('--val_split', type=float, default=0.2, help='Validation split ratio')
     parser.add_argument('--checkpoint_path', type=str, default='checkpoints/best_model.h5', help='Path to save best model')
     return parser.parse_args()
@@ -684,6 +691,7 @@ if __name__ == "__main__":
         num_classes=len(classes),
         alpha=args.alpha,
         depth_multiplier=args.depth_multiplier,
+        embeddings_size=args.embeddings_size
     )
     
     model.summary()
