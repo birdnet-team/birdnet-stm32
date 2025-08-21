@@ -6,7 +6,7 @@ import soundfile as sf
 # random seed for reproducibility
 np.random.seed(42)
 
-def load_audio_file(path, sample_rate=16000, max_duration=30, chunk_duration=3):
+def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3):
     """
     Load an audio file, resample to the given sample rate, and split into fixed-length chunks.
 
@@ -39,7 +39,7 @@ def load_audio_file(path, sample_rate=16000, max_duration=30, chunk_duration=3):
         
     return chunks
 
-def get_spectrogram_from_audio(audio, sample_rate=16000, n_fft=1024, mel_bins=48, spec_width=128):
+def get_spectrogram_from_audio(audio, sample_rate=22050, n_fft=1024, mel_bins=48, spec_width=128):
     """
     Compute a normalized mel spectrogram from an audio chunk.
 
@@ -188,7 +188,7 @@ def plot_spectrogram(spectrogram, title='Spectrogram'):
     plt.savefig(f"samples/{title}.png")
     
     
-def save_wav(audio, path, sample_rate=16000):
+def save_wav(audio, path, sample_rate=22050):
     """
     Save an audio signal to a WAV file.
 

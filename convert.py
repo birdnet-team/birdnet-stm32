@@ -3,7 +3,7 @@ import tensorflow as tf
 import numpy as np
 import os
 import random
-from train import load_file_paths_from_directory, AudioFrontendLayer 
+from train import load_file_paths_from_directory, AudioFrontendLayer, N6ConvFrontend
 from utils.audio import load_audio_file, get_spectrogram_from_audio, sort_by_s2n, pick_random_samples
 
 def representative_data_gen(file_paths, sample_rate, num_mels, spec_width, chunk_duration, audio_frontend, num_samples=100, snr_threshold=None, reps_per_file=4):
@@ -192,6 +192,7 @@ def main():
     parser.add_argument('--snr_threshold', type=float, default=None, help='SNR threshold for representative data (None disables filtering; recommended).')
     parser.add_argument('--reps_per_file', type=int, default=4, help='How many representative samples to draw per file.')
     parser.add_argument('--num_samples', type=int, default=1024, help='Number of samples for representative dataset')
+    parser.add_argument('--sample_rate', type=int, default=22050, help='Sample rate for audio files (should match training)')
     parser.add_argument('--num_mels', type=int, default=64, help='Number of mel bins (should match training)')
     parser.add_argument('--spec_width', type=int, default=128, help='Spectrogram width (should match training)')
     parser.add_argument('--chunk_duration', type=int, default=3, help='Audio chunk duration in seconds (should match training)')
@@ -202,20 +203,20 @@ def main():
     # Load model
     model = tf.keras.models.load_model(args.checkpoint_path, 
                                        compile=False, 
-                                       custom_objects={'AudioFrontendLayer': AudioFrontendLayer} if args.audio_frontend == 'tf' else None)
+                                       custom_objects={'N6ConvFrontend': N6ConvFrontend} if args.audio_frontend == 'tf' else None)
     print(f"Loaded model from {args.checkpoint_path}")
 
     # Representative dataset generator (from files or random)
     if os.path.isdir(args.data_path_train):
         file_paths, _ = load_file_paths_from_directory(args.data_path_train)
         rep_data_gen = lambda: representative_data_gen(
-            file_paths, 16000, args.num_mels, args.spec_width, args.chunk_duration, args.audio_frontend,
+            file_paths, args.sample_rate, args.num_mels, args.spec_width, args.chunk_duration, args.audio_frontend,
             num_samples=args.num_samples, snr_threshold=args.snr_threshold, reps_per_file=args.reps_per_file
         )
     else:
         print(f"No training data directory provided, generating random representative dataset with {args.num_samples} samples.")
         def rep_data_gen():
-            sample_rate = 16000
+            sample_rate = args.sample_rate
             target_len = sample_rate * args.chunk_duration
             for _ in range(args.num_samples):
                 if args.audio_frontend == 'librosa':

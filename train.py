@@ -1,8 +1,10 @@
 import os
 import librosa
 import numpy as np
+from typing import Iterable, Optional, Tuple
 import matplotlib.pyplot as plt
 import tensorflow as tf
+from tensorflow.keras import layers
 import math
 
 from utils.audio import load_audio_file, get_spectrogram_from_audio, sort_by_s2n, pick_random_samples, plot_spectrogram, save_wav
@@ -22,7 +24,7 @@ if gpus:
     except Exception as e:
         print(f"Could not set memory growth: {e}")
     
-def dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=30, chunk_duration=3, spec_width=128, mel_bins=64, audio_frontend='librosa', tf_frontend_layer=None):
+def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30, chunk_duration=3, spec_width=128, mel_bins=64, audio_frontend='librosa', tf_frontend_layer=None):
     """
     Run a quick sanity check and save spectrogram images for a few files.
 
@@ -111,6 +113,34 @@ def dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=30
         
         plot_spectrogram(spec, title=f"Spectrogram for {os.path.basename(path)} - Class: {path.split('/')[-2]}")
 
+def get_classes_with_most_samples(directory, n_classes=25, include_noise=False):
+    
+    """    Get the most common classes from the dataset directory.      
+    Args:
+        n_classes (int): Number of classes to return.
+        include_noise (bool): Whether to include noise-like classes.
+    Returns:
+        list: Sorted list of class names.
+    """
+    
+    classes = {} # 'class_name': num_samples
+    noise_classes = {'noise', 'silence', 'background', 'other'}
+    
+    for root, dirs, files in os.walk(directory):
+        for fname in files:
+            if not fname.endswith('.wav'):
+                continue
+            class_name = os.path.basename(root)
+            if not include_noise and class_name.lower() in noise_classes:
+                continue
+            classes[class_name] = classes.get(class_name, 0) + 1
+            
+    # Sort by number of samples, descending
+    sorted_classes = sorted(classes.items(), key=lambda x: x[1], reverse=True)
+    
+    # Return only the class names, up to n_classes
+    return [cls for cls, _ in sorted_classes[:n_classes]]    
+
 def load_file_paths_from_directory(directory, classes=None, max_samples=None):
     """
     Recursively collect .wav files from a dataset directory.
@@ -166,7 +196,7 @@ def load_file_paths_from_directory(directory, classes=None, max_samples=None):
 
     return all_paths, classes_out
 
-def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa', sample_rate=16000, max_duration=30, chunk_duration=3, spec_width=128, mixup_alpha=0.2, mixup_probability=0.25, mel_bins=48):
+def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa', sample_rate=22050, max_duration=30, chunk_duration=3, spec_width=128, mixup_alpha=0.2, mixup_probability=0.25, mel_bins=48):
     """
     Yield batches of model-ready samples and one-hot labels with optional mixup.
 
@@ -330,16 +360,175 @@ def load_dataset(file_paths, classes, audio_frontend='librosa', batch_size=32, s
     dataset = dataset.repeat().prefetch(tf.data.AUTOTUNE)
     return dataset
 
-class AudioFrontendLayer(tf.keras.layers.Layer):
+class N6ConvFrontend(layers.Layer):
+    """Like V2, but anti-alias uses AveragePooling (GPU+NPU friendly).
+
+    anti_alias_mode: "avg" (default), "dw" (depthwise 1x3), or "none".
     """
-    Conv2D 3x3 frontend (HW-friendly on STM32N6).
-    - Reshape raw audio to [frames_src, subband_width] raster (subband_width=6 by default).
-    - Conv2D 3x3, stride 1 (keeps HW fast path).
-    - AvgPool2D(2x1) stages to downsample time to ~spec_width (powers of two), then static slice.
-    Output: [B, mel_bins, spec_width, 1]
+    def __init__(
+        self,
+        n_bins: int = 64,
+        channels: Iterable[int] = (24, 32, 48, 64, 64, 64, 64),
+        stride_plan: Iterable[int] | None = (4, 2, 2, 2, 2, 2, 2),
+        target_frames: Optional[int] = None,
+        input_samples: int = 48_000,
+        anti_alias_mode: str = "avg",
+        use_preemphasis: bool = False,
+        compression: str = "tanh",
+        smoothing_pool: int = 3,
+        out_layout: str = "2d",
+        name: Optional[str] = None,
+        **kwargs,
+    ):
+        super().__init__(name=name, **kwargs)
+        if smoothing_pool not in (1, 2, 3):
+            raise ValueError("smoothing_pool must be 1, 2, or 3")
+        if compression not in ("hard_swish", "tanh", "none"):
+            raise ValueError("compression must be 'hard_swish', 'tanh', or 'none'.")
+        if out_layout not in ("2d", "1d"):
+            raise ValueError("out_layout must be '2d' or '1d'")
+        if anti_alias_mode not in ("avg", "dw", "none"):
+            raise ValueError("anti_alias_mode must be 'avg', 'dw', or 'none'")
+        if target_frames is not None and target_frames <= 0:
+            raise ValueError("target_frames must be positive when provided")
+        if input_samples <= 0:
+            raise ValueError("input_samples must be positive")
+
+        self.n_bins = int(n_bins)
+        self.channels = tuple(int(c) for c in channels)
+        self.anti_alias_mode = anti_alias_mode
+        self.use_preemphasis = bool(use_preemphasis)
+        self.compression = compression
+        self.smoothing_pool = int(smoothing_pool)
+        self.out_layout = out_layout
+        self.input_samples = int(input_samples)
+        self.target_frames = int(target_frames) if target_frames is not None else None
+
+        # Stride plan (same as V2)
+        if self.target_frames is not None:
+            self.stride_plan = N6ConvFrontendV2._make_stride_plan(self.input_samples, self.target_frames, len(self.channels))
+        else:
+            sp = tuple(int(s) for s in stride_plan)
+            if not all(s in (1, 2, 4) for s in sp):
+                raise ValueError("stride_plan values must be in {1,2,4}")
+            if len(sp) != len(self.channels):
+                raise ValueError("channels and stride_plan must have same length")
+            self.stride_plan = sp
+
+        # Shared pieces
+        self._expand_h = layers.Lambda(lambda x: tf.expand_dims(x, axis=1), name="expand_h")
+        self._relu = layers.Activation("relu")
+        self._square = layers.Multiply(name="square")
+        self._pool = layers.AveragePooling2D(pool_size=(1, self.smoothing_pool), strides=(1, 1), padding="same")
+
+        # Optional pre-emphasis
+        self.pre_depthwise = None
+        if self.use_preemphasis:
+            self.pre_depthwise = layers.DepthwiseConv2D((1,3), strides=(1,1), padding="same", use_bias=False, name="pre_dw1x3")
+
+        # Build DS stacks
+        self.lpf = []       # either avgpool or dw1x3
+        self.ds_dw = []
+        self.ds_pw = []
+        for i, (ch, s) in enumerate(zip(self.channels, self.stride_plan)):
+            if self.anti_alias_mode == "avg" and s in (2,4):
+                self.lpf.append(layers.AveragePooling2D(pool_size=(1,3), strides=(1,1), padding="same", name=f"ds{i+1}_lpf_avg1x3"))
+            elif self.anti_alias_mode == "dw" and s in (2,4):
+                self.lpf.append(layers.DepthwiseConv2D((1,3), strides=(1,1), padding="same", use_bias=False, name=f"ds{i+1}_lpf1x3"))
+            else:
+                self.lpf.append(None)
+            self.ds_dw.append(layers.DepthwiseConv2D((1,3), strides=(s,s), padding="same", use_bias=False, name=f"ds{i+1}_dw1x3_s{s}"))
+            self.ds_pw.append(layers.Conv2D(ch, (1,1), padding="same", use_bias=True, name=f"ds{i+1}_pw1x1"))
+
+        if self.compression == "hard_swish":
+            self._compress = layers.Activation("hard_swish")
+        elif self.compression == "tanh":
+            self._compress = layers.Activation("tanh")
+        else:
+            self._compress = None
+
+        self._bin_mixer = layers.Conv2D(self.n_bins, (1,1), padding="same", use_bias=True, name="bins_1x1")
+        self._to_2d = layers.Permute((3,2,1), name="to_F_T_1")
+
+    def call(self, inputs, training=None):
+        x = inputs
+        if x.shape.rank == 2:
+            x = tf.expand_dims(x, axis=-1)
+        elif x.shape.rank != 3:
+            raise ValueError("Input must be (B,T) or (B,T,1)")
+        x = self._expand_h(x)
+
+        if self.pre_depthwise is not None:
+            x = self.pre_depthwise(x); x = tf.nn.relu(x)
+
+        for lpf, dw, pw in zip(self.lpf, self.ds_dw, self.ds_pw):
+            if lpf is not None: x = lpf(x)
+            x = dw(x); x = pw(x); x = tf.nn.relu(x)
+
+        x = tf.nn.relu(x); x = self._square([x, x]); x = self._pool(x)
+        if self._compress is not None: x = self._compress(x)
+        x = self._bin_mixer(x)
+        if self.out_layout == "2d":
+            x = self._to_2d(x)
+        else:
+            x = tf.squeeze(x, axis=1)
+        return x
+
+    def compute_output_shape(self, input_shape):
+        if len(input_shape) == 2: batch, t = input_shape
+        else: batch, t, _ = input_shape
+        def ceil_div(a,b): return None if a is None else (a+b-1)//b
+        T = t
+        for s in self.stride_plan: T = ceil_div(T, s)
+        return (batch, self.n_bins, T, 1) if self.out_layout=="2d" else (batch, T, self.n_bins)
+
+    def get_config(self):
+        cfg = super().get_config()
+        cfg.update({
+            "n_bins": self.n_bins,
+            "channels": self.channels,
+            "stride_plan": self.stride_plan,
+            "target_frames": self.target_frames,
+            "input_samples": self.input_samples,
+            "anti_alias_mode": self.anti_alias_mode,
+            "use_preemphasis": self.use_preemphasis,
+            "compression": self.compression,
+            "smoothing_pool": self.smoothing_pool,
+            "out_layout": self.out_layout,
+        })
+        return cfg
+
+class AudioFrontendLayer(layers.Layer):
     """
-    def __init__(self, sample_rate, chunk_duration, mel_bins, spec_width,
-                 subband_width=6, name="audio_frontend", **kwargs):
+    Learned, NPU-friendly audio frontend.
+
+    Pipeline:
+      1) Reshape raw audio [B, T, 1] into a raster [B, frames_src, subband_width, 1]
+         where frames_src = ceil(T / subband_width).
+      2) Two 3x3 Conv2D (+BN+ReLU), stride 1, filters=mel_bins.
+      3) Collapse subband width to 1 via AveragePooling2D using kernels <= 3.
+      4) Energy detection (square).
+      5) Fixed temporal smoothing: DepthwiseConv2D 3x1 with [1,2,1]/4.
+      6) Per-mel affine (Depthwise 1x1 with bias) to learn gain/bias per channel.
+      7) Piecewise-linear compression y = k1*x + (k2-k1)*relu(x - t), clamped to [0,1].
+      8) Downsample time via a static chain of AveragePooling2D(2x1) until near spec_width.
+      9) Transpose to [B, mel_bins, spec_width, 1] and statically slice.
+
+    All ops are Conv2D/DepthwiseConv2D/AvgPool/ReLU/Mul/Transpose — INT8 friendly and map to NPU.
+    """
+    def __init__(
+        self,
+        sample_rate: int,
+        chunk_duration: int,
+        mel_bins: int,
+        spec_width: int,
+        subband_width: int = 6,
+        k1: float = 0.6,
+        k2: float = 0.15,
+        t: float = 0.2,
+        name: str = "audio_frontend",
+        **kwargs
+    ):
         super().__init__(name=name, **kwargs)
         self.sample_rate = int(sample_rate)
         self.chunk_duration = int(chunk_duration)
@@ -347,51 +536,103 @@ class AudioFrontendLayer(tf.keras.layers.Layer):
         self.spec_width = int(spec_width)
         self.subband_width = int(subband_width)
 
+        # Layers
         self.conv_fb = None
-        # split width pooling into two 1x3 pools if possible (avoid >3 kernel)
+        self.bn_fb1 = None
+        self.conv_fb2 = None
+        self.bn_fb2 = None
         self.pool_width_a = None
         self.pool_width_b = None
-        self.pool_time_layers = []   # chain of 2x1 pools
+        self.pool_time_layers = []
+        self.smooth_dw = None
+        self.mel_affine = None
+
+        # PWL params
+        self._k1_init, self._k2_init, self._t_init = float(k1), float(k2), float(t)
+        self.w_k1 = self.w_k2 = self.w_t = None
+
+        # Static shapes
         self._T = self.sample_rate * self.chunk_duration
         self._pad = 0
         self._frames_src = None
 
     def build(self, input_shape):
-        # Pad T so it’s divisible by subband_width (for reshape)
+        # Raster geometry
         w = self.subband_width
         self._pad = (w - (self._T % w)) % w
         self._frames_src = int((self._T + self._pad) // w)
 
-        # 3x3 learnable filterbank, stride 1 (HW friendly)
-        self.conv_fb = tf.keras.layers.Conv2D(
-            filters=self.mel_bins,
-            kernel_size=(3, 3),
-            strides=(1, 1),
-            padding='same',
-            use_bias=False,
-            activation='relu',
-            name='fb_3x3',
-            trainable=True
+        # Conv stack (3x3, stride 1)
+        self.conv_fb = layers.Conv2D(
+            filters=self.mel_bins, kernel_size=(3, 3), strides=(1, 1),
+            padding='same', use_bias=False, name='fb_3x3_a'
         )
+        self.bn_fb1 = layers.BatchNormalization(name='fb_3x3_a_bn')
+        self.conv_fb2 = layers.Conv2D(
+            filters=self.mel_bins, kernel_size=(3, 3), strides=(1, 1),
+            padding='same', use_bias=False, name='fb_3x3_b'
+        )
+        self.bn_fb2 = layers.BatchNormalization(name='fb_3x3_b_bn')
 
-        # Collapse width W->1 with 1x3 + 1x3 if divisible by 3, else single 1xW
+        # Collapse subband width to 1
         if (self.subband_width % 3) == 0:
-            self.pool_width_a = tf.keras.layers.AveragePooling2D(
+            self.pool_width_a = layers.AveragePooling2D(
                 pool_size=(1, 3), strides=(1, 3), padding='valid', name='pool_width_a'
             )
-            self.pool_width_b = tf.keras.layers.AveragePooling2D(
+            self.pool_width_b = layers.AveragePooling2D(
                 pool_size=(1, self.subband_width // 3),
                 strides=(1, self.subband_width // 3),
                 padding='valid', name='pool_width_b'
             )
         else:
-            self.pool_width_a = tf.keras.layers.AveragePooling2D(
+            self.pool_width_a = layers.AveragePooling2D(
                 pool_size=(1, self.subband_width), strides=(1, self.subband_width),
                 padding='valid', name='pool_width'
             )
             self.pool_width_b = None
 
-        # Time downsampling using only 2x1 AvgPool (powers of two)
+        # Fixed temporal smoothing (DW 3x1 with [1,2,1]/4)
+        self.smooth_dw = layers.DepthwiseConv2D(
+            kernel_size=(3, 1), strides=(1, 1), padding='same',
+            use_bias=False, name='smooth_dw_3x1', trainable=False
+        )
+        self.smooth_dw.build(tf.TensorShape([None, None, 1, self.mel_bins]))
+        k = np.array([1.0, 2.0, 1.0], dtype=np.float32) / 4.0
+        kernel = np.zeros((3, 1, self.mel_bins, 1), dtype=np.float32)
+        for c in range(self.mel_bins):
+            kernel[:, 0, c, 0] = k
+        self.smooth_dw.set_weights([kernel])
+
+        # Per-mel affine (depthwise 1x1 with bias)
+        self.mel_affine = layers.DepthwiseConv2D(
+            kernel_size=(1, 1), depth_multiplier=1, use_bias=True,
+            padding='same', name='mel_affine'
+        )
+
+        # PWL parameters (Keras 3-safe add_weight usage)
+        self.w_k1 = self.add_weight(
+            name="k1",
+            shape=(),
+            dtype=tf.float32,
+            initializer=tf.keras.initializers.Constant(self._k1_init),
+            trainable=True,
+        )
+        self.w_k2 = self.add_weight(
+            name="k2",
+            shape=(),
+            dtype=tf.float32,
+            initializer=tf.keras.initializers.Constant(self._k2_init),
+            trainable=True,
+        )
+        self.w_t = self.add_weight(
+            name="t",
+            shape=(),
+            dtype=tf.float32,
+            initializer=tf.keras.initializers.Constant(self._t_init),
+            trainable=True,
+        )
+
+        # Time downsampling via powers-of-two 2x1 pools
         frames_after = self._frames_src
         ratio = frames_after // self.spec_width if self.spec_width > 0 else 1
         self.pool_time_layers = []
@@ -401,36 +642,52 @@ class AudioFrontendLayer(tf.keras.layers.Layer):
         steps = int(math.log2(pow2)) if pow2 > 1 else 0
         for i in range(steps):
             self.pool_time_layers.append(
-                tf.keras.layers.AveragePooling2D(
+                layers.AveragePooling2D(
                     pool_size=(2, 1), strides=(2, 1), padding='valid', name=f'pool_time_2x1_{i+1}'
                 )
             )
+
         super().build(input_shape)
 
     def call(self, inputs, training=None):
-        # inputs: [B, T, 1]
+        # [B, T, 1] -> pad -> [B, frames_src, subband_width, 1]
         x = inputs
         if self._pad:
             x = tf.pad(x, [[0, 0], [0, self._pad], [0, 0]])
-        # Reshape to [B, frames_src, subband_width, 1]
         B = tf.shape(x)[0]
         x = tf.reshape(x, [B, self._frames_src, self.subband_width, 1])
 
-        # 3x3 Conv2D (stride 1) -> ReLU
-        y = self.conv_fb(x)  # [B, frames_src, subband_width, mel_bins]
+        # 3x3 conv stack
+        y = self.conv_fb(x)
+        y = self.bn_fb1(y, training=training)
+        y = tf.nn.relu(y)
+        y = self.conv_fb2(y)
+        y = self.bn_fb2(y, training=training)
+        y = tf.nn.relu(y)
 
-        # Collapse width to 1 with safe pool sizes
+        # collapse width to 1
         y = self.pool_width_a(y)
         if self.pool_width_b is not None:
-            y = self.pool_width_b(y)  # [B, frames_src, 1, mel_bins]
+            y = self.pool_width_b(y)
 
-        # Downsample time with 2x1 AvgPools (HW-friendly)
+        # energy -> smoothing -> affine -> PWL
+        y = y * y
+        y = self.smooth_dw(y)
+        y = self.mel_affine(y)
+
+        k1 = tf.clip_by_value(self.w_k1, 0.0, 2.0)
+        k2 = tf.clip_by_value(self.w_k2, 0.0, 2.0)
+        t  = tf.clip_by_value(self.w_t,  0.0, 1.0)
+        y = k1 * y + (k2 - k1) * tf.nn.relu(y - t)
+        y = tf.maximum(0.0, tf.minimum(1.0, y))
+
+        # temporal downsampling
         for pool in self.pool_time_layers:
             y = pool(y)
 
-        # Layout to [B, mel_bins, spec_width, 1]
-        y = tf.transpose(y, [0, 3, 1, 2])   # [B, mel_bins, frames, 1]
-        y = y[:, :, :self.spec_width, :]    # static truncate if longer
+        # [B, mel_bins, spec_width, 1]
+        y = tf.transpose(y, [0, 3, 1, 2])
+        y = y[:, :, :self.spec_width, :]
         return y
 
     def get_config(self):
@@ -462,17 +719,17 @@ def ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name="ds"):
       Use 1 or 2 only to stay in NPU fast path.
     """
     in_ch = x.shape[-1]
-    y = tf.keras.layers.DepthwiseConv2D(
+    y = layers.DepthwiseConv2D(
         kernel_size=(3, 3),
         strides=(stride_f, stride_t),
         padding='same',
         use_bias=False,
         name=f"{name}_dw",
     )(x)
-    y = tf.keras.layers.BatchNormalization(name=f"{name}_dw_bn")(y)
-    y = tf.keras.layers.ReLU(max_value=6, name=f"{name}_dw_relu")(y)
+    y = layers.BatchNormalization(name=f"{name}_dw_bn")(y)
+    y = layers.ReLU(max_value=6, name=f"{name}_dw_relu")(y)
 
-    y = tf.keras.layers.Conv2D(
+    y = layers.Conv2D(
         filters=out_ch,
         kernel_size=(1, 1),
         strides=(1, 1),
@@ -480,12 +737,12 @@ def ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name="ds"):
         use_bias=False,
         name=f"{name}_pw",
     )(y)
-    y = tf.keras.layers.BatchNormalization(name=f"{name}_pw_bn")(y)
+    y = layers.BatchNormalization(name=f"{name}_pw_bn")(y)
 
     if (stride_f == 1 and stride_t == 1) and (in_ch is not None and int(in_ch) == int(out_ch)):
-        y = tf.keras.layers.Add(name=f"{name}_add")([x, y])
+        y = layers.Add(name=f"{name}_add")([x, y])
 
-    y = tf.keras.layers.ReLU(max_value=6, name=f"{name}_pw_relu")(y)
+    y = layers.ReLU(max_value=6, name=f"{name}_pw_relu")(y)
     return y
 
 def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddings_size, num_classes, audio_frontend='librosa', alpha=1.0, depth_multiplier=1):
@@ -498,24 +755,23 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
     # Input + frontend
     if audio_frontend == 'tf':
         inputs = tf.keras.Input(shape=(chunk_duration * sample_rate, 1), name='raw_audio_input')
-        x = AudioFrontendLayer(sample_rate=sample_rate, 
-                               chunk_duration=chunk_duration, 
-                               mel_bins=num_mels, 
-                               spec_width=spec_width, 
-                               subband_width=6,
-                               name="audio_frontend"
-                               )(inputs)
-    elif audio_frontend == 'librosa':
+        #x = AudioFrontendLayer(sample_rate=sample_rate,
+        #                       chunk_duration=chunk_duration,
+        #                       mel_bins=num_mels,
+        #                       spec_width=spec_width,
+        #                       subband_width=6,
+        #                       name="audio_frontend")(inputs)
+        x = N6ConvFrontend(input_samples=chunk_duration * sample_rate,
+                           n_bins=num_mels,
+                           name="audio_frontend")(inputs)
+    else:
         inputs = tf.keras.Input(shape=(num_mels, spec_width, 1), name='spectrogram_input')
         x = inputs
-    else:
-        raise ValueError("Invalid audio frontend. Choose 'librosa' or 'tf'.")
-
     # Stem (3x3, stride 1) to lift channels
     stem_ch = _make_divisible(int(24 * alpha), 8)
-    x = tf.keras.layers.Conv2D(stem_ch, (3, 3), strides=(1, 1), padding='same', use_bias=False, name="stem_conv")(x)
-    x = tf.keras.layers.BatchNormalization(name="stem_bn")(x)
-    x = tf.keras.layers.ReLU(max_value=6, name="stem_relu")(x)
+    x = layers.Conv2D(stem_ch, (3, 3), strides=(1, 2), padding='same', use_bias=False, name="stem_conv")(x)
+    x = layers.BatchNormalization(name="stem_bn")(x)
+    x = layers.ReLU(max_value=6, name="stem_relu")(x)
 
     # Stages: (filters, repeats, (stride_f, stride_t))
     # Use stride 2 in both axes early to reduce HxW; last stage keeps 1x1.
@@ -533,17 +789,17 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
             
     # Final 1x1 conv to embeddings
     emb_ch = _make_divisible(int(embeddings_size * alpha), 8)
-    x = tf.keras.layers.Conv2D(emb_ch, (1, 1), strides=(1, 1), padding='same', use_bias=False, name="emb_conv")(x)
-    x = tf.keras.layers.BatchNormalization(name="emb_bn")(x)
-    x = tf.keras.layers.ReLU(max_value=6, name="emb_relu")(x)
+    x = layers.Conv2D(emb_ch, (1, 1), strides=(1, 1), padding='same', use_bias=False, name="emb_conv")(x)
+    x = layers.BatchNormalization(name="emb_bn")(x)
+    x = layers.ReLU(max_value=6, name="emb_relu")(x)
 
     # Head
-    x = tf.keras.layers.GlobalAveragePooling2D(name="gap")(x)
-    x = tf.keras.layers.Dropout(0.5, name="dropout")(x)
-    outputs = tf.keras.layers.Dense(num_classes, activation='sigmoid', name="pred")(x)
+    x = layers.GlobalAveragePooling2D(name="gap")(x)
+    x = layers.Dropout(0.5, name="dropout")(x)
+    outputs = layers.Dense(num_classes, activation='sigmoid', name="pred")(x)
     return tf.keras.models.Model(inputs, outputs, name="dscnn_audio")
 
-def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.001, batch_size=64, patience=10, checkpoint_path="best_model.h5", steps_per_epoch=None, val_steps=None):
+def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.001, batch_size=64, patience=5, checkpoint_path="best_model.h5", steps_per_epoch=None, val_steps=None):
     """
     Train the model with cosine-annealed learning rate, early stopping, and checkpointing.
 
@@ -589,8 +845,8 @@ def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.00
         metrics=[tf.keras.metrics.AUC(curve='ROC', multi_label=True, name="roc_auc")]
     )
     callbacks = [
-        tf.keras.callbacks.EarlyStopping(monitor='val_roc_auc', patience=patience, restore_best_weights=True, mode='max'),
-        tf.keras.callbacks.ModelCheckpoint(checkpoint_path, monitor='val_roc_auc', save_best_only=True, mode='max'),
+        tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=patience, restore_best_weights=True, mode='min'),
+        tf.keras.callbacks.ModelCheckpoint(checkpoint_path, monitor='val_loss', save_best_only=True, mode='min'),
     ]
     history = model.fit(
         train_dataset,
@@ -614,8 +870,9 @@ def get_args():
     parser = argparse.ArgumentParser(description="Train iNat-tiny audio classifier")
     parser.add_argument('--data_path_train', type=str, required=True, help='Path to train dataset')
     parser.add_argument('--max_samples', type=int, default=None, help='Max samples per class for training (None for all)')
+    parser.add_argument('--sample_rate', type=int, default=22050, help='Audio sample rate. Default is 22050 Hz.')
     parser.add_argument('--num_mels', type=int, default=64, help='Number of mel bins for spectrogram')
-    parser.add_argument('--spec_width', type=int, default=128, help='Spectrogram width')
+    parser.add_argument('--spec_width', type=int, default=188, help='Spectrogram width')
     parser.add_argument('--chunk_duration', type=int, default=3, help='Audio chunk duration (seconds)')
     parser.add_argument('--max_duration', type=int, default=60, help='Max audio duration (seconds)')
     parser.add_argument('--audio_frontend', type=str, default='librosa', choices=['librosa', 'tf'], help='Audio frontend to use. Options: "librosa" or "tf", when using "tf" the fft will be part of the model.')
@@ -627,7 +884,6 @@ def get_args():
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
     parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate')
-    parser.add_argument('--patience', type=int, default=10, help='Early stopping patience')
     parser.add_argument('--val_split', type=float, default=0.2, help='Validation split ratio')
     parser.add_argument('--checkpoint_path', type=str, default='checkpoints/best_model.h5', help='Path to save best model')
     return parser.parse_args()
@@ -636,10 +892,13 @@ if __name__ == "__main__":
     args = get_args()
 
     # Load file paths and classes
-    file_paths, classes = load_file_paths_from_directory(args.data_path_train, max_samples=args.max_samples, classes=os.listdir(args.data_path_train)[:10])
+    file_paths, classes = load_file_paths_from_directory(args.data_path_train, 
+                                                         max_samples=250, #args.max_samples, 
+                                                         classes=get_classes_with_most_samples(args.data_path_train, 25, False) # DEBUG: Only use 25 classes for debugging
+                                                         )
     
     # Perform sanity check on the dataset
-    dataset_sanity_check(file_paths, classes, sample_rate=16000, max_duration=args.max_duration, chunk_duration=args.chunk_duration, spec_width=args.spec_width, mel_bins=args.num_mels, audio_frontend=args.audio_frontend)
+    dataset_sanity_check(file_paths, classes, sample_rate=args.sample_rate, max_duration=args.max_duration, chunk_duration=args.chunk_duration, spec_width=args.spec_width, mel_bins=args.num_mels, audio_frontend=args.audio_frontend)
 
     # Split dataset into training and validation sets
     val_split = args.val_split
@@ -652,7 +911,7 @@ if __name__ == "__main__":
     train_dataset = load_dataset(
         train_paths, classes,
         audio_frontend=args.audio_frontend,
-        sample_rate=16000,
+        sample_rate=args.sample_rate,
         max_duration=args.max_duration,
         chunk_duration=args.chunk_duration,
         spec_width=args.spec_width,
@@ -666,7 +925,7 @@ if __name__ == "__main__":
     val_dataset = load_dataset(
         val_paths, classes,
         audio_frontend=args.audio_frontend,
-        sample_rate=16000,
+        sample_rate=args.sample_rate,
         max_duration=args.max_duration,
         chunk_duration=args.chunk_duration,
         spec_width=args.spec_width,
@@ -685,7 +944,7 @@ if __name__ == "__main__":
     model = build_dscnn_model(
         num_mels=args.num_mels,
         spec_width=args.spec_width,
-        sample_rate=16000,
+        sample_rate=args.sample_rate,
         chunk_duration=args.chunk_duration,
         audio_frontend=args.audio_frontend,
         num_classes=len(classes),
@@ -704,7 +963,6 @@ if __name__ == "__main__":
         epochs=args.epochs,
         learning_rate=args.learning_rate,
         batch_size=args.batch_size,
-        patience=args.patience,
         checkpoint_path=args.checkpoint_path,
         steps_per_epoch=steps_per_epoch,
         val_steps=val_steps
@@ -723,7 +981,7 @@ if __name__ == "__main__":
         trained_frontend = model.get_layer("audio_frontend")
         dataset_sanity_check(
             file_paths, classes,
-            sample_rate=16000,
+            sample_rate=args.sample_rate,
             max_duration=args.max_duration,
             chunk_duration=args.chunk_duration,
             spec_width=args.spec_width,
