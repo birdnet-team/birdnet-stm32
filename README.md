@@ -69,83 +69,85 @@ Each folder contains `.wav` files of the respective species. Since we're trainin
 This repo comes with a pre-trained checkpoint (`checkpoints/birdnet_stm32_tiny.h5`) that you can use to test the model conversion and deployment process. To train a custom model, run `train.py` with the desired arguments. 
 
 The script will:
-
-- Split your training data into train and validation sets (using `--val_split`).
+- Split your training data into train and validation sets (--val_split).
 - Split audio files into fixed-length chunks.
-- Generate mel spectrograms from the audio chunks.
-- Build a compact CNN model for audio spectrogram classification.
-- Optionally apply mixup augmentation to the training data.
-- Train the model with early stopping, learning rate scheduling, and checkpointing.
-- Save the best model to the specified path.
+- Generate spectrograms using a selectable frontend:
+  - precomputed/librosa: mel spectrograms computed in utils/audio.py (mag_scale applied there).
+  - hybrid: linear power spectrogram provided to the model; model applies fixed mel (tf.signal) and optional magnitude scaling.
+  - raw/tf: raw audio to model; model does STFT -> fixed mel -> optional magnitude scaling.
+- Build a compact DS-CNN model.
+- Optionally apply mixup augmentation.
+- Train with cosine LR and early stopping; save the best model to .keras.
+- Save a companion <checkpoint>_model_config.json and <checkpoint>_labels.txt.
 
-**Example usage:**
+Example:
 ```bash
-python train.py --data_path_train path/to/my/data --val_split 0.2 --checkpoint_path checkpoints/my_tiny_model.h5
+python train.py \
+  --data_path_train data/train \
+  --val_split 0.2 \
+  --audio_frontend hybrid \
+  --mag_scale pcen \
+  --checkpoint_path checkpoints/my_tiny_model.keras
 ```
 
-**Arguments:**
-- `--data_path_train`: Path to your training dataset (default: `/data/train`)
-- `--max_samples`: Maximum number of samples per class for training (default: `None`, which means all samples will be used)
-- `--num_mels`: Number of mel bins for spectrograms (default: `64`)
-- `--spec_width`: Spectrogram width (frames) (default: `128`)
-- `--chunk_duration`: Duration (seconds) of each audio chunk (default: `3`)
-- `--max_duration`: Maximum duration (seconds) per audio file (default: `30`)
-- `--audio_frontend`: Audio frontend to use (`librosa` or `tf`, default: `librosa`)
-- `--embeddings_size`: Size of the final embeddings layer (default: `256`)
-- `--alpha`: Model width scaling factor (default: `1.0`)
-- `--depth_multiplier`: Number of block repetitions in the model (default: `2`)
-- `--mixup_alpha`: Beta parameter for mixup augmentation (set to `0` to disable, default: `0.2`)
-- `--mixup_probability`: Fraction of batch to apply mixup (set to `0` to disable, default: `0.25`)
-- `--batch_size`: Batch size for training (default: `64`)
-- `--epochs`: Number of training epochs (default: `50`)
-- `--learning_rate`: Initial learning rate (default: `0.001`)
-- `--patience`: Early stopping patience (default: `5`)
-- `--val_split`: Fraction of training data used for validation (default: `0.2`)
-- `--checkpoint_path`: Path to save the best model.
+Arguments:
+- --data_path_train: Path to your training dataset (required)
+- --max_samples: Max files per class for training (default: None = all)
+- --sample_rate: Audio sample rate (default: 22050)
+- --num_mels: Number of mel bins (default: 64)
+- --spec_width: Spectrogram width (frames) (default: 128)
+- --fft_length: FFT length for STFT/linear spec (default: 512)
+- --chunk_duration: Chunk duration in seconds (default: 3)
+- --max_duration: Max seconds to load per file (default: 60)
+- --audio_frontend: precomputed, hybrid, raw, librosa, or tf (default: librosa)
+- --mag_scale: Magnitude compression: pcen | pwl | none (default: pcen)
+- --embeddings_size: Embedding channels before head (default: 512)
+- --alpha: Model width scaling (default: 1.0)
+- --depth_multiplier: Repeats per stage (default: 1)
+- --mixup_alpha: Mixup alpha (0 disables, default: 0.2)
+- --mixup_probability: Fraction of batch to mix (default: 0.25)
+- --batch_size: Batch size (default: 64)
+- --epochs: Number of epochs (default: 50)
+- --learning_rate: Initial LR (default: 0.001)
+- --val_split: Validation split (default: 0.2)
+- --checkpoint_path: Path to save best model (.keras)
 
-The script will print progress and save the best model.
-
-Note: The conversion script expects a `.h5` model file, so ensure you specify the correct `--checkpoint_path`.
-
-Hint: You can specify dedicated **Noise** classes in your training data to help the model learn to ignore background noise. Files in folders named 'noise', 'silence', 'background', or 'other' will be treated as noise samples.
+Notes:
+- The model saves:
+  - checkpoints/my_tiny_model.keras
+  - checkpoints/my_tiny_model_model_config.json (conversion metadata)
+  - checkpoints/my_tiny_model_labels.txt (class names)
+- Noise classes can be added by placing files under folders named 'noise', 'silence', 'background', or 'other'; these are treated as negatives.
 
 ## Model conversion & validation
 
-Run the `convert.py` script to convert the trained model to a fully quantized TensorFlow Lite model (with float32 inputs and outputs, as required for STM32 deployment). The script will:
-- Load the trained Keras model from the specified path.
-- Quantize the model for deployment (weights and activations are quantized, but input/output remain float32).
-- Use a representative dataset (from your training data) for optimal quantization.
-- Save the converted model as a `.tflite` file.
-- Optionally validate the TFLite model after conversion.
+Run convert.py to convert the trained .keras model to a quantized TFLite model (float32 IO).
 
-**Example usage:**
+The script will:
+- Load the trained .keras model (with AudioFrontendLayer).
+- Read <checkpoint>_model_config.json to reconstruct shapes/modes.
+- Build a representative dataset from training data (no SNR filtering).
+- Convert to TFLite with PTQ and save <checkpoint>_quantized.tflite.
 
+Example:
 ```bash
 python convert.py \
-  --checkpoint_path checkpoints/birdnet_stm32_tiny.h5 \
+  --checkpoint_path checkpoints/my_tiny_model.keras \
+  --model_config  checkpoints/my_tiny_model_model_config.json \
   --data_path_train data/train
 ```
 
-**Arguments:**
+Arguments:
+- --checkpoint_path: Path to the trained Keras model (.keras, required)
+- --model_config: Path to <checkpoint>_model_config.json (optional; inferred if omitted)
+- --output_path: Path to save the .tflite (optional; inferred as <checkpoint>_quantized.tflite)
+- --data_path_train: Path to training data for representative dataset (optional; random data used if omitted)
+- --reps_per_file: Representative samples to draw per file (default: 4)
+- --num_samples: Number of representative samples (default: 1024)
 
-- `--checkpoint_path`: Path to the trained model checkpoint (reuired, should be a `.h5` file)
-- `--output_path`: Path to save the converted model. If not provided, it will save to the same directory as the checkpoint
-- `--data_path_train`: Path to your training data directory (used for representative dataset during quantization)
-- `--snr_threshold`: SNR threshold for representative data (default: `None`, which disables filtering)
-- `--reps_per_file`: How many representative samples to draw per file (default: `4`)
-- `--num_samples`: Number of samples from the training data to use for quantization (default: `1024`)
-- `--num_mels`: Number of mel bins for spectrograms (should match training, default: `64`)
-- `--spec_width`: Spectrogram width (should match training, default: `128`)
-- `--chunk_duration`: Duration (seconds) of each audio chunk (should match training, default: `3`)
-- `--validate`: Whether to validate the TFLite model after conversion (default: `True`)
-- `--audio_frontend`: Audio frontend to use for spectrogram generation (`librosa` or `tf`, default: `librosa`)
-
-Note:
-- Match --audio_frontend, --num_mels, --spec_width, and --chunk_duration to training.
-- Provide ≥ 512 diverse representative samples for better activation calibration and higher cosine similarity.
-- If you don’t pass --data_path_train, random data is used (conversion works but accuracy/fidelity may suffer).
-
-After conversion, the script will also run a quick validation to ensure the TFLite model has float32 input/output and can run inference.
+Notes:
+- Match training parameters via the saved model_config.json; no need to pass num_mels/spec_width/etc. to convert.py.
+- Provide >= 512 diverse reps for better quantization calibration.
 
 ### The STM deployment process
 
@@ -343,7 +345,7 @@ Now, we can finally validate the model on the STM32N6570-DK, you can use the `va
 
 ```bash
 ./stedgeai validate \
-  --model  /path/to/birdnet-stm32/checkpoints/birdnet-stm32-tiny.h5 \
+  --model  /path/to/birdnet-stm32/checkpoints/birdnet-stm32-tiny.tflite \
   --target stm32n6 \ 
   --mode target \
   --desc serial:921600 \
