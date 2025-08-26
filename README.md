@@ -128,13 +128,16 @@ The script will:
 - Read <checkpoint>_model_config.json to reconstruct shapes/modes.
 - Build a representative dataset from training data (no SNR filtering).
 - Convert to TFLite with PTQ and save <checkpoint>_quantized.tflite.
+- Optionally validate TFLite vs. Keras outputs on representative samples.
 
 Example:
 ```bash
 python convert.py \
   --checkpoint_path checkpoints/my_tiny_model.keras \
   --model_config  checkpoints/my_tiny_model_model_config.json \
-  --data_path_train data/train
+  --data_path_train data/train \
+  --validate \
+  --validate_samples 256
 ```
 
 Arguments:
@@ -144,10 +147,13 @@ Arguments:
 - --data_path_train: Path to training data for representative dataset (optional; random data used if omitted)
 - --reps_per_file: Representative samples to draw per file (default: 4)
 - --num_samples: Number of representative samples (default: 1024)
+- --validate: If set, runs a Keras vs. TFLite validation pass after conversion
+- --validate_samples: Max samples to use for validation (default: 128)
 
 Notes:
-- Match training parameters via the saved model_config.json; no need to pass num_mels/spec_width/etc. to convert.py.
-- Provide >= 512 diverse reps for better quantization calibration.
+- Validation compares float32 Keras outputs to float32 TFLite outputs on the same inputs using cosine similarity, MSE, MAE, and Pearson r.
+- For meaningful validation, pass --data_path_train so samples come from real audio; otherwise random inputs
+- Validation samples are saved as `.npz` and can be used to validate the model on the STM32N6570-DK later
 
 ### The STM deployment process
 

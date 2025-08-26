@@ -68,6 +68,113 @@ def representative_data_gen(file_paths, cfg, num_samples=100, reps_per_file=4):
                 x = sample.astype(np.float32)[None, :, :, None]
             yield [x]
             yielded += 1
+            
+def _cosine(a, b, eps=1e-12):
+    """
+    Compute cosine similarity between two 1D arrays.
+
+    Args:
+        a (np.ndarray): Flattened predictions from Keras.
+        b (np.ndarray): Flattened predictions from TFLite.
+        eps (float): Small value to avoid division by zero.
+
+    Returns:
+        float: Cosine similarity in [-1, 1]. Returns 1.0 if both vectors are near-zero,
+               else 0.0 if only one vector is near-zero.
+    """
+    an = np.linalg.norm(a)
+    bn = np.linalg.norm(b)
+    if an < eps or bn < eps:
+        return 1.0 if an < eps and bn < eps else 0.0
+    return float(np.dot(a, b) / (an * bn))
+
+def _pearson(a, b, eps=1e-12):
+    """
+    Compute Pearson correlation coefficient between two 1D arrays.
+
+    Args:
+        a (np.ndarray): Flattened predictions from Keras.
+        b (np.ndarray): Flattened predictions from TFLite.
+        eps (float): Small value to guard against zero variance.
+
+    Returns:
+        float: Pearson's r in [-1, 1]. Returns 1.0 if both vectors have near-zero variance.
+    """
+    a = a - np.mean(a)
+    b = b - np.mean(b)
+    denom = (np.linalg.norm(a) * np.linalg.norm(b))
+    if denom < eps:
+        return 1.0
+    return float(np.dot(a, b) / denom)
+
+def validate_models(keras_model, tflite_model_path, rep_data_gen, num_samples=50):
+    """
+    Validate TFLite vs. Keras outputs on representative samples.
+
+    Runs both models on up to num_samples inputs from rep_data_gen() and reports:
+      - cosine similarity
+      - mean squared error (mse)
+      - mean absolute error (mae)
+      - Pearson correlation coefficient (pearson_r)
+
+    Assumptions:
+      - The TFLite model uses float32 I/O (converter.inference_input/output_type=float32).
+      - Internal ops may be int8 (PTQ), which this compares against float32 Keras.
+
+    Args:
+        keras_model (tf.keras.Model): Loaded Keras model (.h5 or .keras).
+        tflite_model_path (str): Path to the converted .tflite file.
+        rep_data_gen (Callable[[], Iterator[list[np.ndarray]]]): Generator factory that
+            yields single-element lists with one input batch tensor per iteration.
+        num_samples (int): Max number of samples to evaluate.
+    """
+    interpreter = tf.lite.Interpreter(model_path=tflite_model_path)
+    interpreter.allocate_tensors()
+    in_det = interpreter.get_input_details()[0]
+    out_det = interpreter.get_output_details()[0]
+    assert in_det['dtype'] == np.float32, "Input type is not float32"
+    assert out_det['dtype'] == np.float32, "Output type is not float32"
+
+    cos_list, mse_list, mae_list, pcc_list = [], [], [], []
+    cos_sm_list, mse_sm_list, mae_sm_list, pcc_sm_list = [], [], [], []
+
+    gen = rep_data_gen()
+    n_eval = 0
+    for i in range(num_samples):
+        try:
+            sample = next(gen)[0]  # (1, ... )
+        except StopIteration:
+            break
+
+        # Keras forward
+        yk = keras_model(sample, training=False).numpy()
+        # TFLite forward
+        interpreter.set_tensor(in_det['index'], sample.astype(np.float32))
+        interpreter.invoke()
+        yt = interpreter.get_tensor(out_det['index'])
+
+        a = yk.reshape(-1).astype(np.float64)
+        b = yt.reshape(-1).astype(np.float64)
+
+        cos_list.append(_cosine(a, b))
+        mse_list.append(float(np.mean((a - b) ** 2)))
+        mae_list.append(float(np.mean(np.abs(a - b))))
+        pcc_list.append(_pearson(a, b))
+
+        n_eval += 1
+
+    print(f"Validated on {n_eval} samples.")
+    if n_eval == 0:
+        return
+
+    def _summ(name, vals):
+        if vals:
+            print(f"{name}: mean={np.mean(vals):.6f}  std={np.std(vals):.6f}  min={np.min(vals):.6f}  max={np.max(vals):.6f}")
+
+    _summ("cosine", cos_list)
+    _summ("mse", mse_list)
+    _summ("mae", mae_list)
+    _summ("pearson_r", pcc_list)
 
 def main():
     """
@@ -80,6 +187,8 @@ def main():
     parser.add_argument('--data_path_train', type=str, default='', help='Path to training data directory for representative dataset.')
     parser.add_argument('--reps_per_file', type=int, default=4, help='How many representative samples to draw per file.')
     parser.add_argument('--num_samples', type=int, default=1024, help='Number of samples for representative dataset')
+    parser.add_argument('--validate', action='store_true', default=True, help='Validate TFLite vs. Keras after conversion')
+    parser.add_argument('--validate_samples', type=int, default=128, help='Max number of samples to validate')
     args = parser.parse_args()
 
     # Infer model_config path if not provided
@@ -138,8 +247,29 @@ def main():
         f.write(tflite_model)
     print(f"TFLite model saved to {args.output_path}")
 
-    # Optional quick validation if data provided (Keras vs TFLite) could be added here.
-    # (Your previous validate_models can be reused with cfg-driven rep_data_gen if needed.)
+    # Optional validation
+    if args.validate:
+        print("Validating TFLite vs. Keras outputs...")
+        validate_models(
+            keras_model=model,
+            tflite_model_path=args.output_path if args.output_path else os.path.splitext(args.checkpoint_path)[0] + "_quantized.tflite",
+            rep_data_gen=rep_data_gen,
+            num_samples=min(args.validate_samples, args.num_samples),
+        )
+        
+    # Always save representative samples as .npz
+    validation_data = []
+    gen_for_save = rep_data_gen()
+    for _ in range(args.num_samples):
+        try:
+            sample_input = next(gen_for_save)
+        except StopIteration:
+            break
+        validation_data.append(sample_input[0])
+    validation_data = np.array(validation_data)
+    validation_output_path = os.path.splitext(args.output_path)[0] + "_validation_data.npz"
+    np.savez_compressed(validation_output_path, data=validation_data)
+    print(f"Validation data saved to {validation_output_path}")
 
 if __name__ == "__main__":
     main()
