@@ -720,13 +720,13 @@ def get_args():
     parser.add_argument('--fft_length', type=int, default=512, help='FFT length for STFT/linear spectrogram')
     parser.add_argument('--chunk_duration', type=int, default=3, help='Audio chunk duration (seconds)')
     parser.add_argument('--max_duration', type=int, default=60, help='Max audio duration (seconds)')
-    parser.add_argument('--audio_frontend', type=str, default='librosa',
+    parser.add_argument('--audio_frontend', type=str, default='hybrid',
                         choices=['precomputed', 'hybrid', 'raw', 'librosa', 'tf'],
                         help='Frontend: precomputed/librosa=melspec outside; hybrid=linear->fixed mel; raw/tf=STFT->fixed mel')
     parser.add_argument('--mag_scale', type=str, default='pcen',
                         choices=['pcen', 'pwl', 'none'],
                         help='Magnitude compression in frontend: pcen | pwl | none')
-    parser.add_argument('--embeddings_size', type=int, default=512, help='Size of the final embeddings layer')
+    parser.add_argument('--embeddings_size', type=int, default=256, help='Size of the final embeddings layer')
     parser.add_argument('--alpha', type=float, default=1.0, help='Alpha for model scaling')
     parser.add_argument('--depth_multiplier', type=int, default=1, help='Depth multiplier for model')
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Mixup alpha')
