@@ -1,8 +1,9 @@
 # Custom
 *.png
 *.wav
-best_model.h5
+best_model.keras
 best_model_labels.txt
+best_model_model_config.json
 *.keras
 *.tflite
 *.npz
