@@ -224,6 +224,7 @@ def main():
                 if frontend in ('precomputed', 'librosa'):
                     yield [np.random.rand(1, num_mels, spec_width, 1).astype(np.float32)]
                 elif frontend == 'hybrid':
+                    # CONSISTENT: [B, fft_bins, T, 1]
                     yield [np.random.rand(1, fft_bins, spec_width, 1).astype(np.float32)]
                 else:  # tf/raw
                     yield [np.random.randn(1, T, 1).astype(np.float32)]
@@ -267,6 +268,8 @@ def main():
             break
         validation_data.append(sample_input[0])
     validation_data = np.array(validation_data)
+    if validation_data.shape[0] > 25:
+        validation_data = pick_random_samples(validation_data, 25)
     validation_output_path = os.path.splitext(args.output_path)[0] + "_validation_data.npz"
     np.savez_compressed(validation_output_path, data=validation_data)
     print(f"Validation data saved to {validation_output_path}")
