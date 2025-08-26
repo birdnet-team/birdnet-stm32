@@ -1,13 +1,20 @@
 import os
-import librosa
+import argparse
 import numpy as np
-from typing import Iterable, Optional, Tuple
-import matplotlib.pyplot as plt
+from typing import Optional
 import tensorflow as tf
-from tensorflow.keras import layers
+from tensorflow.keras import layers, constraints, regularizers
 import math
+import json
 
-from utils.audio import load_audio_file, get_spectrogram_from_audio, sort_by_s2n, pick_random_samples, plot_spectrogram, save_wav
+from utils.audio import (
+    load_audio_file,
+    get_spectrogram_from_audio,
+    get_linear_spectrogram_from_audio,
+    sort_by_s2n,
+    pick_random_samples,
+    plot_spectrogram,
+)
 
 # Mute TensorFlow warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -24,95 +31,66 @@ if gpus:
     except Exception as e:
         print(f"Could not set memory growth: {e}")
     
-def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30, chunk_duration=3, spec_width=128, mel_bins=64, audio_frontend='librosa', tf_frontend_layer=None):
+def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30, chunk_duration=3, spec_width=128, mel_bins=64, audio_frontend='precomputed', tf_frontend_layer=None, fft_length=512, mag_scale='none'):
     """
-    Run a quick sanity check and save spectrogram images for a few files.
+    Quick visual check of frontend outputs on a few files.
 
-    - If audio_frontend == 'librosa':
-        Loads audio, computes mel spectrograms per chunk using librosa helpers,
-        filters by SNR, then plots a random spectrogram.
-    - If audio_frontend == 'tf':
-        Loads raw audio chunks and passes one chunk through the TF AudioFrontendLayer.
-        If tf_frontend_layer is provided (e.g., from a trained model), it is used
-        so plots reflect trained parameters (e.g., mag_scale, clamp); otherwise a
-        fresh layer is built with default settings.
+    Modes:
+      - precomputed/librosa: compute mel spectrograms in utils (mag_scale applied there).
+      - hybrid:              linear power spectrogram -> fixed mel -> mag_scale (in-model).
+      - raw/tf:              raw -> STFT power -> fixed mel -> mag_scale (in-model).
 
-    Args:
-        file_paths: List of audio file paths.
-        classes: List of class names (unused here, only for labeling).
-        sample_rate: Target sample rate for loading audio.
-        max_duration: Max seconds to load from each file.
-        chunk_duration: Seconds per chunk.
-        spec_width: Target number of time frames in the spectrogram.
-        mel_bins: Number of mel bins.
-        audio_frontend: 'librosa' or 'tf'.
-        tf_frontend_layer: Optional, a pre-built/trained AudioFrontendLayer.
-
-    Returns:
-        None. Saves plots under samples/ via utils.plot_spectrogram().
+    Saves plots into ./samples for manual inspection.
     """
-    # Prepare output dir
-    out_dir = os.path.join("samples")
-    os.makedirs(out_dir, exist_ok=True)
-
-    # If using TF frontend, initialize or reuse trained layer
-    tf_frontend = None
-    if audio_frontend == 'tf':
-        if tf_frontend_layer is not None:
-            tf_frontend = tf_frontend_layer
-        else:
-            tf_frontend = AudioFrontendLayer(
-                sample_rate=sample_rate,
-                chunk_duration=chunk_duration,
-                mel_bins=mel_bins,
-                spec_width=spec_width,
-                name="audio_frontend_sanity"
-            )
-            # Build layer with a dummy input to ensure variables exist
-            dummy = tf.zeros([1, sample_rate * chunk_duration, 1], dtype=tf.float32)
-            _ = tf_frontend(dummy, training=False)
-
-    # shuffle file paths
+    os.makedirs("samples", exist_ok=True)
     np.random.shuffle(file_paths)
-    for i, path in enumerate(file_paths[:5]):  # Check first 5 files
+
+    tf_frontend = None
+    if audio_frontend in ('hybrid', 'tf', 'raw'):
+        tf_frontend = tf_frontend_layer or AudioFrontendLayer(
+            mode='raw' if audio_frontend in ('tf', 'raw') else 'hybrid',
+            mel_bins=mel_bins,
+            spec_width=spec_width,
+            sample_rate=sample_rate,
+            chunk_duration=chunk_duration,
+            fft_length=fft_length,
+            mag_scale=mag_scale,
+            name="audio_frontend_sanity",
+        )
+        dummy_shape = (1, chunk_duration * sample_rate, 1) if audio_frontend in ('tf', 'raw') else (1, (fft_length // 2 + 1), spec_width, 1)
+        dummy = tf.zeros(dummy_shape, dtype=tf.float32)
+        _ = tf_frontend(dummy, training=False)
+
+    for i, path in enumerate(file_paths[:5]):
         audio_chunks = load_audio_file(path, sample_rate, max_duration, chunk_duration)
-        if len(audio_chunks) == 0:
-            print(f"File {path} has no valid audio chunks.")
-            continue
-        print(f"File {path} has {len(audio_chunks)} chunks of duration {chunk_duration} seconds each.")
-        
-        if audio_frontend == 'librosa':
-            spectrograms = [get_spectrogram_from_audio(chunk, sample_rate, mel_bins=mel_bins, spec_width=spec_width) for chunk in audio_chunks]
-            print(f"File {path} has {len(spectrograms)} spectrograms of shape {spectrograms[0].shape}.")
-            
-            sorted_specs = sort_by_s2n(spectrograms, threshold=0.5)
-            print(f"File {path} has {len(sorted_specs)} spectrograms after SNR filtering.")
-                    
-            if len(sorted_specs) == 0:
-                print(f"No valid spectrograms found for file {path}.")
-                continue
-            
-            spec = pick_random_samples(sorted_specs, num_samples=1)     
-            
-        elif audio_frontend == 'tf':
-            sorted_chunks = sort_by_s2n(audio_chunks, threshold=0.5)
-            print(f"File {path} has {len(sorted_chunks)} audio chunks after SNR filtering.")
-            
-            if len(sorted_chunks) == 0:
-                print(f"No valid audio chunks found for file {path}.")
-                continue
-            
-            random_chunk = pick_random_samples(sorted_chunks, num_samples=1)
-            chunk = random_chunk[0] if isinstance(random_chunk, list) else random_chunk
+        if len(audio_chunks) == 0: continue
 
-            # Run through TF frontend (use trained layer if provided)
-            inp = np.expand_dims(chunk.astype(np.float32), axis=(0, -1))  # [1, T, 1]
-            spec = tf_frontend(inp, training=False).numpy()[0, :, :, 0]   # [mel_bins, spec_width]
-        else:
-            raise ValueError("Invalid audio frontend. Choose 'librosa' or 'tf'.")
-        
-        plot_spectrogram(spec, title=f"Spectrogram for {os.path.basename(path)} - Class: {path.split('/')[-2]}")
+        if audio_frontend in ('librosa', 'precomputed'):
+            specs = [get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=mel_bins, spec_width=spec_width, mag_scale=mag_scale) for chunk in audio_chunks]
+            pool = sort_by_s2n(specs, threshold=0.5) or specs
+            if len(pool) == 0: continue
+            spec = pick_random_samples(pool, num_samples=1)
+            spec = spec[0] if isinstance(spec, list) else spec
+        elif audio_frontend == 'hybrid':
+            specs = [get_linear_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, spec_width=spec_width, power=2.0) for chunk in audio_chunks]
+            pool = sort_by_s2n(specs, threshold=0.5) or specs
+            if len(pool) == 0: continue
+            spec_in = pick_random_samples(pool, num_samples=1)
+            spec_in = spec_in[0] if isinstance(spec_in, list) else spec_in
+            inp = spec_in[np.newaxis, ..., np.newaxis].astype(np.float32)
+            spec = tf_frontend(inp, training=False).numpy()[0, :, :, 0]
+        else:  # raw/tf
+            pool = sort_by_s2n(audio_chunks, threshold=0.5) or audio_chunks
+            if len(pool) == 0: continue
+            chunk = pick_random_samples(pool, num_samples=1)
+            chunk = (chunk[0] if isinstance(chunk, list) else chunk)[:sample_rate * chunk_duration]
+            if len(chunk) < sample_rate * chunk_duration:
+                chunk = np.pad(chunk, (0, sample_rate * chunk_duration - len(chunk)))
+            inp = chunk[np.newaxis, ..., np.newaxis].astype(np.float32)
+            spec = tf_frontend(inp, training=False).numpy()[0, :, :, 0]
 
+        plot_spectrogram(spec, title=f"{audio_frontend}_{os.path.basename(path)}")
+        
 def get_classes_with_most_samples(directory, n_classes=25, include_noise=False):
     
     """    Get the most common classes from the dataset directory.      
@@ -196,93 +174,66 @@ def load_file_paths_from_directory(directory, classes=None, max_samples=None):
 
     return all_paths, classes_out
 
-def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa', sample_rate=22050, max_duration=30, chunk_duration=3, spec_width=128, mixup_alpha=0.2, mixup_probability=0.25, mel_bins=48):
+def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa', sample_rate=22050, max_duration=30, chunk_duration=3, spec_width=128, mixup_alpha=0.2, mixup_probability=0.25, mel_bins=48, fft_length=512, mag_scale='none'):
     """
-    Yield batches of model-ready samples and one-hot labels with optional mixup.
+    Python generator producing (inputs, one_hot_labels) batches.
 
-    For each selected file:
-      - Loads up to max_duration seconds at sample_rate.
-      - Splits into chunk_duration-second chunks.
-      - Filters by SNR and picks one random chunk/spectrogram.
+    Inputs per frontend:
+      - precomputed/librosa: mel spectrogram (mel_bins, spec_width, 1)
+      - hybrid:              linear power spectrogram (fft_bins, spec_width, 1)
+      - raw/tf:              raw waveform (sample_rate*chunk_duration, 1)
 
-    Output shapes per frontend:
-      - audio_frontend='librosa': sample shape (mel_bins, spec_width, 1)
-      - audio_frontend='tf':      sample shape (sample_rate*chunk_duration, 1)
-
-    Mixup:
-      - If enabled, applies mixup to a random subset of the batch on both inputs
-        and one-hot labels.
-
-    Args:
-        file_paths: List of .wav file paths.
-        classes: List of class names; used to build one-hot labels.
-        batch_size: Number of samples per batch.
-        audio_frontend: 'librosa' or 'tf' (raw-audio frontend).
-        sample_rate: Audio sample rate for loading.
-        max_duration: Max seconds per file to load.
-        chunk_duration: Seconds per training chunk.
-        spec_width: Target number of frames for spectrograms (librosa path).
-        mixup_alpha: Beta distribution parameter; 0 disables mixup.
-        mixup_probability: Fraction of batch to mix.
-        mel_bins: Number of mel bins (librosa path).
-
-    Yields:
-        (batch_samples, batch_labels)
-        - batch_samples: float32 array of shape
-            (B, mel_bins, spec_width, 1) for 'librosa'
-            (B, sample_rate*chunk_duration, 1) for 'tf'
-        - batch_labels: float32 array of shape (B, num_classes)
+    Basic SNR-based selection is applied to choose a representative chunk. Mixup optional.
     """
     T = sample_rate * chunk_duration
     while True:
         idxs = np.random.permutation(len(file_paths))
         for batch_start in range(0, len(idxs), batch_size):
             batch_idxs = idxs[batch_start:batch_start + batch_size]
-            batch_samples = []
-            batch_labels = []
+            batch_samples, batch_labels = [], []
             for idx in batch_idxs:
                 path = file_paths[idx]
                 audio_chunks = load_audio_file(path, sample_rate, max_duration, chunk_duration)
                 if len(audio_chunks) == 0:
                     continue
 
-                if audio_frontend == 'librosa':
-                    spectrograms = [get_spectrogram_from_audio(chunk, sample_rate, mel_bins=mel_bins, spec_width=spec_width) for chunk in audio_chunks]
-                    sorted_specs = sort_by_s2n(spectrograms, threshold=0.5)
-                    pool = sorted_specs if len(sorted_specs) > 0 else spectrograms
-                    if len(pool) == 0:
-                        continue
+                if audio_frontend in ('librosa', 'precomputed'):
+                    specs = [get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=mel_bins, spec_width=spec_width, mag_scale=mag_scale) for chunk in audio_chunks]
+                    pool = sort_by_s2n(specs, threshold=0.5) or specs
+                    if len(pool) == 0: continue
                     sample = pick_random_samples(pool, num_samples=1)
                     sample = sample[0] if isinstance(sample, list) else sample
-                elif audio_frontend == 'tf':
-                    sorted_chunks = sort_by_s2n(audio_chunks, threshold=0.5)
-                    pool = sorted_chunks if len(sorted_chunks) > 0 else audio_chunks
-                    if len(pool) == 0:
-                        continue
+
+                elif audio_frontend == 'hybrid':
+                    specs = [get_linear_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, spec_width=spec_width, power=2.0) for chunk in audio_chunks]
+                    pool = sort_by_s2n(specs, threshold=0.5) or specs
+                    if len(pool) == 0: continue
+                    sample = pick_random_samples(pool, num_samples=1)
+                    sample = sample[0] if isinstance(sample, list) else sample
+
+                elif audio_frontend in ('tf', 'raw'):
+                    pool = sort_by_s2n(audio_chunks, threshold=0.5) or audio_chunks
+                    if len(pool) == 0: continue
                     sample = pick_random_samples(pool, num_samples=1)
                     x = sample[0] if isinstance(sample, list) else sample
-                    # Pad/truncate to fixed length
                     x = x[:T]
-                    if x.shape[0] < T:
-                        x = np.pad(x, (0, T - x.shape[0]))
+                    if x.shape[0] < T: x = np.pad(x, (0, T - x.shape[0]))
                     sample = x
                 else:
-                    raise ValueError("Invalid audio frontend. Choose 'librosa' or 'tf'.")
+                    raise ValueError("Invalid audio frontend. Choose 'precomputed', 'hybrid', or 'raw'.")
 
                 label_str = path.split('/')[-2]
                 if label_str.lower() in ['noise', 'silence', 'background', 'other']:
                     one_hot_label = np.zeros(len(classes), dtype=np.float32)
                 else:
-                    if label_str not in classes:
-                        continue
+                    if label_str not in classes: continue
                     one_hot_label = tf.one_hot(classes.index(label_str), depth=len(classes)).numpy()
 
                 sample = np.expand_dims(sample, axis=-1)
                 batch_samples.append(sample.astype(np.float32))
                 batch_labels.append(one_hot_label.astype(np.float32))
 
-            if len(batch_samples) == 0:
-                continue
+            if len(batch_samples) == 0: continue
             batch_samples = np.stack(batch_samples)
             batch_labels = np.stack(batch_labels)
 
@@ -300,53 +251,38 @@ def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa',
 
             yield batch_samples, batch_labels
 
-def load_dataset(file_paths, classes, audio_frontend='librosa', batch_size=32, spec_width=128, mel_bins=48, **kwargs):
+def load_dataset(file_paths, classes, audio_frontend='precomputed', batch_size=32, spec_width=128, mel_bins=48, **kwargs):
     """
-    Wrap the Python generator into a tf.data.Dataset with fixed signatures.
+    Wrap a Python generator into tf.data with fixed signatures.
 
-    Input spec depends on the chosen frontend:
-      - 'librosa': (None, mel_bins, spec_width, 1)
-      - 'tf':      (None, sample_rate*chunk_duration, 1)
-
-    Args:
-        file_paths: List of .wav file paths.
-        classes: List of class names.
-        audio_frontend: 'librosa' or 'tf'.
-        batch_size: Batch size.
-        spec_width: Number of time frames for spectrograms.
-        mel_bins: Number of mel bins for spectrograms.
-        **kwargs:
-            sample_rate (int): Audio sample rate (default 16000).
-            chunk_duration (int): Seconds per training chunk (default 3).
-            max_duration (int): Max seconds to read per file (default 30).
-            mixup_alpha (float): Mixup Beta parameter.
-            mixup_probability (float): Fraction of samples to mix.
-
-    Returns:
-        A tf.data.Dataset yielding (inputs, labels) with the shapes listed above.
+    Input shapes by frontend:
+      - precomputed/librosa: (None, mel_bins, spec_width, 1)
+      - hybrid:              (None, fft_bins, spec_width, 1)
+      - raw/tf:              (None, sample_rate*chunk_duration, 1)
     """
     sr = kwargs.get('sample_rate', 16000)
     cd = kwargs.get('chunk_duration', 3)
+    fft_length = kwargs.get('fft_length', 512)
+    mag_scale = kwargs.get('mag_scale', 'none')
     chunk_len = sr * cd
 
-    if audio_frontend == 'librosa':
+    if audio_frontend in ('librosa', 'precomputed'):
         input_spec = tf.TensorSpec(shape=(None, mel_bins, spec_width, 1), dtype=tf.float32)
-    elif audio_frontend == 'tf':
-        # Fixed-length raw audio matching model input
+    elif audio_frontend == 'hybrid':
+        fft_bins = fft_length // 2 + 1
+        input_spec = tf.TensorSpec(shape=(None, fft_bins, spec_width, 1), dtype=tf.float32)
+    elif audio_frontend in ('tf', 'raw'):
         input_spec = tf.TensorSpec(shape=(None, chunk_len, 1), dtype=tf.float32)
     else:
-        raise ValueError("Invalid audio frontend. Choose 'librosa' or 'tf'.")
+        raise ValueError("Invalid audio frontend. Choose 'precomputed', 'hybrid', or 'raw'.")
 
-    output_signature = (
-        input_spec,
-        tf.TensorSpec(shape=(None, len(classes)), dtype=tf.float32),
-    )
+    output_signature = (input_spec, tf.TensorSpec(shape=(None, len(classes)), dtype=tf.float32))
 
     dataset = tf.data.Dataset.from_generator(
         lambda: data_generator(
             file_paths, classes,
             batch_size=batch_size,
-            audio_frontend=audio_frontend,   # forward the frontend
+            audio_frontend=audio_frontend,
             sample_rate=sr,
             max_duration=kwargs.get('max_duration', 30),
             chunk_duration=cd,
@@ -354,351 +290,240 @@ def load_dataset(file_paths, classes, audio_frontend='librosa', batch_size=32, s
             mixup_alpha=kwargs.get('mixup_alpha', 0.0),
             mixup_probability=kwargs.get('mixup_probability', 0.0),
             mel_bins=mel_bins,
+            fft_length=fft_length,
+            mag_scale=mag_scale
         ),
         output_signature=output_signature
     )
-    dataset = dataset.repeat().prefetch(tf.data.AUTOTUNE)
-    return dataset
-
-class N6ConvFrontend(layers.Layer):
-    """Like V2, but anti-alias uses AveragePooling (GPU+NPU friendly).
-
-    anti_alias_mode: "avg" (default), "dw" (depthwise 1x3), or "none".
-    """
-    def __init__(
-        self,
-        n_bins: int = 64,
-        channels: Iterable[int] = (24, 32, 48, 64, 64, 64, 64),
-        stride_plan: Iterable[int] | None = (4, 2, 2, 2, 2, 2, 2),
-        target_frames: Optional[int] = None,
-        input_samples: int = 48_000,
-        anti_alias_mode: str = "avg",
-        use_preemphasis: bool = False,
-        compression: str = "tanh",
-        smoothing_pool: int = 3,
-        out_layout: str = "2d",
-        name: Optional[str] = None,
-        **kwargs,
-    ):
-        super().__init__(name=name, **kwargs)
-        if smoothing_pool not in (1, 2, 3):
-            raise ValueError("smoothing_pool must be 1, 2, or 3")
-        if compression not in ("hard_swish", "tanh", "none"):
-            raise ValueError("compression must be 'hard_swish', 'tanh', or 'none'.")
-        if out_layout not in ("2d", "1d"):
-            raise ValueError("out_layout must be '2d' or '1d'")
-        if anti_alias_mode not in ("avg", "dw", "none"):
-            raise ValueError("anti_alias_mode must be 'avg', 'dw', or 'none'")
-        if target_frames is not None and target_frames <= 0:
-            raise ValueError("target_frames must be positive when provided")
-        if input_samples <= 0:
-            raise ValueError("input_samples must be positive")
-
-        self.n_bins = int(n_bins)
-        self.channels = tuple(int(c) for c in channels)
-        self.anti_alias_mode = anti_alias_mode
-        self.use_preemphasis = bool(use_preemphasis)
-        self.compression = compression
-        self.smoothing_pool = int(smoothing_pool)
-        self.out_layout = out_layout
-        self.input_samples = int(input_samples)
-        self.target_frames = int(target_frames) if target_frames is not None else None
-
-        # Stride plan (same as V2)
-        if self.target_frames is not None:
-            self.stride_plan = N6ConvFrontendV2._make_stride_plan(self.input_samples, self.target_frames, len(self.channels))
-        else:
-            sp = tuple(int(s) for s in stride_plan)
-            if not all(s in (1, 2, 4) for s in sp):
-                raise ValueError("stride_plan values must be in {1,2,4}")
-            if len(sp) != len(self.channels):
-                raise ValueError("channels and stride_plan must have same length")
-            self.stride_plan = sp
-
-        # Shared pieces
-        self._expand_h = layers.Lambda(lambda x: tf.expand_dims(x, axis=1), name="expand_h")
-        self._relu = layers.Activation("relu")
-        self._square = layers.Multiply(name="square")
-        self._pool = layers.AveragePooling2D(pool_size=(1, self.smoothing_pool), strides=(1, 1), padding="same")
-
-        # Optional pre-emphasis
-        self.pre_depthwise = None
-        if self.use_preemphasis:
-            self.pre_depthwise = layers.DepthwiseConv2D((1,3), strides=(1,1), padding="same", use_bias=False, name="pre_dw1x3")
-
-        # Build DS stacks
-        self.lpf = []       # either avgpool or dw1x3
-        self.ds_dw = []
-        self.ds_pw = []
-        for i, (ch, s) in enumerate(zip(self.channels, self.stride_plan)):
-            if self.anti_alias_mode == "avg" and s in (2,4):
-                self.lpf.append(layers.AveragePooling2D(pool_size=(1,3), strides=(1,1), padding="same", name=f"ds{i+1}_lpf_avg1x3"))
-            elif self.anti_alias_mode == "dw" and s in (2,4):
-                self.lpf.append(layers.DepthwiseConv2D((1,3), strides=(1,1), padding="same", use_bias=False, name=f"ds{i+1}_lpf1x3"))
-            else:
-                self.lpf.append(None)
-            self.ds_dw.append(layers.DepthwiseConv2D((1,3), strides=(s,s), padding="same", use_bias=False, name=f"ds{i+1}_dw1x3_s{s}"))
-            self.ds_pw.append(layers.Conv2D(ch, (1,1), padding="same", use_bias=True, name=f"ds{i+1}_pw1x1"))
-
-        if self.compression == "hard_swish":
-            self._compress = layers.Activation("hard_swish")
-        elif self.compression == "tanh":
-            self._compress = layers.Activation("tanh")
-        else:
-            self._compress = None
-
-        self._bin_mixer = layers.Conv2D(self.n_bins, (1,1), padding="same", use_bias=True, name="bins_1x1")
-        self._to_2d = layers.Permute((3,2,1), name="to_F_T_1")
-
-    def call(self, inputs, training=None):
-        x = inputs
-        if x.shape.rank == 2:
-            x = tf.expand_dims(x, axis=-1)
-        elif x.shape.rank != 3:
-            raise ValueError("Input must be (B,T) or (B,T,1)")
-        x = self._expand_h(x)
-
-        if self.pre_depthwise is not None:
-            x = self.pre_depthwise(x); x = tf.nn.relu(x)
-
-        for lpf, dw, pw in zip(self.lpf, self.ds_dw, self.ds_pw):
-            if lpf is not None: x = lpf(x)
-            x = dw(x); x = pw(x); x = tf.nn.relu(x)
-
-        x = tf.nn.relu(x); x = self._square([x, x]); x = self._pool(x)
-        if self._compress is not None: x = self._compress(x)
-        x = self._bin_mixer(x)
-        if self.out_layout == "2d":
-            x = self._to_2d(x)
-        else:
-            x = tf.squeeze(x, axis=1)
-        return x
-
-    def compute_output_shape(self, input_shape):
-        if len(input_shape) == 2: batch, t = input_shape
-        else: batch, t, _ = input_shape
-        def ceil_div(a,b): return None if a is None else (a+b-1)//b
-        T = t
-        for s in self.stride_plan: T = ceil_div(T, s)
-        return (batch, self.n_bins, T, 1) if self.out_layout=="2d" else (batch, T, self.n_bins)
-
-    def get_config(self):
-        cfg = super().get_config()
-        cfg.update({
-            "n_bins": self.n_bins,
-            "channels": self.channels,
-            "stride_plan": self.stride_plan,
-            "target_frames": self.target_frames,
-            "input_samples": self.input_samples,
-            "anti_alias_mode": self.anti_alias_mode,
-            "use_preemphasis": self.use_preemphasis,
-            "compression": self.compression,
-            "smoothing_pool": self.smoothing_pool,
-            "out_layout": self.out_layout,
-        })
-        return cfg
+    return dataset.repeat().prefetch(tf.data.AUTOTUNE)
 
 class AudioFrontendLayer(layers.Layer):
     """
-    Learned, NPU-friendly audio frontend.
-
-    Pipeline:
-      1) Reshape raw audio [B, T, 1] into a raster [B, frames_src, subband_width, 1]
-         where frames_src = ceil(T / subband_width).
-      2) Two 3x3 Conv2D (+BN+ReLU), stride 1, filters=mel_bins.
-      3) Collapse subband width to 1 via AveragePooling2D using kernels <= 3.
-      4) Energy detection (square).
-      5) Fixed temporal smoothing: DepthwiseConv2D 3x1 with [1,2,1]/4.
-      6) Per-mel affine (Depthwise 1x1 with bias) to learn gain/bias per channel.
-      7) Piecewise-linear compression y = k1*x + (k2-k1)*relu(x - t), clamped to [0,1].
-      8) Downsample time via a static chain of AveragePooling2D(2x1) until near spec_width.
-      9) Transpose to [B, mel_bins, spec_width, 1] and statically slice.
-
-    All ops are Conv2D/DepthwiseConv2D/AvgPool/ReLU/Mul/Transpose — INT8 friendly and map to NPU.
+    Audio frontend:
+      - mode='precomputed': input [B, mel_bins, spec_width, 1]. Optional mag_scale (pcen/pwl).
+      - mode='hybrid':      input [B, fft_bins, spec_width, 1]. Fixed mel (tf.signal weights).
+      - mode='raw':         input [B, T, 1]. STFT -> power -> fixed mel.
     """
     def __init__(
         self,
-        sample_rate: int,
-        chunk_duration: int,
+        mode: str,
         mel_bins: int,
         spec_width: int,
-        subband_width: int = 6,
-        k1: float = 0.6,
-        k2: float = 0.15,
-        t: float = 0.2,
+        sample_rate: int,
+        chunk_duration: int,
+        fft_length: int = 512,
+        use_pcen: bool = False,
+        pcen_K: int = 4,
+        init_mel: bool = True,
+        mel_fmin: float = 150.0,
+        mel_fmax: Optional[float] = None,
+        mel_norm: str = "slaney",
+        mel_htk: bool = False,  # kept for API compatibility (unused with tf.signal)
+        mag_scale: str = "none",  # 'pcen' | 'pwl' | 'none'
         name: str = "audio_frontend",
-        **kwargs
+        **kwargs,
     ):
         super().__init__(name=name, **kwargs)
-        self.sample_rate = int(sample_rate)
-        self.chunk_duration = int(chunk_duration)
+        assert mode in ("precomputed", "hybrid", "raw")
+        assert mag_scale in ("pcen", "pwl", "none")
+        self.mode = mode
         self.mel_bins = int(mel_bins)
         self.spec_width = int(spec_width)
-        self.subband_width = int(subband_width)
+        self.sample_rate = int(sample_rate)
+        self.chunk_duration = int(chunk_duration)
+        self.fft_length = int(fft_length)
+        self.use_pcen = bool(use_pcen)
+        self.pcen_K = int(pcen_K)
+        self.init_mel = bool(init_mel)
+        self.mel_fmin = float(mel_fmin)
+        self.mel_fmax = mel_fmax
+        self.mel_norm = mel_norm
+        self.mag_scale = mag_scale
 
-        # Layers
-        self.conv_fb = None
-        self.bn_fb1 = None
-        self.conv_fb2 = None
-        self.bn_fb2 = None
-        self.pool_width_a = None
-        self.pool_width_b = None
-        self.pool_time_layers = []
-        self.smooth_dw = None
-        self.mel_affine = None
+        # Resolve legacy flag
+        if self.use_pcen and self.mag_scale == "none":
+            self.mag_scale = "pcen"
 
-        # PWL params
-        self._k1_init, self._k2_init, self._t_init = float(k1), float(k2), float(t)
-        self.w_k1 = self.w_k2 = self.w_t = None
-
-        # Static shapes
         self._T = self.sample_rate * self.chunk_duration
-        self._pad = 0
-        self._frames_src = None
+        self._hop = max(1, self._T // max(1, self.spec_width))
+        self._hann = None  # created lazily
+
+        # Layout helpers
+        self.permute_to_C = layers.Permute((3, 2, 1), name=f"{name}_to_C_last")   # (B,H,W,C)->(B,C,W,H)
+        self.permute_back = layers.Permute((3, 2, 1), name=f"{name}_from_C_last") # (B,C,W,H)->(B,H,W,C)
+
+        # Fixed mel projection (1x1 Conv2D). We will set tf.signal mel weights and freeze it.
+        self.mel_mixer = layers.Conv2D(
+            filters=self.mel_bins,
+            kernel_size=(1, 1),
+            padding="same",
+            use_bias=True,
+            kernel_constraint=constraints.NonNeg(),
+            kernel_regularizer=regularizers.l2(1e-6),
+            name=f"{name}_mel_mixer",
+        )
+        # Optional stabilization
+        self.mel_post_bn = layers.BatchNormalization(center=False, scale=False, name=f"{name}_mel_bn")
+
+        # Inline PCEN/PWL sublayers (no extra Layer classes)
+        self._pcen_pools = [layers.AveragePooling2D(pool_size=(1, 3), strides=(1, 1), padding="same",
+                                                    name=f"{name}_pcen_ema{k}") for k in range(self.pcen_K)] if self.mag_scale == "pcen" else []
+        # Depthwise 1x1 for per-channel gains/hinges (built lazily on first call)
+        self._pcen_agc_dw = layers.DepthwiseConv2D((1, 1), use_bias=False,
+                                                   depthwise_initializer=tf.keras.initializers.Constant(0.6),
+                                                   padding="same", name=f"{name}_pcen_agc_dw") if self.mag_scale == "pcen" else None
+        self._pcen_k1_dw = layers.DepthwiseConv2D((1, 1), use_bias=False,
+                                                  depthwise_initializer=tf.keras.initializers.Constant(0.15),
+                                                  padding="same", name=f"{name}_pcen_k1_dw") if self.mag_scale == "pcen" else None
+        self._pcen_shift_dw = layers.DepthwiseConv2D((1, 1), use_bias=True,
+                                                     depthwise_initializer=tf.keras.initializers.Ones(),
+                                                     bias_initializer=tf.keras.initializers.Constant(-0.2),
+                                                     padding="same", name=f"{name}_pcen_shift_dw") if self.mag_scale == "pcen" else None
+        self._pcen_k2mk1_dw = layers.DepthwiseConv2D((1, 1), use_bias=False,
+                                                     depthwise_initializer=tf.keras.initializers.Constant(0.45),
+                                                     padding="same", name=f"{name}_pcen_k2mk1_dw") if self.mag_scale == "pcen" else None
+
+        if self.mag_scale == "pwl":
+            self._pwl_k0_dw = layers.DepthwiseConv2D((1, 1), use_bias=False,
+                                                     depthwise_initializer=tf.keras.initializers.Constant(0.40),
+                                                     padding="same", name=f"{name}_pwl_k0_dw")
+            # Three hinges: t=[0.10, 0.35, 0.65], slopes=[0.25,0.15,0.08]
+            self._pwl_shift_dws = [
+                layers.DepthwiseConv2D((1, 1), use_bias=True,
+                                       depthwise_initializer=tf.keras.initializers.Ones(),
+                                       bias_initializer=tf.keras.initializers.Constant(-t),
+                                       padding="same", name=f"{name}_pwl_shift{i+1}_dw")
+                for i, t in enumerate((0.10, 0.35, 0.65))
+            ]
+            self._pwl_k_dws = [
+                layers.DepthwiseConv2D((1, 1), use_bias=False,
+                                       depthwise_initializer=tf.keras.initializers.Constant(k),
+                                       padding="same", name=f"{name}_pwl_k{i+1}_dw")
+                for i, k in enumerate((0.25, 0.15, 0.08))
+            ]
+        else:
+            self._pwl_k0_dw = None
+            self._pwl_shift_dws = []
+            self._pwl_k_dws = []
 
     def build(self, input_shape):
-        # Raster geometry
-        w = self.subband_width
-        self._pad = (w - (self._T % w)) % w
-        self._frames_src = int((self._T + self._pad) // w)
+        if self.mode == "raw":
+            self._hann = tf.signal.hann_window(self.fft_length, dtype=tf.float32)
 
-        # Conv stack (3x3, stride 1)
-        self.conv_fb = layers.Conv2D(
-            filters=self.mel_bins, kernel_size=(3, 3), strides=(1, 1),
-            padding='same', use_bias=False, name='fb_3x3_a'
-        )
-        self.bn_fb1 = layers.BatchNormalization(name='fb_3x3_a_bn')
-        self.conv_fb2 = layers.Conv2D(
-            filters=self.mel_bins, kernel_size=(3, 3), strides=(1, 1),
-            padding='same', use_bias=False, name='fb_3x3_b'
-        )
-        self.bn_fb2 = layers.BatchNormalization(name='fb_3x3_b_bn')
-
-        # Collapse subband width to 1
-        if (self.subband_width % 3) == 0:
-            self.pool_width_a = layers.AveragePooling2D(
-                pool_size=(1, 3), strides=(1, 3), padding='valid', name='pool_width_a'
-            )
-            self.pool_width_b = layers.AveragePooling2D(
-                pool_size=(1, self.subband_width // 3),
-                strides=(1, self.subband_width // 3),
-                padding='valid', name='pool_width_b'
-            )
-        else:
-            self.pool_width_a = layers.AveragePooling2D(
-                pool_size=(1, self.subband_width), strides=(1, self.subband_width),
-                padding='valid', name='pool_width'
-            )
-            self.pool_width_b = None
-
-        # Fixed temporal smoothing (DW 3x1 with [1,2,1]/4)
-        self.smooth_dw = layers.DepthwiseConv2D(
-            kernel_size=(3, 1), strides=(1, 1), padding='same',
-            use_bias=False, name='smooth_dw_3x1', trainable=False
-        )
-        self.smooth_dw.build(tf.TensorShape([None, None, 1, self.mel_bins]))
-        k = np.array([1.0, 2.0, 1.0], dtype=np.float32) / 4.0
-        kernel = np.zeros((3, 1, self.mel_bins, 1), dtype=np.float32)
-        for c in range(self.mel_bins):
-            kernel[:, 0, c, 0] = k
-        self.smooth_dw.set_weights([kernel])
-
-        # Per-mel affine (depthwise 1x1 with bias)
-        self.mel_affine = layers.DepthwiseConv2D(
-            kernel_size=(1, 1), depth_multiplier=1, use_bias=True,
-            padding='same', name='mel_affine'
-        )
-
-        # PWL parameters (Keras 3-safe add_weight usage)
-        self.w_k1 = self.add_weight(
-            name="k1",
-            shape=(),
-            dtype=tf.float32,
-            initializer=tf.keras.initializers.Constant(self._k1_init),
-            trainable=True,
-        )
-        self.w_k2 = self.add_weight(
-            name="k2",
-            shape=(),
-            dtype=tf.float32,
-            initializer=tf.keras.initializers.Constant(self._k2_init),
-            trainable=True,
-        )
-        self.w_t = self.add_weight(
-            name="t",
-            shape=(),
-            dtype=tf.float32,
-            initializer=tf.keras.initializers.Constant(self._t_init),
-            trainable=True,
-        )
-
-        # Time downsampling via powers-of-two 2x1 pools
-        frames_after = self._frames_src
-        ratio = frames_after // self.spec_width if self.spec_width > 0 else 1
-        self.pool_time_layers = []
-        pow2 = 1
-        while (pow2 * 2) <= ratio:
-            pow2 *= 2
-        steps = int(math.log2(pow2)) if pow2 > 1 else 0
-        for i in range(steps):
-            self.pool_time_layers.append(
-                layers.AveragePooling2D(
-                    pool_size=(2, 1), strides=(2, 1), padding='valid', name=f'pool_time_2x1_{i+1}'
-                )
-            )
+        # Set tf.signal mel matrix on mel_mixer and freeze it
+        if self.mode in ("hybrid", "raw") and self.init_mel:
+            fft_bins = self.fft_length // 2 + 1
+            try:
+                self.mel_mixer.build(tf.TensorShape([None, 1, None, fft_bins]))
+            except Exception:
+                pass
+            upper = int(self.mel_fmax) if self.mel_fmax is not None else (self.sample_rate // 2)
+            mel_mat = tf.signal.linear_to_mel_weight_matrix(
+                num_mel_bins=self.mel_bins,
+                num_spectrogram_bins=fft_bins,
+                sample_rate=float(self.sample_rate),
+                lower_edge_hertz=float(self.mel_fmin),
+                upper_edge_hertz=float(upper),
+                dtype=tf.float32
+            )  # [fft_bins, mel_bins]
+            kernel = tf.expand_dims(tf.expand_dims(mel_mat, axis=0), axis=0).numpy()  # [1,1,fft_bins,mel_bins]
+            bias = np.zeros((self.mel_bins,), dtype=np.float32)
+            if len(self.mel_mixer.get_weights()) == 2:
+                W, b = self.mel_mixer.get_weights()
+                if W.shape == kernel.shape:
+                    self.mel_mixer.set_weights([kernel.astype(np.float32), bias])
+            else:
+                self.mel_mixer.set_weights([kernel.astype(np.float32), bias])
+            # Freeze mel
+            self.mel_mixer.trainable = False
 
         super().build(input_shape)
 
-    def call(self, inputs, training=None):
-        # [B, T, 1] -> pad -> [B, frames_src, subband_width, 1]
-        x = inputs
-        if self._pad:
-            x = tf.pad(x, [[0, 0], [0, self._pad], [0, 0]])
-        B = tf.shape(x)[0]
-        x = tf.reshape(x, [B, self._frames_src, self.subband_width, 1])
-
-        # 3x3 conv stack
-        y = self.conv_fb(x)
-        y = self.bn_fb1(y, training=training)
-        y = tf.nn.relu(y)
-        y = self.conv_fb2(y)
-        y = self.bn_fb2(y, training=training)
-        y = tf.nn.relu(y)
-
-        # collapse width to 1
-        y = self.pool_width_a(y)
-        if self.pool_width_b is not None:
-            y = self.pool_width_b(y)
-
-        # energy -> smoothing -> affine -> PWL
-        y = y * y
-        y = self.smooth_dw(y)
-        y = self.mel_affine(y)
-
-        k1 = tf.clip_by_value(self.w_k1, 0.0, 2.0)
-        k2 = tf.clip_by_value(self.w_k2, 0.0, 2.0)
-        t  = tf.clip_by_value(self.w_t,  0.0, 1.0)
-        y = k1 * y + (k2 - k1) * tf.nn.relu(y - t)
-        y = tf.maximum(0.0, tf.minimum(1.0, y))
-
-        # temporal downsampling
-        for pool in self.pool_time_layers:
-            y = pool(y)
-
-        # [B, mel_bins, spec_width, 1]
-        y = tf.transpose(y, [0, 3, 1, 2])
-        y = y[:, :, :self.spec_width, :]
+    def _align_time(self, y):
+        # y: [B,1,T,?] -> center crop/pad to spec_width
+        cur_w = tf.shape(y)[2]
+        def crop():
+            start = (cur_w - self.spec_width) // 2
+            end = cur_w - self.spec_width - start
+            return layers.Cropping2D(cropping=((0, 0), (start, end)))(y)
+        def pad():
+            padw = self.spec_width - cur_w
+            left = padw // 2
+            right = padw - left
+            return layers.ZeroPadding2D(padding=((0, 0), (left, right)))(y)
+        y = tf.__internal__.smart_cond.smart_cond(tf.greater(cur_w, self.spec_width), crop, lambda: y)
+        y = tf.__internal__.smart_cond.smart_cond(tf.less(cur_w, self.spec_width), pad, lambda: y)
         return y
 
-    def get_config(self):
-        return {
-            "sample_rate": self.sample_rate,
-            "chunk_duration": self.chunk_duration,
-            "mel_bins": self.mel_bins,
-            "spec_width": self.spec_width,
-            "subband_width": self.subband_width,
-            "name": self.name,
-        }
+    def _apply_pcen(self, x):
+        # x: [B,1,T,C]
+        m = x
+        for pool in self._pcen_pools:
+            m = pool(m)
+        # AGC residual -> ReLU
+        y0 = layers.Subtract(name=f"{self.name}_pcen_agc_sub")([x, self._pcen_agc_dw(m)])
+        y0 = layers.ReLU(name=f"{self.name}_pcen_agc_relu")(y0)
+        # k1*y0 + (k2-k1)*relu(y0 - t)
+        b1 = self._pcen_k1_dw(y0)
+        relu = layers.ReLU(name=f"{self.name}_pcen_relu")(self._pcen_shift_dw(y0))
+        b2 = self._pcen_k2mk1_dw(relu)
+        y = layers.Add(name=f"{self.name}_pcen_add")([b1, b2])
+        # Clamp non-negative
+        return layers.ReLU(name=f"{self.name}_pcen_out_relu")(y)
+
+    def _apply_pwl(self, x):
+        # x: [B,1,T,C]
+        branches = [self._pwl_k0_dw(x)]
+        for i, (shift, k_dw) in enumerate(zip(self._pwl_shift_dws, self._pwl_k_dws), start=1):
+            relu = layers.ReLU(name=f"{self.name}_pwl_relu{i}")(shift(x))
+            branches.append(k_dw(relu))
+        return layers.Add(name=f"{self.name}_pwl_add")(branches)
+
+    def _apply_mag(self, x):
+        if self.mag_scale == "pcen":
+            return self._apply_pcen(x)
+        if self.mag_scale == "pwl":
+            return self._apply_pwl(x)
+        return x
+
+    def call(self, inputs, training=None):
+        if self.mode == "precomputed":
+            # [B, mel, T, 1] -> optional mag scale
+            y = inputs[:, :, :self.spec_width, :]
+            if self.mag_scale != "none":
+                y = self.permute_to_C(y)          # [B,1,T,mel]
+                y = self._apply_mag(y)
+                y = self.permute_back(y)          # [B, mel, T, 1]
+            return y
+
+        if self.mode == "hybrid":
+            # inputs: [B, fft_bins, T, 1] -> [B,1,T,fft_bins]
+            y = self.permute_to_C(inputs)
+        else:
+            # raw: [B,T,1] -> STFT power -> [B,1,frames,fft_bins]
+            x = inputs
+            stft = tf.signal.stft(
+                signals=tf.squeeze(x, axis=-1),
+                frame_length=self.fft_length,
+                frame_step=self._hop,
+                window_fn=lambda frame_length, dtype: self._hann,
+                pad_end=True
+            )
+            power = tf.math.real(stft * tf.math.conj(stft))
+            y = tf.expand_dims(power, axis=1)
+
+        # Align time, fixed mel, stabilization
+        y = self._align_time(y)
+        y = self.mel_mixer(y)                          # fixed mel
+        y = self.mel_post_bn(y, training=training)
+        y = layers.ReLU(name=f"{self.name}_mel_relu")(y)
+
+        # Optional magnitude scaling
+        y = self._apply_mag(y)
+
+        # [B, mel, T, 1]
+        y = self.permute_back(y)
+        return y[:, :, :self.spec_width, :]
 
 def _make_divisible(v, divisor=8):
     v = int(v + divisor / 2) // divisor * divisor
@@ -745,37 +570,59 @@ def ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name="ds"):
     y = layers.ReLU(max_value=6, name=f"{name}_pw_relu")(y)
     return y
 
-def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddings_size, num_classes, audio_frontend='librosa', alpha=1.0, depth_multiplier=1):
+def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddings_size, num_classes, audio_frontend='precomputed', alpha=1.0, depth_multiplier=1, fft_length=512, mag_scale='none'):
     """
-    Depthwise-separable CNN adhering to STM32N6 constraints.
-    - 3x3 depthwise with strides in both frequency (height) and time (width) where needed.
-    - 1x1 pointwise to set channel count (multiples of 8).
-    - Repeats scale with depth_multiplier; channels scale with alpha.
+    Build DS-CNN with selectable audio frontend (mag_scale: 'pcen'|'pwl'|'none').
     """
-    # Input + frontend
-    if audio_frontend == 'tf':
+    if audio_frontend in ('librosa', 'precomputed'):
+        inputs = tf.keras.Input(shape=(num_mels, spec_width, 1), name='mel_spectrogram_input')
+        x = AudioFrontendLayer(
+            mode='precomputed',
+            mel_bins=num_mels,
+            spec_width=spec_width,
+            sample_rate=sample_rate,
+            chunk_duration=chunk_duration,
+            fft_length=fft_length,
+            mag_scale=mag_scale,
+            name="audio_frontend",
+        )(inputs)
+    elif audio_frontend == 'hybrid':
+        fft_bins = fft_length // 2 + 1
+        inputs = tf.keras.Input(shape=(fft_bins, spec_width, 1), name='linear_spectrogram_input')
+        x = AudioFrontendLayer(
+            mode='hybrid',
+            mel_bins=num_mels,
+            spec_width=spec_width,
+            sample_rate=sample_rate,
+            chunk_duration=chunk_duration,
+            fft_length=fft_length,
+            mag_scale=mag_scale,
+            name="audio_frontend",
+        )(inputs)
+    elif audio_frontend in ('tf', 'raw'):
         inputs = tf.keras.Input(shape=(chunk_duration * sample_rate, 1), name='raw_audio_input')
-        #x = AudioFrontendLayer(sample_rate=sample_rate,
-        #                       chunk_duration=chunk_duration,
-        #                       mel_bins=num_mels,
-        #                       spec_width=spec_width,
-        #                       subband_width=6,
-        #                       name="audio_frontend")(inputs)
-        x = N6ConvFrontend(input_samples=chunk_duration * sample_rate,
-                           n_bins=num_mels,
-                           name="audio_frontend")(inputs)
+        x = AudioFrontendLayer(
+            mode='raw',
+            mel_bins=num_mels,
+            spec_width=spec_width,
+            sample_rate=sample_rate,
+            chunk_duration=chunk_duration,
+            fft_length=fft_length,
+            mag_scale=mag_scale,
+            name="audio_frontend",
+        )(inputs)
     else:
-        inputs = tf.keras.Input(shape=(num_mels, spec_width, 1), name='spectrogram_input')
-        x = inputs
+        raise ValueError("Invalid audio_frontend.")
+
     # Stem (3x3, stride 1) to lift channels
     stem_ch = _make_divisible(int(24 * alpha), 8)
-    x = layers.Conv2D(stem_ch, (3, 3), strides=(1, 2), padding='same', use_bias=False, name="stem_conv")(x)
+    x = layers.Conv2D(stem_ch, (3, 3), strides=(1, 1), padding='same', use_bias=False, name="stem_conv")(x)
     x = layers.BatchNormalization(name="stem_bn")(x)
     x = layers.ReLU(max_value=6, name="stem_relu")(x)
 
     # Stages: (filters, repeats, (stride_f, stride_t))
     # Use stride 2 in both axes early to reduce HxW; last stage keeps 1x1.
-    base_filters = [24, 48, 96, 128]
+    base_filters = [32, 64, 128, 256]
     base_repeats = [2, 3, 3, 2]
     base_strides = [(2, 2), (2, 2), (2, 2), (2, 2)]
 
@@ -789,9 +636,11 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
             
     # Final 1x1 conv to embeddings
     emb_ch = _make_divisible(int(embeddings_size * alpha), 8)
-    x = layers.Conv2D(emb_ch, (1, 1), strides=(1, 1), padding='same', use_bias=False, name="emb_conv")(x)
-    x = layers.BatchNormalization(name="emb_bn")(x)
-    x = layers.ReLU(max_value=6, name="emb_relu")(x)
+    # check if we already have emb_ch channels
+    if not (x.shape[-1] is not None and int(x.shape[-1]) == int(emb_ch)):    
+        x = layers.Conv2D(emb_ch, (1, 1), strides=(1, 1), padding='same', use_bias=False, name="emb_conv")(x)
+        x = layers.BatchNormalization(name="emb_bn")(x)
+        x = layers.ReLU(max_value=6, name="emb_relu")(x)
 
     # Head
     x = layers.GlobalAveragePooling2D(name="gap")(x)
@@ -799,37 +648,33 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
     outputs = layers.Dense(num_classes, activation='sigmoid', name="pred")(x)
     return tf.keras.models.Model(inputs, outputs, name="dscnn_audio")
 
-def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.001, batch_size=64, patience=5, checkpoint_path="best_model.h5", steps_per_epoch=None, val_steps=None):
+def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.001, batch_size=64, patience=5, checkpoint_path="checkpoints/best_model.keras", steps_per_epoch=None, val_steps=None):
     """
-    Train the model with cosine-annealed learning rate, early stopping, and checkpointing.
-
-    Uses Adam optimizer with a CosineDecayRestarts schedule; no ReduceLROnPlateau
-    is used because the optimizer's learning rate is a schedule (not settable).
+    Train with cosine-annealed Adam, early stopping, and ModelCheckpoint (.keras).
 
     Metrics:
-      - ROC AUC (multi-label) monitored on the validation set for early stopping
-        and model checkpointing (monitor='val_roc_auc', mode='max').
+      - ROC AUC (multi-label)
 
     Args:
-        model: A tf.keras.Model.
-        train_dataset: tf.data.Dataset yielding (inputs, labels) for training.
-        val_dataset: tf.data.Dataset yielding (inputs, labels) for validation.
-        epochs: Number of epochs to train.
-        learning_rate: Initial learning rate for the cosine schedule.
-        batch_size: Unused inside (kept for API consistency).
-        patience: Early stopping patience (epochs).
-        checkpoint_path: Where to save the best model.
-        steps_per_epoch: Number of training steps per epoch (required by LR schedule).
-        val_steps: Number of validation steps per epoch.
-
-    Returns:
-        tf.keras.callbacks.History: Training history.
+        model: tf.keras.Model.
+        train_dataset: tf.data.Dataset of (inputs, labels).
+        val_dataset: tf.data.Dataset of (inputs, labels).
+        epochs: Number of epochs.
+        learning_rate: Initial LR for cosine schedule.
+        batch_size: Unused (for API symmetry).
+        patience: Early stopping patience.
+        checkpoint_path: Destination .keras path.
+        steps_per_epoch: Training steps per epoch (required).
+        val_steps: Validation steps per epoch.
     """
 
     if steps_per_epoch is None or steps_per_epoch <= 0:
         raise ValueError("steps_per_epoch must be > 0")
     if val_steps is None or val_steps <= 0:
         val_steps = 1
+
+    # Ensure checkpoint dir exists
+    os.makedirs(os.path.dirname(checkpoint_path) or ".", exist_ok=True)
 
     first_decay_steps = max(1, steps_per_epoch * max(1, epochs // 10))
     lr_schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
@@ -846,7 +691,8 @@ def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.00
     )
     callbacks = [
         tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=patience, restore_best_weights=True, mode='min'),
-        tf.keras.callbacks.ModelCheckpoint(checkpoint_path, monitor='val_loss', save_best_only=True, mode='min'),
+        # Save full Keras v3 model
+        tf.keras.callbacks.ModelCheckpoint(checkpoint_path, monitor='val_loss', save_best_only=True, mode='min', save_weights_only=False),
     ]
     history = model.fit(
         train_dataset,
@@ -858,11 +704,9 @@ def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.00
     )
     return history
 
-import argparse
-
 def get_args():
     """
-    Parse command-line arguments for training configuration.
+    Parse command-line arguments.
 
     Returns:
         argparse.Namespace: Parsed arguments.
@@ -872,11 +716,17 @@ def get_args():
     parser.add_argument('--max_samples', type=int, default=None, help='Max samples per class for training (None for all)')
     parser.add_argument('--sample_rate', type=int, default=22050, help='Audio sample rate. Default is 22050 Hz.')
     parser.add_argument('--num_mels', type=int, default=64, help='Number of mel bins for spectrogram')
-    parser.add_argument('--spec_width', type=int, default=188, help='Spectrogram width')
+    parser.add_argument('--spec_width', type=int, default=128, help='Spectrogram width')
+    parser.add_argument('--fft_length', type=int, default=512, help='FFT length for STFT/linear spectrogram')
     parser.add_argument('--chunk_duration', type=int, default=3, help='Audio chunk duration (seconds)')
     parser.add_argument('--max_duration', type=int, default=60, help='Max audio duration (seconds)')
-    parser.add_argument('--audio_frontend', type=str, default='librosa', choices=['librosa', 'tf'], help='Audio frontend to use. Options: "librosa" or "tf", when using "tf" the fft will be part of the model.')
-    parser.add_argument('--embeddings_size', type=int, default=256, help='Size of the final embeddings layer')
+    parser.add_argument('--audio_frontend', type=str, default='librosa',
+                        choices=['precomputed', 'hybrid', 'raw', 'librosa', 'tf'],
+                        help='Frontend: precomputed/librosa=melspec outside; hybrid=linear->fixed mel; raw/tf=STFT->fixed mel')
+    parser.add_argument('--mag_scale', type=str, default='pcen',
+                        choices=['pcen', 'pwl', 'none'],
+                        help='Magnitude compression in frontend: pcen | pwl | none')
+    parser.add_argument('--embeddings_size', type=int, default=512, help='Size of the final embeddings layer')
     parser.add_argument('--alpha', type=float, default=1.0, help='Alpha for model scaling')
     parser.add_argument('--depth_multiplier', type=int, default=1, help='Depth multiplier for model')
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Mixup alpha')
@@ -885,7 +735,7 @@ def get_args():
     parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate')
     parser.add_argument('--val_split', type=float, default=0.2, help='Validation split ratio')
-    parser.add_argument('--checkpoint_path', type=str, default='checkpoints/best_model.h5', help='Path to save best model')
+    parser.add_argument('--checkpoint_path', type=str, default='checkpoints/best_model.keras', help='Path to save best model (.keras)')
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -898,7 +748,17 @@ if __name__ == "__main__":
                                                          )
     
     # Perform sanity check on the dataset
-    dataset_sanity_check(file_paths, classes, sample_rate=args.sample_rate, max_duration=args.max_duration, chunk_duration=args.chunk_duration, spec_width=args.spec_width, mel_bins=args.num_mels, audio_frontend=args.audio_frontend)
+    dataset_sanity_check(
+        file_paths, classes,
+        sample_rate=args.sample_rate,
+        max_duration=args.max_duration,
+        chunk_duration=args.chunk_duration,
+        spec_width=args.spec_width,
+        mel_bins=args.num_mels,
+        audio_frontend=args.audio_frontend,
+        fft_length=args.fft_length,
+        mag_scale=args.mag_scale
+    )
 
     # Split dataset into training and validation sets
     val_split = args.val_split
@@ -918,7 +778,9 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         mixup_alpha=args.mixup_alpha,
         mixup_probability=args.mixup_probability,
-        mel_bins=args.num_mels
+        mel_bins=args.num_mels,
+        fft_length=args.fft_length,
+        mag_scale=args.mag_scale
     )
 
     # Create validation dataset (without mixup)
@@ -932,7 +794,9 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         mixup_alpha=0.0,
         mixup_probability=0.0,
-        mel_bins=args.num_mels
+        mel_bins=args.num_mels,
+        fft_length=args.fft_length,
+        mag_scale=args.mag_scale
     )
 
     # Update steps_per_epoch and val_steps (robust)
@@ -950,7 +814,9 @@ if __name__ == "__main__":
         num_classes=len(classes),
         alpha=args.alpha,
         depth_multiplier=args.depth_multiplier,
-        embeddings_size=args.embeddings_size
+        embeddings_size=args.embeddings_size,
+        fft_length=args.fft_length,
+        mag_scale=args.mag_scale
     )
     
     model.summary()
@@ -967,8 +833,28 @@ if __name__ == "__main__":
         steps_per_epoch=steps_per_epoch,
         val_steps=val_steps
     )
-    print(f"Training complete. Model saved to '{args.checkpoint_path}'.")
-    
+    print(f"Training complete. Best model saved to '{args.checkpoint_path}'.")
+
+    # Save model config JSON next to the checkpoint
+    cfg = {
+        "sample_rate": args.sample_rate,
+        "num_mels": args.num_mels,
+        "spec_width": args.spec_width,
+        "fft_length": args.fft_length,
+        "chunk_duration": args.chunk_duration,
+        "audio_frontend": args.audio_frontend,
+        "mag_scale": args.mag_scale,
+        "embeddings_size": args.embeddings_size,
+        "alpha": args.alpha,
+        "depth_multiplier": args.depth_multiplier,
+        "num_classes": len(classes),
+        "class_names": classes,
+    }
+    cfg_path = os.path.splitext(args.checkpoint_path)[0] + "_model_config.json"
+    with open(cfg_path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    print(f"Saved model config to '{cfg_path}'")
+
     # Save labels to txt file
     labels_file = args.checkpoint_path.replace('.h5', '_labels.txt')
     with open(labels_file, 'w') as f:
@@ -976,16 +862,18 @@ if __name__ == "__main__":
             f.write(f"{cls}\n")
 
     # Post-training sanity check with trained TF frontend (mag_scale/BN) if applicable
-    if args.audio_frontend == 'tf':
+    if args.audio_frontend in ('tf', 'raw', 'hybrid') or (args.audio_frontend in ('precomputed', 'librosa') and args.mag_scale != 'none'):
         print("Post-training sanity check using trained TF audio frontend...")
         trained_frontend = model.get_layer("audio_frontend")
         dataset_sanity_check(
-            file_paths, classes,
+            val_paths, classes,
             sample_rate=args.sample_rate,
             max_duration=args.max_duration,
             chunk_duration=args.chunk_duration,
             spec_width=args.spec_width,
             mel_bins=args.num_mels,
-            audio_frontend='tf',
+            audio_frontend=args.audio_frontend,
+            fft_length=args.fft_length,
+            mag_scale=args.mag_scale,
             tf_frontend_layer=trained_frontend
         )

@@ -39,45 +39,62 @@ def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3):
         
     return chunks
 
-def get_spectrogram_from_audio(audio, sample_rate=22050, n_fft=1024, mel_bins=48, spec_width=128):
+def get_spectrogram_from_audio(audio, sample_rate=22050, n_fft=1024, mel_bins=48, spec_width=128, mag_scale: str = "none"):
     """
     Compute a normalized mel spectrogram from an audio chunk.
 
-    Args:
-        audio (np.ndarray): 1D audio signal.
-        sample_rate (int): Sample rate of the audio.
-        n_fft (int): FFT window size.
-        mel_bins (int): Number of mel frequency bins.
-        spec_width (int): Desired spectrogram width (frames).
-
-    Returns:
-        np.ndarray: 2D normalized mel spectrogram of shape (mel_bins, spec_width).
+    mag_scale:
+      - 'none' : no dynamic compression
+      - 'pcen' : librosa.pcen on mel power
+      - 'pwl'  : simple piecewise-linear compression on mel power
     """
-    # Determine hop length based on the desired spectrogram width
     hop_length = (len(audio) // spec_width) if spec_width > 0 else n_fft // 2
-    
-    # Compute the mel spectrogram for audio
-    mel_spectrogram = librosa.feature.melspectrogram(
+
+    S = librosa.feature.melspectrogram(
         y=audio,
         sr=sample_rate,
         n_fft=n_fft,
         hop_length=hop_length,
         n_mels=mel_bins,
+        power=2.0,
         fmax=sample_rate // 2,
         fmin=150
-    )
-    
-    # Convert to decibel scale
-    mel_spectrogram = librosa.power_to_db(mel_spectrogram, ref=np.max)
-    mel_spectrogram = mel_spectrogram[:, :spec_width]
-    
-    # Flip the spectrogram vertically
-    #mel_spectrogram = np.flipud(mel_spectrogram)
-    
-    # Normalize the spectrogram
-    mel_spectrogram = (mel_spectrogram - mel_spectrogram.min()) / (mel_spectrogram.max() - mel_spectrogram.min() + 1e-10)
-    
-    return mel_spectrogram
+    )  # [mel, frames]
+
+    if mag_scale == "pcen":
+        S = librosa.pcen(S, sr=sample_rate, hop_length=hop_length, axis=1)
+    elif mag_scale == "pwl":
+        # Piecewise-linear compression on power mel (per-bin), parameters chosen for gentle compression
+        # y = k0*x + k1*relu(x - t1) + k2*relu(x - t2) + k3*relu(x - t3)
+        # Normalize first for numerical stability
+        Smin, Smax = S.min(), S.max()
+        Snorm = (S - Smin) / (Smax - Smin + 1e-10)
+        t1, t2, t3 = 0.10, 0.35, 0.65
+        k0, k1, k2, k3 = 0.40, 0.25, 0.15, 0.08
+        relu = lambda z: np.maximum(z, 0.0)
+        S = k0 * Snorm + k1 * relu(Snorm - t1) + k2 * relu(Snorm - t2) + k3 * relu(Snorm - t3)
+
+    # Convert to dB for visualization/consistency, then min-max normalize and crop/pad width
+    S_db = librosa.power_to_db(S, ref=np.max)
+    S_db = S_db[:, :spec_width]
+    S_db = (S_db - S_db.min()) / (S_db.max() - S_db.min() + 1e-10)
+    return S_db
+
+def get_linear_spectrogram_from_audio(audio, sample_rate=22050, n_fft=512, spec_width=128, power=2.0):
+    """
+    Compute a normalized linear-frequency spectrogram (|STFT|**power).
+    Returns:
+        np.ndarray of shape (freq_bins, spec_width), where freq_bins = n_fft//2+1.
+    """
+    hop_length = (len(audio) // spec_width) if spec_width > 0 else n_fft // 2
+    # Use true power (e.g., 2.0 => power spectrogram). Previously was amplitude.
+    S = np.abs(librosa.stft(
+        y=audio, n_fft=n_fft, hop_length=hop_length, win_length=n_fft, window="hann"
+    )) ** float(power)
+    S = S[:, :spec_width]
+    # Normalize per-spectrogram for visualization stability
+    S = (S - S.min()) / (S.max() - S.min() + 1e-10)
+    return S
 
 def get_s2n_from_spectrogram(spectrogram):
     """
