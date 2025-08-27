@@ -39,6 +39,29 @@ def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3):
         
     return chunks
 
+def mel_power_spectrogram(audio, sample_rate=22050, n_fft=1024, mel_bins=48, spec_width=128, fmin=150, fmax=None):
+    """
+    Mel power spectrogram (no compression, no normalization), for plotting/sanity.
+    """
+    fmax = fmax or (sample_rate // 2)
+    hop_length = (len(audio) // spec_width) if spec_width > 0 else n_fft // 2
+    S = librosa.feature.melspectrogram(
+        y=audio, sr=sample_rate,
+        n_fft=n_fft, hop_length=hop_length, win_length=n_fft, window="hann",
+        n_mels=mel_bins, fmin=fmin, fmax=fmax, power=2.0, htk=False, norm='slaney'
+    )
+    return S[:, :spec_width]
+
+def linear_power_spectrogram(audio, sample_rate=22050, n_fft=512, spec_width=128, power=2.0):
+    """
+    Linear-frequency power spectrogram (|STFT|**power), no normalization, for plotting/sanity.
+    """
+    hop_length = (len(audio) // spec_width) if spec_width > 0 else n_fft // 2
+    S = np.abs(librosa.stft(
+        y=audio, n_fft=n_fft, hop_length=hop_length, win_length=n_fft, window="hann"
+    )) ** float(power)
+    return S[:, :spec_width]
+
 def get_spectrogram_from_audio(audio, sample_rate=22050, n_fft=1024, mel_bins=48, spec_width=128, mag_scale: str = "none"):
     """
     Compute a mel power spectrogram from an audio chunk.

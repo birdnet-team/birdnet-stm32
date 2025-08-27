@@ -6,6 +6,7 @@ import tensorflow as tf
 from tensorflow.keras import layers, constraints, regularizers
 import math
 import json
+import librosa  # for consistent mel basis
 
 from utils.audio import (
     load_audio_file,
@@ -14,6 +15,8 @@ from utils.audio import (
     sort_by_s2n,
     pick_random_samples,
     plot_spectrogram,
+    mel_power_spectrogram,           # NEW
+    linear_power_spectrogram,        # NEW
 )
 
 # Mute TensorFlow warnings
@@ -33,14 +36,7 @@ if gpus:
     
 def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30, chunk_duration=3, spec_width=128, mel_bins=64, audio_frontend='precomputed', tf_frontend_layer=None, fft_length=512, mag_scale='none'):
     """
-    Quick visual check of frontend outputs on a few files.
-
-    Modes:
-      - precomputed/librosa: compute mel spectrograms in utils (mag_scale applied there).
-      - hybrid:              linear power spectrogram -> fixed mel -> mag_scale (in-model).
-      - raw/tf:              raw -> STFT power -> fixed mel -> mag_scale (in-model).
-
-    Saves plots into ./samples for manual inspection.
+    Visual check: always plot dB from power (no frontend compression), using the same mel basis.
     """
     os.makedirs("samples", exist_ok=True)
     np.random.shuffle(file_paths)
@@ -54,12 +50,9 @@ def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30
             sample_rate=sample_rate,
             chunk_duration=chunk_duration,
             fft_length=fft_length,
-            mag_scale=mag_scale,
+            mag_scale='none',  # force power-only for plotting
             name="audio_frontend_sanity",
         )
-        # CONSISTENT shapes:
-        # - raw: [B, T, 1]
-        # - hybrid: [B, fft_bins, T, 1]
         fft_bins = fft_length // 2 + 1
         dummy_shape = (1, chunk_duration * sample_rate, 1) if audio_frontend in ('tf', 'raw') else (1, fft_bins, spec_width, 1)
         dummy = tf.zeros(dummy_shape, dtype=tf.float32)
@@ -70,19 +63,20 @@ def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30
         if len(audio_chunks) == 0: continue
 
         if audio_frontend in ('librosa', 'precomputed'):
-            specs = [get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=mel_bins, spec_width=spec_width, mag_scale=mag_scale) for chunk in audio_chunks]
+            # Power mel (no normalization/compression)
+            specs = [mel_power_spectrogram(chunk, sample_rate, n_fft=fft_length, mel_bins=mel_bins, spec_width=spec_width, fmin=150, fmax=sample_rate//2) for chunk in audio_chunks]
             pool = sort_by_s2n(specs, threshold=0.5) or specs
             if len(pool) == 0: continue
             spec = pick_random_samples(pool, num_samples=1)
             spec = spec[0] if isinstance(spec, list) else spec
         elif audio_frontend == 'hybrid':
-            specs = [get_linear_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, spec_width=spec_width, power=2.0) for chunk in audio_chunks]
+            # Feed linear power to TF frontend (which applies librosa-matched mel)
+            specs = [linear_power_spectrogram(chunk, sample_rate, n_fft=fft_length, spec_width=spec_width, power=2.0) for chunk in audio_chunks]
             pool = sort_by_s2n(specs, threshold=0.5) or specs
             if len(pool) == 0: continue
             spec_in = pick_random_samples(pool, num_samples=1)
             spec_in = spec_in[0] if isinstance(spec_in, list) else spec_in  # [fft_bins, spec_width]
-            # CONSISTENT: [B, fft_bins, T, 1]
-            inp = spec_in[np.newaxis, :, :, np.newaxis].astype(np.float32)
+            inp = spec_in[np.newaxis, :, :, np.newaxis].astype(np.float32)   # [B,fft_bins,T,1]
             spec = tf_frontend(inp, training=False).numpy()[0, :, :, 0]
         else:  # raw/tf
             pool = sort_by_s2n(audio_chunks, threshold=0.5) or audio_chunks
@@ -458,20 +452,22 @@ class AudioFrontendLayer(layers.Layer):
 
     def build(self, input_shape):
         fft_bins = self.fft_length // 2 + 1
-        # Hybrid mel mixer kernel from linear-to-mel (fft bins -> mel)
+        # Use librosa Slaney mel basis to match librosa visuals
         self._pad_ch_in = (8 - (fft_bins % 8)) % 8
         upper = int(self.mel_fmax) if self.mel_fmax is not None else (self.sample_rate // 2)
-        mel_mat = tf.signal.linear_to_mel_weight_matrix(
-            num_mel_bins=int(self.mel_bins),
-            num_spectrogram_bins=fft_bins,
-            sample_rate=float(self.sample_rate),
-            lower_edge_hertz=float(self.mel_fmin),
-            upper_edge_hertz=float(upper),
-            dtype=tf.float32
-        )  # [fft_bins, mel_bins]
+        mel_mat_librosa = librosa.filters.mel(
+            sr=int(self.sample_rate),
+            n_fft=int(self.fft_length),
+            n_mels=int(self.mel_bins),
+            fmin=float(self.mel_fmin),
+            fmax=float(upper),
+            htk=False,
+            norm='slaney'
+        )  # [mel, fft_bins]
+        mel_mat = mel_mat_librosa.T  # [fft_bins, mel]
         if self._pad_ch_in:
-            mel_mat = tf.pad(mel_mat, [[0, self._pad_ch_in], [0, 0]])
-        mel_kernel = tf.expand_dims(tf.expand_dims(mel_mat, 0), 0).numpy().astype(np.float32)  # [1,1,Cin,mel]
+            mel_mat = np.pad(mel_mat, ((0, self._pad_ch_in), (0, 0)), mode='constant')  # [fft_bins+pad, mel]
+        mel_kernel = np.expand_dims(np.expand_dims(mel_mat.astype(np.float32), 0), 0)    # [1,1,Cin,mel]
         if not self.mel_mixer.built:
             self.mel_mixer.build(tf.TensorShape([None, 1, None, fft_bins + self._pad_ch_in]))
         self.mel_mixer.set_weights([mel_kernel])
