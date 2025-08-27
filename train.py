@@ -857,8 +857,8 @@ if __name__ == "__main__":
     
     # Load file paths and classes
     file_paths, classes = load_file_paths_from_directory(args.data_path_train, 
-                                                         max_samples=250, #args.max_samples, 
-                                                         classes=get_classes_with_most_samples(args.data_path_train, 25, False) # DEBUG: Only use 25 classes for debugging
+                                                         args.max_samples, 
+                                                         #classes=get_classes_with_most_samples(args.data_path_train, 25, False) # DEBUG: Only use 25 classes for debugging
                                                          )
     
     # Perform sanity check on the dataset
