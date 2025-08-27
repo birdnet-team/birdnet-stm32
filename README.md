@@ -104,6 +104,7 @@ Arguments:
 - --embeddings_size: Embedding channels before head (default: 512)
 - --alpha: Model width scaling (default: 1.0)
 - --depth_multiplier: Repeats per stage (default: 1)
+- --frontend_trainable: If set, make audio frontend trainable (mel_mixer/raw mixer/PCEN/PWL) (default: False)
 - --mixup_alpha: Mixup alpha (0 disables, default: 0.2)
 - --mixup_probability: Fraction of batch to mix (default: 0.25)
 - --batch_size: Batch size (default: 64)

@@ -326,6 +326,7 @@ class AudioFrontendLayer(layers.Layer):
         mel_norm: str = "slaney",
         mag_scale: str = "none",
         name: str = "audio_frontend",
+        is_trainable: bool = False,
         **kwargs):
         super().__init__(name=name, **kwargs)
         assert mode in ("precomputed", "hybrid", "raw")
@@ -343,6 +344,7 @@ class AudioFrontendLayer(layers.Layer):
         self.mel_fmax = mel_fmax
         self.mel_norm = mel_norm
         self.mag_scale = mag_scale
+        self.is_trainable = bool(is_trainable)
 
         if self.use_pcen and self.mag_scale == "none":
             self.mag_scale = "pcen"
@@ -359,7 +361,7 @@ class AudioFrontendLayer(layers.Layer):
             use_bias=False,
             kernel_constraint=constraints.NonNeg(),
             name=f"{name}_mel_mixer",
-            trainable=False,
+            trainable=self.is_trainable,  # CHANGED
         )
 
         # RAW V2D: fold waveform into frames and mix with 1x1 convs (N6-friendly)
@@ -374,7 +376,7 @@ class AudioFrontendLayer(layers.Layer):
                 padding="same",
                 use_bias=False,
                 name=f"{name}_v2d_window_dw",
-                trainable=False,
+                trainable=False,  # keep window fixed
             )
             # 1x1 Conv to mel bins (trainable)
             self.v2d_mixer = layers.Conv2D(
@@ -383,6 +385,7 @@ class AudioFrontendLayer(layers.Layer):
                 padding="same",
                 use_bias=False,
                 name=f"{name}_v2d_mixer",
+                trainable=self.is_trainable,  # CHANGED
             )
         else:
             self.frame_len = None
@@ -390,38 +393,38 @@ class AudioFrontendLayer(layers.Layer):
             self.v2d_window_dw = None
             self.v2d_mixer = None
 
-        # PCEN/PWL sublayers (unchanged)
+        # PCEN/PWL sublayers (respect is_trainable)
         self._pcen_pools = [layers.AveragePooling2D(pool_size=(1, 3), strides=(1, 1), padding="same",
                                                     name=f"{name}_pcen_ema{k}") for k in range(self.pcen_K)] if self.mag_scale == "pcen" else []
         self._pcen_agc_dw = layers.DepthwiseConv2D((1, 1), use_bias=False,
                                                    depthwise_initializer=tf.keras.initializers.Constant(0.6),
-                                                   padding="same", name=f"{name}_pcen_agc_dw") if self.mag_scale == "pcen" else None
+                                                   padding="same", name=f"{name}_pcen_agc_dw", trainable=self.is_trainable) if self.mag_scale == "pcen" else None
         self._pcen_k1_dw = layers.DepthwiseConv2D((1, 1), use_bias=False,
                                                   depthwise_initializer=tf.keras.initializers.Constant(0.15),
-                                                  padding="same", name=f"{name}_pcen_k1_dw") if self.mag_scale == "pcen" else None
+                                                  padding="same", name=f"{name}_pcen_k1_dw", trainable=self.is_trainable) if self.mag_scale == "pcen" else None
         self._pcen_shift_dw = layers.DepthwiseConv2D((1, 1), use_bias=True,
                                                      depthwise_initializer=tf.keras.initializers.Ones(),
                                                      bias_initializer=tf.keras.initializers.Constant(-0.2),
-                                                     padding="same", name=f"{name}_pcen_shift_dw") if self.mag_scale == "pcen" else None
+                                                     padding="same", name=f"{name}_pcen_shift_dw", trainable=self.is_trainable) if self.mag_scale == "pcen" else None
         self._pcen_k2mk1_dw = layers.DepthwiseConv2D((1, 1), use_bias=False,
                                                      depthwise_initializer=tf.keras.initializers.Constant(0.45),
-                                                     padding="same", name=f"{name}_pcen_k2mk1_dw") if self.mag_scale == "pcen" else None
+                                                     padding="same", name=f"{name}_pcen_k2mk1_dw", trainable=self.is_trainable) if self.mag_scale == "pcen" else None
 
         if self.mag_scale == "pwl":
             self._pwl_k0_dw = layers.DepthwiseConv2D((1, 1), use_bias=False,
                                                      depthwise_initializer=tf.keras.initializers.Constant(0.40),
-                                                     padding="same", name=f"{name}_pwl_k0_dw")
+                                                     padding="same", name=f"{name}_pwl_k0_dw", trainable=self.is_trainable)
             self._pwl_shift_dws = [
                 layers.DepthwiseConv2D((1, 1), use_bias=True,
                                        depthwise_initializer=tf.keras.initializers.Ones(),
                                        bias_initializer=tf.keras.initializers.Constant(-t),
-                                       padding="same", name=f"{name}_pwl_shift{i+1}_dw")
+                                       padding="same", name=f"{name}_pwl_shift{i+1}_dw", trainable=self.is_trainable)
                 for i, t in enumerate((0.10, 0.35, 0.65))
             ]
             self._pwl_k_dws = [
                 layers.DepthwiseConv2D((1, 1), use_bias=False,
                                        depthwise_initializer=tf.keras.initializers.Constant(k),
-                                       padding="same", name=f"{name}_pwl_k{i+1}_dw")
+                                       padding="same", name=f"{name}_pwl_k{i+1}_dw", trainable=self.is_trainable)
                 for i, k in enumerate((0.25, 0.15, 0.08))
             ]
         else:
@@ -445,6 +448,7 @@ class AudioFrontendLayer(layers.Layer):
             "mel_norm": self.mel_norm,
             "mag_scale": self.mag_scale,
             "name": self.name,
+            "is_trainable": self.is_trainable,  # NEW
         }
         base = super().get_config()
         base.update(cfg)
@@ -471,9 +475,9 @@ class AudioFrontendLayer(layers.Layer):
         if not self.mel_mixer.built:
             self.mel_mixer.build(tf.TensorShape([None, 1, None, fft_bins + self._pad_ch_in]))
         self.mel_mixer.set_weights([mel_kernel])
-        self.mel_mixer.trainable = False
+        self.mel_mixer.trainable = self.is_trainable  # CHANGED
 
-        # RAW V2D: build window and mixer
+        # RAW V2D: build window/mixer
         if self.mode == "raw":
             in_ch = self.frame_len + self._frame_pad_in
             # Build window dwconv
@@ -491,9 +495,9 @@ class AudioFrontendLayer(layers.Layer):
             # Build 1x1 conv to mel
             if not self.v2d_mixer.built:
                 self.v2d_mixer.build(tf.TensorShape([None, 1, None, in_ch]))
-            # Random small init (let training learn the filterbank)
-            # Keep default initializer
+            self.v2d_mixer.trainable = self.is_trainable  # ensure
 
+        # PCEN/PWL: already created with trainable=self.is_trainable where applicable
         # Build PCEN/PWL shapes
         post_mel_shape = tf.TensorShape([None, 1, None, int(self.mel_bins)])
         if self.mag_scale == "pcen":
@@ -661,7 +665,9 @@ def ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name="ds"):
     y = layers.ReLU(max_value=6, name=f"{name}_pw_relu")(y)
     return y
 
-def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddings_size, num_classes, audio_frontend='precomputed', alpha=1.0, depth_multiplier=1, fft_length=512, mag_scale='none'):
+def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddings_size, num_classes,
+                      audio_frontend='precomputed', alpha=1.0, depth_multiplier=1, fft_length=512,
+                      mag_scale='none', frontend_trainable=False):  # NEW
     """
     Build DS-CNN with selectable audio frontend (mag_scale: 'pcen'|'pwl'|'none').
     """
@@ -687,6 +693,7 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
             chunk_duration=chunk_duration,
             fft_length=fft_length,
             mag_scale=mag_scale,
+            is_trainable=frontend_trainable,  # NEW
             name="audio_frontend",
         )(inputs)
     elif audio_frontend == 'hybrid':
@@ -701,6 +708,7 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
             chunk_duration=chunk_duration,
             fft_length=fft_length,
             mag_scale=mag_scale,
+            is_trainable=frontend_trainable,  # NEW
             name="audio_frontend",
         )(inputs)
     elif audio_frontend in ('tf', 'raw'):
@@ -713,6 +721,7 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
             chunk_duration=chunk_duration,
             fft_length=fft_length,
             mag_scale=mag_scale,
+            is_trainable=frontend_trainable,  # NEW
             name="audio_frontend",
         )(inputs)
     else:
@@ -833,6 +842,7 @@ def get_args():
     parser.add_argument('--embeddings_size', type=int, default=256, help='Size of the final embeddings layer')
     parser.add_argument('--alpha', type=float, default=1.0, help='Alpha for model scaling')
     parser.add_argument('--depth_multiplier', type=int, default=1, help='Depth multiplier for model')
+    parser.add_argument('--frontend_trainable', action='store_true', default=False, help='If set, make audio frontend trainable (mel_mixer/raw mixer/PCEN/PWL).')
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Mixup alpha')
     parser.add_argument('--mixup_probability', type=float, default=0.25, help='Fraction of batch to apply mixup')
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
@@ -926,7 +936,8 @@ if __name__ == "__main__":
         depth_multiplier=args.depth_multiplier,
         embeddings_size=args.embeddings_size,
         fft_length=args.fft_length,
-        mag_scale=args.mag_scale
+        mag_scale=args.mag_scale,
+        frontend_trainable=args.frontend_trainable,  # NEW
     )
     
     model.summary()
@@ -946,6 +957,7 @@ if __name__ == "__main__":
         "depth_multiplier": args.depth_multiplier,
         "num_classes": len(classes),
         "class_names": classes,
+        "frontend_trainable": args.frontend_trainable,  # NEW
     }
     cfg_path = os.path.splitext(args.checkpoint_path)[0] + "_model_config.json"
     with open(cfg_path, "w") as f:
