@@ -41,15 +41,13 @@ def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3):
 
 def get_spectrogram_from_audio(audio, sample_rate=22050, n_fft=1024, mel_bins=48, spec_width=128, mag_scale: str = "none"):
     """
-    Compute a normalized mel spectrogram from an audio chunk.
+    Compute a mel power spectrogram from an audio chunk.
 
-    mag_scale:
-      - 'none' : no dynamic compression
-      - 'pcen' : librosa.pcen on mel power
-      - 'pwl'  : simple piecewise-linear compression on mel power
+    Returns power scale (no dB). Optional dynamic compression is applied in power domain.
     """
     hop_length = (len(audio) // spec_width) if spec_width > 0 else n_fft // 2
 
+    # Power mel spectrogram
     S = librosa.feature.melspectrogram(
         y=audio,
         sr=sample_rate,
@@ -62,11 +60,10 @@ def get_spectrogram_from_audio(audio, sample_rate=22050, n_fft=1024, mel_bins=48
     )  # [mel, frames]
 
     if mag_scale == "pcen":
+        # librosa.pcen expects power spectrogram
         S = librosa.pcen(S, sr=sample_rate, hop_length=hop_length, axis=1)
     elif mag_scale == "pwl":
-        # Piecewise-linear compression on power mel (per-bin), parameters chosen for gentle compression
-        # y = k0*x + k1*relu(x - t1) + k2*relu(x - t2) + k3*relu(x - t3)
-        # Normalize first for numerical stability
+        # Piecewise-linear compression in power domain (per-bin)
         Smin, Smax = S.min(), S.max()
         Snorm = (S - Smin) / (Smax - Smin + 1e-10)
         t1, t2, t3 = 0.10, 0.35, 0.65
@@ -74,9 +71,17 @@ def get_spectrogram_from_audio(audio, sample_rate=22050, n_fft=1024, mel_bins=48
         relu = lambda z: np.maximum(z, 0.0)
         S = k0 * Snorm + k1 * relu(Snorm - t1) + k2 * relu(Snorm - t2) + k3 * relu(Snorm - t3)
 
-    # Convert to dB for visualization/consistency, then min-max normalize and crop/pad width
-    S_db = librosa.power_to_db(S, ref=np.max)
-    S_db = S_db[:, :spec_width]
+    # Crop/pad width, then min-max normalize in power (not dB)
+    S = S[:, :spec_width]
+    S = (S - S.min()) / (S.max() - S.min() + 1e-10)
+    return S
+
+def to_db_for_plot(S_power):
+    """
+    Convert a power spectrogram to dB for visualization and normalize to [0,1].
+    Safe for any power-like input (mel or linear).
+    """
+    S_db = librosa.power_to_db(S_power, ref=np.max)
     S_db = (S_db - S_db.min()) / (S_db.max() - S_db.min() + 1e-10)
     return S_db
 
@@ -187,21 +192,17 @@ def plot_spectrogram(spectrogram, title='Spectrogram'):
     """
     Plot and save a spectrogram image.
 
-    Args:
-        spectrogram (np.ndarray): 2D spectrogram array.
-        title (str): Title for the plot and filename.
-
-    Returns:
-        None
+    Input is expected in power scale. It is converted to dB only for visualization.
     """
+    vis = to_db_for_plot(spectrogram)
+
     plt.figure(figsize=(10, 4))
-    plt.imshow(spectrogram, aspect='auto', origin='lower', cmap='viridis')
+    plt.imshow(vis, aspect='auto', origin='lower', cmap='viridis')
     plt.title(title)
     plt.xlabel('Time (frames)')
     plt.ylabel('Frequency (mel bins)')
     plt.tight_layout()
     plt.show()
-    # save the plot to a file
     plt.savefig(f"samples/{title}.png")
     
     
