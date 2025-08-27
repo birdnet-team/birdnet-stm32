@@ -13,7 +13,7 @@ STM32N6570-DK user manual: [DM00570145](https://www.st.com/resource/en/user_manu
 Clone this repository and navigate to the project directory:
 
 ```bash
-git clone https://github.com/kahst/birdnet-stm32.git
+git clone https://github.com/birdnet-team/birdnet-stm32.git
 cd birdnet-stm32
 ```
 
@@ -66,18 +66,18 @@ Each folder contains `.wav` files of the respective species. Since we're trainin
 
 ### Train the Model
 
-This repo comes with a pre-trained checkpoint (`checkpoints/birdnet_stm32_tiny.h5`) that you can use to test the model conversion and deployment process. To train a custom model, run `train.py` with the desired arguments. 
+This repo comes with a pre-trained and already quantized checkpoint (`checkpoints/birdnet_stm32n6_hybrid.tflite`) that you can use to test the model conversion and deployment process. To train a custom model, run `train.py` with the desired arguments. 
 
 The script will:
 - Split your training data into train and validation sets (--val_split).
-- Split audio files into fixed-length chunks.
+- Split audio files into fixed-length chunks (--chunk_duration) up to a max duration (--max_duration).
 - Generate spectrograms using a selectable frontend:
   - precomputed/librosa: mel spectrograms computed in utils/audio.py (mag_scale applied there).
   - hybrid: linear power spectrogram provided to the model; model applies fixed mel (tf.signal) and optional magnitude scaling.
   - raw/tf: raw audio to model; model does STFT -> fixed mel -> optional magnitude scaling.
-- Build a compact DS-CNN model.
-- Optionally apply mixup augmentation.
-- Train with cosine LR and early stopping; save the best model to .keras.
+- Build a compact DS-CNN model with width scaling (--alpha) and depth multiplier (--depth_multiplier).
+- Optionally apply mixup augmentation (--mixup_alpha, --mixup_probability).
+- Train with cosine LR and early stopping; save the best model to .keras (--checkpoint_path).
 - Save a companion <checkpoint>_model_config.json and <checkpoint>_labels.txt.
 
 Example:
@@ -87,7 +87,7 @@ python train.py \
   --val_split 0.2 \
   --audio_frontend hybrid \
   --mag_scale pcen \
-  --checkpoint_path checkpoints/my_tiny_model.keras
+  --checkpoint_path checkpoints/my_stm32_model.keras
 ```
 
 Arguments:
@@ -115,9 +115,9 @@ Arguments:
 
 Notes:
 - The model saves:
-  - checkpoints/my_tiny_model.keras
-  - checkpoints/my_tiny_model_model_config.json (conversion metadata)
-  - checkpoints/my_tiny_model_labels.txt (class names)
+  - checkpoints/my_stm32_model.keras
+  - checkpoints/my_stm32_model_model_config.json (conversion metadata)
+  - checkpoints/my_stm32_model_labels.txt (class names)
 - Noise classes can be added by placing files under folders named 'noise', 'silence', 'background', or 'other'; these are treated as negatives.
 
 ## Model conversion & validation
@@ -127,18 +127,18 @@ Run convert.py to convert the trained .keras model to a quantized TFLite model (
 The script will:
 - Load the trained .keras model (with AudioFrontendLayer).
 - Read <checkpoint>_model_config.json to reconstruct shapes/modes.
-- Build a representative dataset from training data (no SNR filtering).
+- Build a representative dataset from training data (no SNR filtering this time).
 - Convert to TFLite with PTQ and save <checkpoint>_quantized.tflite.
 - Optionally validate TFLite vs. Keras outputs on representative samples.
 
 Example:
 ```bash
 python convert.py \
-  --checkpoint_path checkpoints/my_tiny_model.keras \
-  --model_config  checkpoints/my_tiny_model_model_config.json \
+  --checkpoint_path checkpoints/my_stm32_model.keras \
+  --model_config  checkpoints/my_stm32_model_model_config.json \
   --data_path_train data/train \
   --validate \
-  --validate_samples 256
+  --validate_samples 50
 ```
 
 Arguments:
@@ -153,8 +153,8 @@ Arguments:
 
 Notes:
 - Validation compares float32 Keras outputs to float32 TFLite outputs on the same inputs using cosine similarity, MSE, MAE, and Pearson r.
-- For meaningful validation, pass --data_path_train so samples come from real audio; otherwise random inputs
-- Validation samples are saved as `.npz` and can be used to validate the model on the STM32N6570-DK later
+- For meaningful validation, pass --data_path_train so samples come from real audio; otherwise random inputs will be used.
+- Validation samples are saved as `.npz` and can be used to validate the model on the STM32N6570-DK later with `stedgeai validate --valinput <file>.npz`.
 
 ### The STM deployment process
 
@@ -202,7 +202,7 @@ Navigate to `/path/to/X-CUBE-AI.10.2.0/Utilities/linux` and run the `stedgeai` c
 ```bash
 cd Utilities/linux
 ./stedgeai generate \
-  --model  /path/to/birdnet-stm32/checkpoints/birdnet-stm32-tiny.tflite \
+  --model  /path/to/birdnet-stm32/checkpoints/my_stm32_model_quantized.tflite \
   --target stm32n6 \ 
   --st-neural-art \
   --output /path/to/birdnet-stm32/validation/st_ai_output \
@@ -352,18 +352,18 @@ Now, we can finally validate the model on the STM32N6570-DK, you can use the `va
 
 ```bash
 ./stedgeai validate \
-  --model  /path/to/birdnet-stm32/checkpoints/birdnet-stm32-tiny.tflite \
+  --model  /path/to/birdnet-stm32/checkpoints/my_stm32_model_quantized.tflite \
   --target stm32n6 \ 
   --mode target \
   --desc serial:921600 \
   --output /path/to/birdnet-stm32/validation/st_ai_output \
   --workspace /path/to/birdnet-stm32/validation/st_ai_ws \
-  --valinput /path/to/birdnet-stm32/checkpoints/birdnet-stm32-tiny_validation_data.npz \
+  --valinput /path/to/birdnet-stm32/checkpoints/my_stm32_model_quantized_validation_data.npz \
   --classifier \
   --verbose
 ```
 
-Make sure to pass the .h5 model file you trained earlier, the validation script will validate on-device outputs vs. the reference model.
+Make sure to pass the quantized tflite file you converted earlier, the validation script will validate on-device outputs vs. the reference model.
 
 You might have to run `sudo chmod a+rw /dev/ttyACM0` to give your user permission to access the serial port.
 
@@ -375,12 +375,23 @@ For more command line options, visit the [ST Edge AI documentation](https://stm3
 
 ## Build and deploy demo application
 
-TODO :)
+This repo comes with a pre-trained model (`birdnet_stm32n6_hybrid.tflite`) that was trained on the 100 most common species of the North-Eastern U.S., Central Europe, and Brazil and achieves a ROC-AUC of 0.XXX on iNatSounds data. The model uses a hybrid audio frontend and expects 257x256 pixel power spectrograms with a fft length of 512, hop length of 258 for 3-second audio chunks at 22050 Hz sample rate (more details in the `birdnet_stm32n6_hybrid_model_config.json` file).
+
+The model is already quantized and can be flashed with `./stedgeai` as described above. Inference for a single chunk takes about X ms on the STM32N6570-DK (which is ~XXXx real-time).
+
+The demo application is still `TODO`.
+
+Here is a rough outline of the steps you would typically follow to build a demo application:
+
+- record audio using the on-board microphone
+- run the fft on a 512-sample frame and accumulate into a ring buffer
+- run inference every second on the last 3 seconds of audio drawn from the ring buffer
+- log the top-5 predictions to the serial console
 
 ## License
 
  - **Source Code & models**: The source code and models for this project is licensed under the [MIT License](https://opensource.org/licenses/MIT).
- - **STM tools and scripts**: The STM tools and scripts used in this project are licensed under different licenses, please refer to the respective documentation for details.
+ - **STM tools and scripts**: The STM tools and scripts used in this project are licensed under varying licenses, please refer to the respective documentation for details.
  - **Citation**: Feel free to use the code or models in your research. If you do, please cite as:
 
 ```bibtex
