@@ -362,7 +362,7 @@ class AudioFrontendLayer(layers.Layer):
             use_bias=False,
             kernel_constraint=constraints.NonNeg(),
             name=f"{name}_mel_mixer",
-            trainable=self.is_trainable,
+            trainable=False, #self.is_trainable,
         )
 
         # RAW V2D: fold waveform into frames and mix with 1x1 convs (N6-friendly)
@@ -386,7 +386,7 @@ class AudioFrontendLayer(layers.Layer):
                 padding="same",
                 use_bias=False,
                 name=f"{name}_v2d_mixer",
-                trainable=self.is_trainable,  # mel can be trainable
+                trainable=False, #self.is_trainable
             )
         else:
             self.frame_len = None
@@ -395,21 +395,22 @@ class AudioFrontendLayer(layers.Layer):
             self.v2d_mixer = None
 
         # PCEN/PWL sublayers (respect is_trainable)
-        self._pcen_pools = [layers.AveragePooling2D(pool_size=(1, 3), strides=(1, 1), padding="same",
-                                                    name=f"{name}_pcen_ema{k}") for k in range(self.pcen_K)] if self.mag_scale == "pcen" else []
-        self._pcen_agc_dw = layers.DepthwiseConv2D((1, 1), use_bias=False,
-                                                   depthwise_initializer=tf.keras.initializers.Constant(0.6),
-                                                   padding="same", name=f"{name}_pcen_agc_dw", trainable=self.is_trainable) if self.mag_scale == "pcen" else None
-        self._pcen_k1_dw = layers.DepthwiseConv2D((1, 1), use_bias=False,
-                                                  depthwise_initializer=tf.keras.initializers.Constant(0.15),
-                                                  padding="same", name=f"{name}_pcen_k1_dw", trainable=self.is_trainable) if self.mag_scale == "pcen" else None
-        self._pcen_shift_dw = layers.DepthwiseConv2D((1, 1), use_bias=True,
-                                                     depthwise_initializer=tf.keras.initializers.Ones(),
-                                                     bias_initializer=tf.keras.initializers.Constant(-0.2),
-                                                     padding="same", name=f"{name}_pcen_shift_dw", trainable=self.is_trainable) if self.mag_scale == "pcen" else None
-        self._pcen_k2mk1_dw = layers.DepthwiseConv2D((1, 1), use_bias=False,
-                                                     depthwise_initializer=tf.keras.initializers.Constant(0.45),
-                                                     padding="same", name=f"{name}_pcen_k2mk1_dw", trainable=self.is_trainable) if self.mag_scale == "pcen" else None
+        if self.mag_scale == "pcen":
+            self._pcen_pools = [layers.AveragePooling2D(pool_size=(1, 3), strides=(1, 1), padding="same",
+                                                        name=f"{name}_pcen_ema{k}") for k in range(self.pcen_K)]
+            self._pcen_agc_dw = layers.DepthwiseConv2D((1, 1), use_bias=False,
+                                                    depthwise_initializer=tf.keras.initializers.Constant(0.6),
+                                                    padding="same", name=f"{name}_pcen_agc_dw", trainable=self.is_trainable)
+            self._pcen_k1_dw = layers.DepthwiseConv2D((1, 1), use_bias=False,
+                                                    depthwise_initializer=tf.keras.initializers.Constant(0.15),
+                                                    padding="same", name=f"{name}_pcen_k1_dw", trainable=self.is_trainable)
+            self._pcen_shift_dw = layers.DepthwiseConv2D((1, 1), use_bias=True,
+                                                        depthwise_initializer=tf.keras.initializers.Ones(),
+                                                        bias_initializer=tf.keras.initializers.Constant(-0.2),
+                                                        padding="same", name=f"{name}_pcen_shift_dw", trainable=self.is_trainable)
+            self._pcen_k2mk1_dw = layers.DepthwiseConv2D((1, 1), use_bias=False,
+                                                        depthwise_initializer=tf.keras.initializers.Constant(0.45),
+                                                        padding="same", name=f"{name}_pcen_k2mk1_dw", trainable=self.is_trainable)
 
         if self.mag_scale == "pwl":
             self._pwl_k0_dw = layers.DepthwiseConv2D((1, 1), use_bias=False,
@@ -454,7 +455,6 @@ class AudioFrontendLayer(layers.Layer):
         if not self.mel_mixer.built:
             self.mel_mixer.build(tf.TensorShape([None, 1, None, fft_bins + self._pad_ch_in]))
         self.mel_mixer.set_weights([mel_kernel])
-        self.mel_mixer.trainable = self.is_trainable  # mel can be trainable
 
         # RAW V2D: build window/mixer
         if self.mode == "raw":
@@ -474,7 +474,6 @@ class AudioFrontendLayer(layers.Layer):
             # Build 1x1 conv to mel
             if not self.v2d_mixer.built:
                 self.v2d_mixer.build(tf.TensorShape([None, 1, None, in_ch]))
-            self.v2d_mixer.trainable = self.is_trainable  # ensure
 
         # PCEN/PWL: already created with trainable=self.is_trainable where applicable
         # Build PCEN/PWL shapes
@@ -880,7 +879,7 @@ if __name__ == "__main__":
     # Load file paths and classes
     file_paths, classes = load_file_paths_from_directory(args.data_path_train, 
                                                          max_samples=args.max_samples, 
-                                                         #classes=get_classes_with_most_samples(args.data_path_train, 25, False) # DEBUG: Only use 25 classes for debugging
+                                                         classes=get_classes_with_most_samples(args.data_path_train, 25, False) # DEBUG: Only use 25 classes for debugging
                                                          )
 
     # Perform sanity check on the dataset
