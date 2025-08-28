@@ -109,7 +109,7 @@ def get_spectrogram_from_audio(audio, sample_rate=22050, n_fft=1024, mel_bins=48
 
     return S
 
-def to_db_for_plot(S_power):
+def to_db(S_power):
     """
     Convert a power spectrogram to dB for visualization and normalize to [0,1].
     Safe for any power-like input (mel or linear).
@@ -117,6 +117,14 @@ def to_db_for_plot(S_power):
     S_db = librosa.power_to_db(S_power, ref=np.max)
     S_db = (S_db - S_db.min()) / (S_db.max() - S_db.min() + 1e-10)
     return S_db
+
+def normalize(S):
+    """
+    Normalize a spectrogram to [0, 1].
+    Safe for any power-like input (mel or linear).
+    """
+    S = (S - S.min()) / (S.max() - S.min() + 1e-10)
+    return S
 
 def get_linear_spectrogram_from_audio(audio, sample_rate=22050, n_fft=512, spec_width=128, power=2.0):
     """
@@ -227,7 +235,9 @@ def plot_spectrogram(spectrogram, title='Spectrogram'):
 
     Input is expected in power scale. It is converted to dB only for visualization.
     """
-    vis = to_db_for_plot(spectrogram)
+    
+    # Convert to dB for visualization
+    vis = to_db(spectrogram)
 
     plt.figure(figsize=(10, 4))
     plt.imshow(vis, aspect='auto', origin='lower', cmap='viridis')
