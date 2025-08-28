@@ -66,37 +66,47 @@ def get_spectrogram_from_audio(audio, sample_rate=22050, n_fft=1024, mel_bins=48
     """
     Compute a mel power spectrogram from an audio chunk.
 
-    Returns power scale (no dB). Optional dynamic compression is applied in power domain.
+    Returns power-like spectrogram, normalized to [0,1] AFTER mag_scale.
+    For PWL, it also performs a pre-normalization like the TF frontend.
     """
     hop_length = (len(audio) // spec_width) if spec_width > 0 else n_fft // 2
-
-    # Power mel spectrogram
     S = librosa.feature.melspectrogram(
         y=audio,
         sr=sample_rate,
         n_fft=n_fft,
         hop_length=hop_length,
+        win_length=n_fft,
+        window="hann",
         n_mels=mel_bins,
         power=2.0,
+        fmin=150,
         fmax=sample_rate // 2,
-        fmin=150
+        htk=False,
+        norm="slaney",
     )  # [mel, frames]
+
+    # Crop to spec_width first for consistency
+    S = S[:, :spec_width]
 
     if mag_scale == "pcen":
         # librosa.pcen expects power spectrogram
         S = librosa.pcen(S, sr=sample_rate, hop_length=hop_length, axis=1)
+
     elif mag_scale == "pwl":
-        # Piecewise-linear compression in power domain (per-bin)
+        # Pre-normalize like TF frontend does before PWL branches
         Smin, Smax = S.min(), S.max()
         Snorm = (S - Smin) / (Smax - Smin + 1e-10)
+
+        # Piecewise-linear compression (same breakpoints/slopes as frontend)
         t1, t2, t3 = 0.10, 0.35, 0.65
         k0, k1, k2, k3 = 0.40, 0.25, 0.15, 0.08
         relu = lambda z: np.maximum(z, 0.0)
         S = k0 * Snorm + k1 * relu(Snorm - t1) + k2 * relu(Snorm - t2) + k3 * relu(Snorm - t3)
 
-    # Crop/pad width, then min-max normalize in power (not dB)
-    S = S[:, :spec_width]
-    S = (S - S.min()) / (S.max() - S.min() + 1e-10)
+    # Final per-sample min-max normalization AFTER mag_scale (unifies with TF frontend)
+    Smin, Smax = S.min(), S.max()
+    S = (S - Smin) / (Smax - Smin + 1e-10)
+
     return S
 
 def to_db_for_plot(S_power):

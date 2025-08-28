@@ -36,13 +36,17 @@ if gpus:
     
 def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30, chunk_duration=3, spec_width=128, mel_bins=64, audio_frontend='precomputed', tf_frontend_layer=None, fft_length=512, mag_scale='none'):
     """
-    Visual check: always plot dB from power (no frontend compression), using the same mel basis.
+    Visual check before/after training:
+      - precomputed: plot mel spectrogram with selected mag_scale (PCEN/PWL/none) computed offline.
+      - hybrid/raw(tf): plot TF AudioFrontendLayer output with selected mag_scale.
+      - if tf_frontend_layer is provided (post-training), use it (trained params) for hybrid/raw.
     """
     os.makedirs("samples", exist_ok=True)
     np.random.shuffle(file_paths)
 
     tf_frontend = None
     if audio_frontend in ('hybrid', 'tf', 'raw'):
+        # Use trained frontend if provided, otherwise build one configured with requested mag_scale
         tf_frontend = tf_frontend_layer or AudioFrontendLayer(
             mode='raw' if audio_frontend in ('tf', 'raw') else 'hybrid',
             mel_bins=mel_bins,
@@ -50,7 +54,7 @@ def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30
             sample_rate=sample_rate,
             chunk_duration=chunk_duration,
             fft_length=fft_length,
-            mag_scale='none',  # force power-only for plotting
+            mag_scale=mag_scale,  # apply requested mag scale for plotting
             name="audio_frontend_sanity",
         )
         fft_bins = fft_length // 2 + 1
@@ -63,14 +67,15 @@ def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30
         if len(audio_chunks) == 0: continue
 
         if audio_frontend in ('librosa', 'precomputed'):
-            # Power mel (no normalization/compression)
-            specs = [mel_power_spectrogram(chunk, sample_rate, n_fft=fft_length, mel_bins=mel_bins, spec_width=spec_width, fmin=150, fmax=sample_rate//2) for chunk in audio_chunks]
+            # Precompute mel + requested mag_scale for visualization
+            specs = [get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=mel_bins, spec_width=spec_width, mag_scale=mag_scale) for chunk in audio_chunks]
             pool = sort_by_s2n(specs, threshold=0.5) or specs
             if len(pool) == 0: continue
             spec = pick_random_samples(pool, num_samples=1)
             spec = spec[0] if isinstance(spec, list) else spec
+
         elif audio_frontend == 'hybrid':
-            # Feed linear power to TF frontend (which applies librosa-matched mel)
+            # Feed linear power to TF frontend (mel + mag_scale applied in TF layer)
             specs = [linear_power_spectrogram(chunk, sample_rate, n_fft=fft_length, spec_width=spec_width, power=2.0) for chunk in audio_chunks]
             pool = sort_by_s2n(specs, threshold=0.5) or specs
             if len(pool) == 0: continue
@@ -78,6 +83,7 @@ def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30
             spec_in = spec_in[0] if isinstance(spec_in, list) else spec_in  # [fft_bins, spec_width]
             inp = spec_in[np.newaxis, :, :, np.newaxis].astype(np.float32)   # [B,fft_bins,T,1]
             spec = tf_frontend(inp, training=False).numpy()[0, :, :, 0]
+
         else:  # raw/tf
             pool = sort_by_s2n(audio_chunks, threshold=0.5) or audio_chunks
             if len(pool) == 0: continue
@@ -307,8 +313,8 @@ class AudioFrontendLayer(layers.Layer):
     """
     Audio frontend:
       - mode='precomputed': input [B, mel_bins, spec_width, 1]. Optional mag scale (pcen/pwl).
-      - mode='hybrid':      input [B, 1, spec_width, fft_bins] (NHWC). 1x1 Conv (mel mixer) runs on NPU.
-      - mode='raw':         input [B, T, 1]. Conv1D-DFT -> power -> [B,1,frames,fft_bins] (NHWC).
+      - mode='hybrid':      input [B, fft_bins, spec_width, 1]. Mel = 1x1 Conv on channels (NPU).
+      - mode='raw':         input [B, T, 1]. V2D fold -> 1x1 DW (window) -> 1x1 Conv to mel.
     """
     def __init__(
         self,
@@ -318,7 +324,6 @@ class AudioFrontendLayer(layers.Layer):
         sample_rate: int,
         chunk_duration: int,
         fft_length: int = 512,
-        use_pcen: bool = False,
         pcen_K: int = 4,
         init_mel: bool = True,
         mel_fmin: float = 150.0,
@@ -337,7 +342,6 @@ class AudioFrontendLayer(layers.Layer):
         self.sample_rate = int(sample_rate)
         self.chunk_duration = int(chunk_duration)
         self.fft_length = int(fft_length)
-        self.use_pcen = bool(use_pcen)
         self.pcen_K = int(pcen_K)
         self.init_mel = bool(init_mel)
         self.mel_fmin = float(mel_fmin)
@@ -345,9 +349,6 @@ class AudioFrontendLayer(layers.Layer):
         self.mel_norm = mel_norm
         self.mag_scale = mag_scale
         self.is_trainable = bool(is_trainable)
-
-        if self.use_pcen and self.mag_scale == "none":
-            self.mag_scale = "pcen"
 
         # stride targeting spec_width (no external pad ops)
         self._T = int(self.sample_rate) * int(self.chunk_duration)
@@ -361,7 +362,7 @@ class AudioFrontendLayer(layers.Layer):
             use_bias=False,
             kernel_constraint=constraints.NonNeg(),
             name=f"{name}_mel_mixer",
-            trainable=self.is_trainable,  # CHANGED
+            trainable=self.is_trainable,
         )
 
         # RAW V2D: fold waveform into frames and mix with 1x1 convs (N6-friendly)
@@ -385,7 +386,7 @@ class AudioFrontendLayer(layers.Layer):
                 padding="same",
                 use_bias=False,
                 name=f"{name}_v2d_mixer",
-                trainable=self.is_trainable,  # CHANGED
+                trainable=self.is_trainable,  # mel can be trainable
             )
         else:
             self.frame_len = None
@@ -432,28 +433,6 @@ class AudioFrontendLayer(layers.Layer):
             self._pwl_shift_dws = []
             self._pwl_k_dws = []
 
-    def get_config(self):
-        cfg = {
-            "mode": self.mode,
-            "mel_bins": self.mel_bins,
-            "spec_width": self.spec_width,
-            "sample_rate": self.sample_rate,
-            "chunk_duration": self.chunk_duration,
-            "fft_length": self.fft_length,
-            "use_pcen": self.use_pcen,
-            "pcen_K": self.pcen_K,
-            "init_mel": self.init_mel,
-            "mel_fmin": self.mel_fmin,
-            "mel_fmax": self.mel_fmax,
-            "mel_norm": self.mel_norm,
-            "mag_scale": self.mag_scale,
-            "name": self.name,
-            "is_trainable": self.is_trainable,  # NEW
-        }
-        base = super().get_config()
-        base.update(cfg)
-        return base
-
     def build(self, input_shape):
         fft_bins = self.fft_length // 2 + 1
         # Use librosa Slaney mel basis to match librosa visuals
@@ -475,7 +454,7 @@ class AudioFrontendLayer(layers.Layer):
         if not self.mel_mixer.built:
             self.mel_mixer.build(tf.TensorShape([None, 1, None, fft_bins + self._pad_ch_in]))
         self.mel_mixer.set_weights([mel_kernel])
-        self.mel_mixer.trainable = self.is_trainable  # CHANGED
+        self.mel_mixer.trainable = self.is_trainable  # mel can be trainable
 
         # RAW V2D: build window/mixer
         if self.mode == "raw":
@@ -539,11 +518,19 @@ class AudioFrontendLayer(layers.Layer):
         y = b1 + b2
         return tf.nn.relu(y)
 
+    # NEW: per-sample min-max normalization helper (to [0,1])
+    def _minmax_norm(self, x):
+        # x is [B,1,T,C]
+        x_min = tf.reduce_min(x, axis=[1, 2, 3], keepdims=True)
+        x_max = tf.reduce_max(x, axis=[1, 2, 3], keepdims=True)
+        return (x - x_min) / (x_max - x_min + 1e-6)
+
     def _apply_pwl(self, x):
         """
         Piecewise-linear compression on [B,1,T,C] via 1x1 depthwise convs.
-        Uses chained Add (no AddN) for STM32N6 compatibility.
+        Uses chained tf.add to avoid AddN.
         """
+        
         branches = []
         if self._pwl_k0_dw is not None:
             branches.append(self._pwl_k0_dw(x))
@@ -552,7 +539,6 @@ class AudioFrontendLayer(layers.Layer):
             branches.append(k_dw(relu))
         if not branches:
             return x
-        # Replace tf.add_n with pairwise tf.add to avoid ONNX AddN
         y = branches[0]
         for j, b in enumerate(branches[1:], start=1):
             y = tf.add(y, b, name=f"{self.name}_pwl_add_{j}")
@@ -570,11 +556,14 @@ class AudioFrontendLayer(layers.Layer):
         if self.mode == "precomputed":
             y = inputs[:, :, :self.spec_width, :]
             if self.mag_scale != "none":
-                y = tf.transpose(y, [0, 2, 1, 3])     # [B,T,mel,1]
-                y = tf.transpose(y, [0, 3, 1, 2])     # [B,1,T,mel]
-                y = self._apply_mag(y)
-                y = tf.transpose(y, [0, 2, 3, 1])     # [B,T,mel,1]
-                y = tf.transpose(y, [0, 2, 1, 3])     # [B,mel,T,1]
+                # reshape to [B,1,T,mel]
+                y = tf.transpose(y, [0, 2, 1, 3])
+                y = tf.transpose(y, [0, 3, 1, 2])
+                y = self._apply_mag(y)                   # [B,1,T,mel]
+                #y = self._minmax_norm(y)
+                # back to [B, mel, T, 1]
+                y = tf.transpose(y, [0, 2, 3, 1])
+                y = tf.transpose(y, [0, 2, 1, 3])
             return y
 
         # hybrid: [B, fft_bins, T, 1] -> [B,1,T,fft_bins]
@@ -591,34 +580,52 @@ class AudioFrontendLayer(layers.Layer):
             y = self.mel_mixer(y)                   # [B,1,T,mel]
             y = tf.nn.relu(y)
             y = self._apply_mag(y)
+            #y = self._minmax_norm(y)
             y = tf.transpose(y, [0, 3, 2, 1])       # [B,mel,T,1]
             return y[:, :, :self.spec_width, :]
 
-        # raw (V2D): [B,T,1] -> fold -> 1x1 dwconv window -> 1x1 conv to mel
+        # raw (V2D): [B,T,1] -> fold -> 1x1 dw window -> 1x1 conv to mel
         x = inputs  # [B,T,1]
         B = tf.shape(x)[0]
         L = self.frame_len * self.spec_width
-        x = x[:, :L, :]                              # [B,L,1] (drop tail, no pad op)
-        # Reshape to NHWC [B,1,T(spec_width), C(frame_len)]
-        y = tf.reshape(x, [B, self.spec_width, self.frame_len, 1])   # [B,T,C,1]
+        x = x[:, :L, :]                              # [B,L,1]
+        y = tf.reshape(x, [B, self.spec_width, self.frame_len, 1])  # [B,T,C,1]
         y = tf.transpose(y, [0, 3, 1, 2])                            # [B,1,T,C]
-        # Channel pad to multiple-of-8
         if self._frame_pad_in:
             t = tf.shape(y)[2]
             z = tf.zeros([B, 1, t, self._frame_pad_in], dtype=y.dtype)
-            y = tf.concat([y, z], axis=-1)                           # [B,1,T,C+pad]
-        # Apply Hann window (per-channel scale) and mix to mel via 1x1 conv
-        y = self.v2d_window_dw(y)                                    # [B,1,T,C(+pad)]
+            y = tf.concat([y, z], axis=-1)
+        y = self.v2d_window_dw(y)
         y = self.v2d_mixer(y)                                        # [B,1,T,mel]
         y = tf.nn.relu(y)
-        # Optional magnitude scaling
         y = self._apply_mag(y)
-        # Return [B, mel, T, 1]
+        #y = self._minmax_norm(y)
         y = tf.transpose(y, [0, 3, 2, 1])                             # [B,mel,T,1]
         return y[:, :, :self.spec_width, :]
 
     def compute_output_shape(self, input_shape):
         return (input_shape[0], int(self.mel_bins), int(self.spec_width), 1)
+    
+    def get_config(self):
+        cfg = {
+            "mode": self.mode,
+            "mel_bins": self.mel_bins,
+            "spec_width": self.spec_width,
+            "sample_rate": self.sample_rate,
+            "chunk_duration": self.chunk_duration,
+            "fft_length": self.fft_length,
+            "pcen_K": self.pcen_K,
+            "init_mel": self.init_mel,
+            "mel_fmin": self.mel_fmin,
+            "mel_fmax": self.mel_fmax,
+            "mel_norm": self.mel_norm,
+            "mag_scale": self.mag_scale,
+            "name": self.name,
+            "is_trainable": self.is_trainable,
+        }
+        base = super().get_config()
+        base.update(cfg)
+        return base
 
 def _make_divisible(v, divisor=8):
     v = int(v + divisor / 2) // divisor * divisor
@@ -693,7 +700,7 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
             chunk_duration=chunk_duration,
             fft_length=fft_length,
             mag_scale=mag_scale,
-            is_trainable=frontend_trainable,  # NEW
+            is_trainable=frontend_trainable,
             name="audio_frontend",
         )(inputs)
     elif audio_frontend == 'hybrid':
@@ -708,7 +715,7 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
             chunk_duration=chunk_duration,
             fft_length=fft_length,
             mag_scale=mag_scale,
-            is_trainable=frontend_trainable,  # NEW
+            is_trainable=frontend_trainable,
             name="audio_frontend",
         )(inputs)
     elif audio_frontend in ('tf', 'raw'):
@@ -721,22 +728,22 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
             chunk_duration=chunk_duration,
             fft_length=fft_length,
             mag_scale=mag_scale,
-            is_trainable=frontend_trainable,  # NEW
+            is_trainable=frontend_trainable,
             name="audio_frontend",
         )(inputs)
     else:
         raise ValueError("Invalid audio_frontend.")
 
     # Stem (3x3, stride 1) to lift channels
-    stem_ch = _make_divisible(int(24 * alpha), 8)
-    x = layers.Conv2D(stem_ch, (3, 3), strides=(1, 1), padding='same', use_bias=False, name="stem_conv")(x)
+    stem_ch = _make_divisible(int(16 * alpha), 8)
+    x = layers.Conv2D(stem_ch, (3, 3), strides=(1, 2), padding='same', use_bias=False, name="stem_conv")(x)
     x = layers.BatchNormalization(name="stem_bn")(x)
     x = layers.ReLU(max_value=6, name="stem_relu")(x)
 
     # Stages: (filters, repeats, (stride_f, stride_t))
     # Use stride 2 in both axes early to reduce HxW; last stage keeps 1x1.
-    base_filters = [32, 64, 128, 256]
-    base_repeats = [2, 3, 3, 2]
+    base_filters = [24, 48, 96, 128]
+    base_repeats = [2, 3, 4, 2]
     base_strides = [(2, 2), (2, 2), (2, 2), (2, 2)]
 
     for si, (bf, br, (sf, st)) in enumerate(zip(base_filters, base_repeats, base_strides), start=1):
@@ -748,7 +755,7 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
             x = ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name=f"stage{si}_ds{bi}")
             
     # Final 1x1 conv to embeddings
-    emb_ch = _make_divisible(int(embeddings_size * alpha), 8)
+    emb_ch = _make_divisible(int(embeddings_size), 8)
     # check if we already have emb_ch channels
     if not (x.shape[-1] is not None and int(x.shape[-1]) == int(emb_ch)):    
         x = layers.Conv2D(emb_ch, (1, 1), strides=(1, 1), padding='same', use_bias=False, name="emb_conv")(x)
@@ -788,15 +795,13 @@ def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.00
 
     # Ensure checkpoint dir exists
     os.makedirs(os.path.dirname(checkpoint_path) or ".", exist_ok=True)
-
-    first_decay_steps = max(1, steps_per_epoch * max(1, epochs // 10))
-    lr_schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
+    
+    lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
         initial_learning_rate=learning_rate,
-        first_decay_steps=first_decay_steps,
-        t_mul=2.0,
-        m_mul=1.0,
-        alpha=1e-4
+        decay_steps=epochs * steps_per_epoch,
+        alpha=0.0
     )
+    
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
         loss='binary_crossentropy',
@@ -817,6 +822,14 @@ def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.00
     )
     return history
 
+def compute_hop_length(sample_rate: int, chunk_duration: int, spec_width: int) -> int:
+    """
+    Hop length used to produce spec_width frames from a chunk of length T=sample_rate*chunk_duration.
+    Uses floor division to match the data generators (librosa/hybrid).
+    """
+    T = int(sample_rate) * int(chunk_duration)
+    return max(1, T // int(spec_width))
+
 def get_args():
     """
     Parse command-line arguments.
@@ -829,7 +842,7 @@ def get_args():
     parser.add_argument('--max_samples', type=int, default=None, help='Max samples per class for training (None for all)')
     parser.add_argument('--sample_rate', type=int, default=22050, help='Audio sample rate. Default is 22050 Hz.')
     parser.add_argument('--num_mels', type=int, default=64, help='Number of mel bins for spectrogram')
-    parser.add_argument('--spec_width', type=int, default=128, help='Spectrogram width')
+    parser.add_argument('--spec_width', type=int, default=256, help='Spectrogram width')
     parser.add_argument('--fft_length', type=int, default=512, help='FFT length for STFT/linear spectrogram')
     parser.add_argument('--chunk_duration', type=int, default=3, help='Audio chunk duration (seconds)')
     parser.add_argument('--max_duration', type=int, default=60, help='Max audio duration (seconds)')
@@ -840,9 +853,9 @@ def get_args():
                         choices=['pcen', 'pwl', 'none'],
                         help='Magnitude compression in frontend: pcen | pwl | none')
     parser.add_argument('--embeddings_size', type=int, default=256, help='Size of the final embeddings layer')
-    parser.add_argument('--alpha', type=float, default=1.0, help='Alpha for model scaling')
+    parser.add_argument('--alpha', type=float, default=0.5, help='Alpha for model scaling')
     parser.add_argument('--depth_multiplier', type=int, default=1, help='Depth multiplier for model')
-    parser.add_argument('--frontend_trainable', action='store_true', default=False, help='If set, make audio frontend trainable (mel_mixer/raw mixer/PCEN/PWL).')
+    parser.add_argument('--frontend_trainable', action='store_true', default=True, help='If set, make audio frontend trainable (mel_mixer/raw mixer/PCEN/PWL).')
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Mixup alpha')
     parser.add_argument('--mixup_probability', type=float, default=0.25, help='Fraction of batch to apply mixup')
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
@@ -861,12 +874,15 @@ if __name__ == "__main__":
             print(f"[WARN] STM32N6 compile will fail: raw input length {T} >= 65536.")
             print("       Use --sample_rate 16000 or --chunk_duration 2, or switch to --audio_frontend hybrid/precomputed.")
     
+    # Compute hop length once for config/diagnostics
+    hop_length = compute_hop_length(args.sample_rate, args.chunk_duration, args.spec_width)
+
     # Load file paths and classes
     file_paths, classes = load_file_paths_from_directory(args.data_path_train, 
-                                                         args.max_samples, 
+                                                         max_samples=args.max_samples, 
                                                          #classes=get_classes_with_most_samples(args.data_path_train, 25, False) # DEBUG: Only use 25 classes for debugging
                                                          )
-    
+
     # Perform sanity check on the dataset
     dataset_sanity_check(
         file_paths, classes,
@@ -950,6 +966,7 @@ if __name__ == "__main__":
         "spec_width": args.spec_width,
         "fft_length": args.fft_length,
         "chunk_duration": args.chunk_duration,
+        "hop_length": hop_length,  # NEW: derived from SR, duration, spec_width
         "audio_frontend": args.audio_frontend,
         "mag_scale": args.mag_scale,
         "embeddings_size": args.embeddings_size,
@@ -957,7 +974,7 @@ if __name__ == "__main__":
         "depth_multiplier": args.depth_multiplier,
         "num_classes": len(classes),
         "class_names": classes,
-        "frontend_trainable": args.frontend_trainable,  # NEW
+        "frontend_trainable": args.frontend_trainable,
     }
     cfg_path = os.path.splitext(args.checkpoint_path)[0] + "_model_config.json"
     with open(cfg_path, "w") as f:

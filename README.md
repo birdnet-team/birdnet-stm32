@@ -54,6 +54,9 @@ After downloading, sort files into folders with folder names as labels (i.e., sp
 data/
 ├── train/
 │   ├── species1/
+|   |  ├── file1.wav
+│   |  ├── file2.wav
+│   |  └── ...
 │   ├── species2/
 │   └── ...
 └── test/

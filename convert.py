@@ -8,6 +8,9 @@ import json
 from train import load_file_paths_from_directory, AudioFrontendLayer
 from utils.audio import load_audio_file, get_spectrogram_from_audio, get_linear_spectrogram_from_audio, sort_by_s2n, pick_random_samples
 
+# Ensure XNNPACK is disabled for TFLite runtime (fallback to builtin kernels)
+os.environ.setdefault("TF_LITE_DISABLE_XNNPACK", "1")
+
 def representative_data_gen(file_paths, cfg, num_samples=100, reps_per_file=4):
     """
     Representative dataset generator using training config.
@@ -128,7 +131,8 @@ def validate_models(keras_model, tflite_model_path, rep_data_gen, num_samples=50
             yields single-element lists with one input batch tensor per iteration.
         num_samples (int): Max number of samples to evaluate.
     """
-    interpreter = tf.lite.Interpreter(model_path=tflite_model_path)
+    # Create interpreter without delegates (disables XNNPACK explicitly)
+    interpreter = tf.lite.Interpreter(model_path=tflite_model_path, experimental_delegates=[])
     interpreter.allocate_tensors()
     in_det = interpreter.get_input_details()[0]
     out_det = interpreter.get_output_details()[0]
