@@ -13,8 +13,27 @@ os.environ.setdefault("TF_LITE_DISABLE_XNNPACK", "1")
 
 def representative_data_gen(file_paths, cfg, num_samples=100, reps_per_file=4):
     """
-    Representative dataset generator using training config.
-    cfg keys used: sample_rate, num_mels, spec_width, chunk_duration, fft_length, audio_frontend, mag_scale
+    Build a representative dataset generator from training configuration.
+
+    Uses training-time settings to produce inputs consistent with the model's
+    expected frontend and shape for post-training quantization (PTQ).
+
+    Args:
+        file_paths (list[str]): Audio file paths for sampling.
+        cfg (dict): Training config with keys:
+            - sample_rate (int)
+            - num_mels (int)
+            - spec_width (int)
+            - chunk_duration (int)
+            - fft_length (int)
+            - audio_frontend (str): 'precomputed' | 'librosa' | 'hybrid' | 'raw' | 'tf'
+            - mag_scale (str): 'none' | 'pcen' | 'pwl'
+        num_samples (int): Maximum number of samples to yield.
+        reps_per_file (int): How many chunks/spectrograms to draw per file.
+
+    Yields:
+        list[np.ndarray]: A single-element list containing one input tensor
+            with batch dimension (shape depends on frontend).
     """
     random.seed(42)
     np.random.seed(42)
@@ -74,7 +93,7 @@ def representative_data_gen(file_paths, cfg, num_samples=100, reps_per_file=4):
             
 def _cosine(a, b, eps=1e-12):
     """
-    Compute cosine similarity between two 1D arrays.
+    Compute cosine similarity between two flattened arrays.
 
     Args:
         a (np.ndarray): Flattened predictions from Keras.
@@ -82,8 +101,8 @@ def _cosine(a, b, eps=1e-12):
         eps (float): Small value to avoid division by zero.
 
     Returns:
-        float: Cosine similarity in [-1, 1]. Returns 1.0 if both vectors are near-zero,
-               else 0.0 if only one vector is near-zero.
+        float: Cosine similarity in [-1, 1]. If either vector has near-zero norm,
+            returns 1.0 when both are near-zero, otherwise 0.0.
     """
     an = np.linalg.norm(a)
     bn = np.linalg.norm(b)
@@ -93,7 +112,7 @@ def _cosine(a, b, eps=1e-12):
 
 def _pearson(a, b, eps=1e-12):
     """
-    Compute Pearson correlation coefficient between two 1D arrays.
+    Compute Pearson correlation coefficient between two flattened arrays.
 
     Args:
         a (np.ndarray): Flattened predictions from Keras.
@@ -101,7 +120,8 @@ def _pearson(a, b, eps=1e-12):
         eps (float): Small value to guard against zero variance.
 
     Returns:
-        float: Pearson's r in [-1, 1]. Returns 1.0 if both vectors have near-zero variance.
+        float: Pearson's r in [-1, 1]. If both vectors have near-zero variance,
+            returns 1.0.
     """
     a = a - np.mean(a)
     b = b - np.mean(b)
@@ -112,24 +132,29 @@ def _pearson(a, b, eps=1e-12):
 
 def validate_models(keras_model, tflite_model_path, rep_data_gen, num_samples=50):
     """
-    Validate TFLite vs. Keras outputs on representative samples.
+    Validate TFLite vs. Keras predictions on representative samples.
 
-    Runs both models on up to num_samples inputs from rep_data_gen() and reports:
-      - cosine similarity
-      - mean squared error (mse)
-      - mean absolute error (mae)
-      - Pearson correlation coefficient (pearson_r)
+    Runs up to num_samples inputs produced by rep_data_gen() through both models and
+    reports agreement metrics.
+
+    Metrics:
+        - cosine similarity
+        - mean squared error (MSE)
+        - mean absolute error (MAE)
+        - Pearson correlation coefficient (r)
 
     Assumptions:
-      - The TFLite model uses float32 I/O (converter.inference_input/output_type=float32).
-      - Internal ops may be int8 (PTQ), which this compares against float32 Keras.
+        - TFLite model uses float32 I/O (even if internally int8 via PTQ).
 
     Args:
-        keras_model (tf.keras.Model): Loaded Keras model (.h5 or .keras).
+        keras_model (tf.keras.Model): Loaded Keras model (.keras).
         tflite_model_path (str): Path to the converted .tflite file.
         rep_data_gen (Callable[[], Iterator[list[np.ndarray]]]): Generator factory that
-            yields single-element lists with one input batch tensor per iteration.
-        num_samples (int): Max number of samples to evaluate.
+            yields single-element lists with one input tensor per iteration.
+        num_samples (int): Maximum number of samples to evaluate.
+
+    Returns:
+        None. Prints metric summaries to stdout.
     """
     # Create interpreter without delegates (disables XNNPACK explicitly)
     interpreter = tf.lite.Interpreter(model_path=tflite_model_path, experimental_delegates=[])
@@ -182,7 +207,20 @@ def validate_models(keras_model, tflite_model_path, rep_data_gen, num_samples=50
 
 def main():
     """
-    Load a .keras model, read its JSON config, build a matching representative dataset, and convert to TFLite.
+    Convert a trained Keras model (.keras) to TFLite with PTQ and optional validation.
+
+    Workflow:
+        1) Load model and its JSON config.
+        2) Build representative dataset generator from training config.
+        3) Convert to TFLite using float32 I/O and default optimizations.
+        4) Optionally validate TFLite vs. Keras on representative samples.
+        5) Save a small .npz with validation inputs for future checks.
+
+    Args:
+        None. Command-line arguments are parsed via argparse.
+
+    Returns:
+        None. Writes converted model and validation data to disk.
     """
     parser = argparse.ArgumentParser(description="Convert a trained Keras model (.keras) to TFLite with PTQ (float32 IO).")
     parser.add_argument('--checkpoint_path', type=str, required=True, help='Path to trained .keras model')
