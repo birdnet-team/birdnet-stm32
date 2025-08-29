@@ -6,7 +6,7 @@ import random
 import json
 
 from train import load_file_paths_from_directory, AudioFrontendLayer
-from utils.audio import load_audio_file, get_spectrogram_from_audio, get_linear_spectrogram_from_audio, sort_by_s2n, pick_random_samples
+from utils.audio import load_audio_file, get_spectrogram_from_audio, sort_by_s2n, pick_random_samples
 
 # Ensure XNNPACK is disabled for TFLite runtime (fallback to builtin kernels)
 os.environ.setdefault("TF_LITE_DISABLE_XNNPACK", "1")
@@ -57,7 +57,7 @@ def representative_data_gen(file_paths, cfg, num_samples=100, reps_per_file=4):
             specs = [get_spectrogram_from_audio(ch, sample_rate=sr, n_fft=n_fft, mel_bins=num_mels, spec_width=spec_width, mag_scale=mag_scale) for ch in audio_chunks]
             pool = [s for s in specs if s is not None and np.size(s) > 0]
         elif frontend == 'hybrid':
-            specs = [get_linear_spectrogram_from_audio(ch, sample_rate=sr, n_fft=n_fft, spec_width=spec_width, power=2.0) for ch in audio_chunks]
+            specs = [get_spectrogram_from_audio(ch, sample_rate=sr, n_fft=n_fft, mel_bins=-1, spec_width=spec_width) for ch in audio_chunks]
             pool = [s for s in specs if s is not None and np.size(s) > 0]
         elif frontend in ('tf', 'raw'):
             if isinstance(audio_chunks, np.ndarray):
