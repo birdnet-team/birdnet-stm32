@@ -389,6 +389,7 @@ Here is a rough outline of the steps you would typically follow to build a demo 
 - record audio using the on-board microphone
 - run the fft on a 512-sample frame and accumulate into a ring buffer
 - run inference every second on the last 3 seconds of audio drawn from the ring buffer
+- map prediction scores to labels using the labels.txt file
 - log the top-5 predictions to the serial console
 
 ## License
