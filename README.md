@@ -75,9 +75,9 @@ The script will:
 - Split your training data into train and validation sets (--val_split).
 - Split audio files into fixed-length chunks (--chunk_duration) up to a max duration (--max_duration).
 - Generate spectrograms using a selectable frontend:
-  - precomputed/librosa: mel spectrograms computed in utils/audio.py (mag_scale applied there).
-  - hybrid: linear power spectrogram provided to the model; model applies fixed mel (tf.signal) and optional magnitude scaling.
-  - raw/tf: raw audio to model; model does STFT -> fixed mel -> optional magnitude scaling.
+  - precomputed/librosa: mel spectrograms (magnitude, power=1.0) computed in utils/audio.py (mag_scale applied there).
+  - hybrid: linear magnitude spectrogram (|STFT|) provided to the model; model applies fixed mel and optional magnitude scaling.
+  - raw/tf: raw audio to model; model does windowed DFT -> linear magnitude -> fixed mel -> optional magnitude scaling.
 - Build a compact DS-CNN model with width scaling (--alpha) and depth multiplier (--depth_multiplier).
 - Optionally apply mixup augmentation (--mixup_alpha, --mixup_probability).
 - Train with cosine LR and early stopping; save the best model to .keras (--checkpoint_path).
@@ -98,12 +98,12 @@ Arguments:
 - --max_samples: Max files per class for training (default: None = all)
 - --sample_rate: Audio sample rate (default: 22050)
 - --num_mels: Number of mel bins (default: 64)
-- --spec_width: Spectrogram width (frames) (default: 128)
+- --spec_width: Spectrogram width (frames) (default: 256)
 - --fft_length: FFT length for STFT/linear spec (default: 512)
 - --chunk_duration: Chunk duration in seconds (default: 3)
 - --max_duration: Max seconds to load per file (default: 60)
-- --audio_frontend: precomputed, hybrid, raw, librosa, or tf (default: librosa)
-- --mag_scale: Magnitude compression: pcen | pwl | none (default: pcen)
+- --audio_frontend: precomputed, hybrid, raw, librosa, or tf (default: hybrid)
+- --mag_scale: Magnitude compression: pcen | pwl | db | none (default: db)
 - --embeddings_size: Embedding channels before head (default: 512)
 - --alpha: Model width scaling (default: 1.0)
 - --depth_multiplier: Repeats per stage (default: 1)

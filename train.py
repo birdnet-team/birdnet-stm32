@@ -11,12 +11,9 @@ import librosa
 from utils.audio import (
     load_audio_file,
     get_spectrogram_from_audio,
-    get_linear_spectrogram_from_audio,
     sort_by_s2n,
     pick_random_samples,
     plot_spectrogram,
-    mel_power_spectrogram,
-    linear_power_spectrogram,
 )
 
 # Mute TensorFlow warnings
@@ -54,7 +51,7 @@ def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30
         audio_frontend (str): 'precomputed' | 'librosa' | 'hybrid' | 'raw' | 'tf'.
         tf_frontend_layer (AudioFrontendLayer | None): Trained frontend to use for plotting.
         fft_length (int): FFT length used for linear/hybrid paths.
-        mag_scale (str): 'pcen' | 'pwl' | 'none' magnitude scaling.
+        mag_scale (str): 'pcen' | 'pwl' | 'db' | 'none' magnitude scaling.
 
     Returns:
         None. Saves/plots example spectrograms to the samples/ folder.
@@ -94,7 +91,7 @@ def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30
 
         elif audio_frontend == 'hybrid':
             # Feed linear power to TF frontend (mel + mag_scale applied in TF layer)
-            specs = [linear_power_spectrogram(chunk, sample_rate, n_fft=fft_length, spec_width=spec_width, power=2.0) for chunk in audio_chunks]
+            specs = [get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=spec_width) for chunk in audio_chunks]
             pool = sort_by_s2n(specs, threshold=0.5) or specs
             if len(pool) == 0: continue
             spec_in = pick_random_samples(pool, num_samples=1)
@@ -112,7 +109,7 @@ def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30
             inp = chunk[np.newaxis, ..., np.newaxis].astype(np.float32)
             spec = tf_frontend(inp, training=False).numpy()[0, :, :, 0]
 
-        plot_spectrogram(spec, title=f"{audio_frontend}_{os.path.basename(path)}")
+        plot_spectrogram(spec, title=f"{audio_frontend}_{mag_scale}_{os.path.basename(path)}")
         
 def get_classes_with_most_samples(directory, n_classes=25, include_noise=False):
     """
@@ -204,7 +201,7 @@ def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa',
 
     Frontends:
         - precomputed/librosa: mel spectrogram (mel_bins, spec_width, 1)
-        - hybrid: linear power STFT (fft_bins, spec_width, 1)
+        - hybrid: linear magnitude STFT (fft_bins, spec_width, 1)
         - raw/tf: raw waveform (T, 1) where T = sample_rate*chunk_duration
 
     Selection:
@@ -224,7 +221,7 @@ def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa',
         mixup_probability (float): Fraction of batch to apply mixup to.
         mel_bins (int): Number of mel bins for mel spectrograms.
         fft_length (int): FFT size used by librosa/hybrid paths.
-        mag_scale (str): 'pcen' | 'pwl' | 'none' magnitude scaling.
+        mag_scale (str): 'pcen' | 'pwl' | 'db' | 'none' magnitude scaling.
 
     Yields:
         tuple[np.ndarray, np.ndarray]: (inputs, labels) for a batch.
@@ -250,7 +247,7 @@ def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa',
                     need_ch_last = True
 
                 elif audio_frontend == 'hybrid':
-                    specs = [get_linear_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, spec_width=spec_width, power=2.0) for chunk in audio_chunks]
+                    specs = [get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=spec_width) for chunk in audio_chunks]
                     pool = sort_by_s2n(specs, threshold=0.5) or specs
                     if len(pool) == 0: continue
                     sample = pick_random_samples(pool, num_samples=1)
@@ -313,8 +310,8 @@ def load_dataset(file_paths, classes, audio_frontend='precomputed', batch_size=3
         spec_width (int): Target spectrogram width (frames).
         mel_bins (int): Number of mel bins.
         **kwargs: sample_rate (int), chunk_duration (int), fft_length (int),
-                  mag_scale (str), max_duration (int), mixup_alpha (float),
-                  mixup_probability (float).
+                  mag_scale (str: 'pcen' | 'pwl' | 'db' | 'none'), max_duration (int),
+                  mixup_alpha (float), mixup_probability (float).
 
     Returns:
         tf.data.Dataset: Infinite dataset of (inputs, labels), prefetching enabled.
@@ -367,12 +364,14 @@ class AudioFrontendLayer(layers.Layer):
         - raw:         Waveform [B, T, 1] -> fold -> window -> DFT (1x1 convs) -> mel.
 
     Magnitude scaling:
-        - 'none': Pass-through power.
+        - 'none': Pass-through.
         - 'pwl':  Piecewise-linear compression (1x1 DW convs, ReLU, Add).
-        - 'pcen': NPU-friendly PCEN-like compression (pool/conv/ReLU/Add).
+        - 'pcen': PCEN-like compression (pool/conv/ReLU/Add), linear magnitude domain.
+        - 'db':   Log compression (10·log10 by default) after mel.
 
     Notes:
         - Slaney mel basis from librosa is used to seed mel_mixer for parity.
+        - Hybrid/raw paths feed magnitude to mel to match librosa (power=1.0).
         - Layer is NPU-friendly (STM32N6) by construction.
     """
     def __init__(
@@ -394,7 +393,7 @@ class AudioFrontendLayer(layers.Layer):
         **kwargs):
         super().__init__(name=name, **kwargs)
         assert mode in ("precomputed", "hybrid", "raw")
-        assert mag_scale in ("pcen", "pwl", "none")
+        assert mag_scale in ("pcen", "pwl", "db", "none")
         self.mode = mode
         self.mel_bins = int(mel_bins)
         self.spec_width = int(spec_width)
@@ -408,6 +407,10 @@ class AudioFrontendLayer(layers.Layer):
         self.mel_norm = mel_norm
         self.mag_scale = mag_scale
         self.is_trainable = bool(is_trainable)
+
+        # DB params
+        self.db_eps = 1e-6
+        self.db_ref = 1.0
 
         # stride targeting spec_width (no external pad ops)
         self._T = int(self.sample_rate) * int(self.chunk_duration)
@@ -586,7 +589,7 @@ class AudioFrontendLayer(layers.Layer):
     # Helper: build mag-scale layers (PCEN/PWL)
     def _build_mag_layers(self):
         """
-        Build magnitude scaling sub-layers as needed (PCEN/PWL).
+        Build magnitude scaling sub-layers as needed (PCEN/PWL/DB).
 
         Returns:
             None.
@@ -669,9 +672,27 @@ class AudioFrontendLayer(layers.Layer):
             y = tf.add(y, b, name=f"{self.name}_pwl_add_{j}")
         return y
 
+    def _apply_db(self, x: tf.Tensor) -> tf.Tensor:
+        """
+        Apply dB log compression.
+
+        Args:
+            x: [B, 1, T, C] linear input.
+
+        Returns:
+            [B, 1, T, C] dB-scaled output (not normalized).
+        """
+        eps = tf.cast(self.db_eps, x.dtype)
+        ref = tf.cast(self.db_ref, x.dtype)
+        log10 = tf.math.log(tf.cast(10.0, x.dtype))
+        safe = tf.maximum(x, eps)
+        y = tf.math.log(safe / ref) / log10
+        scale = tf.cast(10.0, x.dtype)
+        return scale * y
+
     def _apply_mag(self, x):
         """
-        Dispatch to the selected magnitude scaling ('pcen' | 'pwl' | 'none').
+        Dispatch to the selected magnitude scaling ('pcen' | 'pwl' | 'db' | 'none').
 
         Args:
             x (tf.Tensor): Power-like input [B, 1, T, C].
@@ -683,6 +704,8 @@ class AudioFrontendLayer(layers.Layer):
             return self._apply_pcen(x)
         if self.mag_scale == "pwl":
             return self._apply_pwl(x)
+        if self.mag_scale == "db":
+            return self._apply_db(x)
         return x
 
     def call(self, inputs, training=None):
@@ -704,15 +727,7 @@ class AudioFrontendLayer(layers.Layer):
         # precomputed: [B, mel, T, 1]
         if self.mode == "precomputed":
             y = inputs[:, :, :self.spec_width, :]
-            if self.mag_scale != "none":
-                # reshape to [B,1,T,mel]
-                y = tf.transpose(y, [0, 2, 1, 3])
-                y = tf.transpose(y, [0, 3, 1, 2])
-                y = self._apply_mag(y)                   # [B,1,T,mel]
-                #y = self._minmax_norm(y)
-                # back to [B, mel, T, 1]
-                y = tf.transpose(y, [0, 2, 3, 1])
-                y = tf.transpose(y, [0, 2, 1, 3])
+            # Nothing to do because we assume precomputed has mel and mag_scale applied
             return y
 
         # hybrid: [B, fft_bins, T, 1] -> [B,1,T,fft_bins]
@@ -733,7 +748,7 @@ class AudioFrontendLayer(layers.Layer):
             y = tf.transpose(y, [0, 3, 2, 1])       # [B,mel,T,1]
             return y[:, :, :self.spec_width, :]
 
-        # raw (DFT -> mel)
+        # raw (DFT -> magnitude -> mel)
         x = inputs  # [B,T,1]
         B = tf.shape(x)[0]
         L = self.frame_len * self.spec_width
@@ -747,12 +762,13 @@ class AudioFrontendLayer(layers.Layer):
         y = self.v2d_window_dw(y)
         real = self.v2d_dft_real(y)                                  # [B,1,T,fft_bins_raw]
         imag = self.v2d_dft_imag(y)                                  # [B,1,T,fft_bins_raw]
-        power = tf.add(tf.multiply(real, real), tf.multiply(imag, imag), name=f"{self.name}_raw_power")
+        sqr = tf.add(tf.multiply(real, real), tf.multiply(imag, imag), name=f"{self.name}_raw_power")
+        feat = tf.sqrt(tf.maximum(sqr, 0.0) + 1e-8)
         if self._pad_ch_in:
-            t = tf.shape(power)[2]
-            z = tf.zeros([B, 1, t, self._pad_ch_in], dtype=power.dtype)
-            power = tf.concat([power, z], axis=-1)                   # [B,1,T,fft_bins_raw+pad]
-        y = self.mel_mixer(power)                                    # [B,1,T,mel]
+            t = tf.shape(feat)[2]
+            z = tf.zeros([B, 1, t, self._pad_ch_in], dtype=feat.dtype)
+            feat = tf.concat([feat, z], axis=-1)                     # [B,1,T,fft_bins_raw+pad]
+        y = self.mel_mixer(feat)                                     # [B,1,T,mel]
         y = tf.nn.relu(y)
         y = self._apply_mag(y)
         #y = self._minmax_norm(y)
@@ -860,7 +876,7 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
         alpha (float): Width multiplier for the backbone.
         depth_multiplier (int): Repeats multiplier for DS blocks.
         fft_length (int): FFT size for hybrid/librosa paths.
-        mag_scale (str): 'pcen' | 'pwl' | 'none' magnitude scaling.
+        mag_scale (str): 'pcen' | 'pwl' | 'db' | 'none' magnitude scaling.
         frontend_trainable (bool): Trainability of frontend sub-layers.
 
     Returns:
@@ -956,7 +972,7 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
     outputs = layers.Dense(num_classes, activation='sigmoid', name="pred")(x)
     return tf.keras.models.Model(inputs, outputs, name="dscnn_audio")
 
-def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.001, batch_size=64, patience=5, checkpoint_path="checkpoints/best_model.keras", steps_per_epoch=None, val_steps=None):
+def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.001, batch_size=64, patience=10, checkpoint_path="checkpoints/best_model.keras", steps_per_epoch=None, val_steps=None):
     """
     Train the model with cosine decay, early stopping, and checkpointing.
 
@@ -1046,13 +1062,13 @@ def get_args():
     parser.add_argument('--audio_frontend', type=str, default='hybrid',
                         choices=['precomputed', 'hybrid', 'raw', 'librosa', 'tf'],
                         help='Frontend: precomputed/librosa=melspec outside; hybrid=linear->fixed mel; raw/tf=STFT->fixed mel')
-    parser.add_argument('--mag_scale', type=str, default='pwl',
-                        choices=['pcen', 'pwl', 'none'],
-                        help='Magnitude compression in frontend: pcen | pwl | none')
+    parser.add_argument('--mag_scale', type=str, default='db',
+                        choices=['pcen', 'pwl', 'db', 'none'],
+                        help='Magnitude compression in frontend: pcen | pwl | db | none')
     parser.add_argument('--embeddings_size', type=int, default=256, help='Size of the final embeddings layer')
     parser.add_argument('--alpha', type=float, default=0.5, help='Alpha for model scaling')
     parser.add_argument('--depth_multiplier', type=int, default=1, help='Depth multiplier for model')
-    parser.add_argument('--frontend_trainable', action='store_true', default=True, help='If set, make audio frontend trainable (mel_mixer/raw mixer/PCEN/PWL).')
+    parser.add_argument('--frontend_trainable', action='store_true', default=False, help='If set, make audio frontend trainable (mel_mixer/raw mixer/PCEN/PWL).')
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Mixup alpha')
     parser.add_argument('--mixup_probability', type=float, default=0.25, help='Fraction of batch to apply mixup')
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
