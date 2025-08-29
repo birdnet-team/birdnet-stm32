@@ -198,7 +198,7 @@ def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa',
             batch_samples, batch_labels = [], []
             for idx in batch_idxs:
                 path = file_paths[idx]
-                audio_chunks = load_audio_file(path, sample_rate, max_duration, chunk_duration)
+                audio_chunks = load_audio_file(path, sample_rate, max_duration, chunk_duration, random_offset=True)
                 if len(audio_chunks) == 0:
                     continue
 
@@ -914,7 +914,7 @@ if __name__ == "__main__":
     # Load file paths and classes
     file_paths, classes = load_file_paths_from_directory(args.data_path_train, 
                                                          max_samples=args.max_samples, 
-                                                         classes=get_classes_with_most_samples(args.data_path_train, 25, False) # DEBUG: Only use 25 classes for debugging
+                                                         #classes=get_classes_with_most_samples(args.data_path_train, 25, False) # DEBUG: Only use 25 classes for debugging
                                                          )
 
     # Perform sanity check on the dataset

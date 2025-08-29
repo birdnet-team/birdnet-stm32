@@ -6,7 +6,7 @@ import soundfile as sf
 # random seed for reproducibility
 np.random.seed(42)
 
-def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3):
+def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3, random_offset=False):
     """
     Load an audio file, resample to the given sample rate, and split into fixed-length chunks.
 
@@ -20,9 +20,15 @@ def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3):
         np.ndarray: Array of shape (num_chunks, chunk_size) containing audio chunks.
     """
     
+    if random_offset:
+        # Randomly offset the start time for loading
+        offset = np.random.uniform(0, librosa.get_duration(filename=path) / 2)        
+    else:
+        offset = 0.0
+    
     try: 
         # Load the audio file
-        audio, sr = librosa.load(path, sr=sample_rate, mono=True, duration=max_duration)
+        audio, sr = librosa.load(path, sr=sample_rate, mono=True, duration=max_duration, offset=offset)
         
     except:
         print(f"Error loading audio file {path}. Returning random noise.")
