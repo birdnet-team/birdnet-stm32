@@ -874,7 +874,7 @@ def get_args():
     parser = argparse.ArgumentParser(description="Train iNat-tiny audio classifier")
     parser.add_argument('--data_path_train', type=str, required=True, help='Path to train dataset')
     parser.add_argument('--max_samples', type=int, default=None, help='Max samples per class for training (None for all)')
-    parser.add_argument('--sample_rate', type=int, default=20000, help='Audio sample rate. Default is 22050 Hz.')
+    parser.add_argument('--sample_rate', type=int, default=22050, help='Audio sample rate. Default is 22050 Hz.')
     parser.add_argument('--num_mels', type=int, default=64, help='Number of mel bins for spectrogram')
     parser.add_argument('--spec_width', type=int, default=256, help='Spectrogram width')
     parser.add_argument('--fft_length', type=int, default=512, help='FFT length for STFT/linear spectrogram')
@@ -883,7 +883,7 @@ def get_args():
     parser.add_argument('--audio_frontend', type=str, default='hybrid',
                         choices=['precomputed', 'hybrid', 'raw', 'librosa', 'tf'],
                         help='Frontend: precomputed/librosa=melspec outside; hybrid=linear->fixed mel; raw/tf=STFT->fixed mel')
-    parser.add_argument('--mag_scale', type=str, default='pcen',
+    parser.add_argument('--mag_scale', type=str, default='pwl',
                         choices=['pcen', 'pwl', 'none'],
                         help='Magnitude compression in frontend: pcen | pwl | none')
     parser.add_argument('--embeddings_size', type=int, default=256, help='Size of the final embeddings layer')
