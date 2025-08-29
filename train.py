@@ -6,7 +6,7 @@ import tensorflow as tf
 from tensorflow.keras import layers, constraints, regularizers
 import math
 import json
-import librosa  # for consistent mel basis
+import librosa
 
 from utils.audio import (
     load_audio_file,
@@ -15,8 +15,8 @@ from utils.audio import (
     sort_by_s2n,
     pick_random_samples,
     plot_spectrogram,
-    mel_power_spectrogram,           # NEW
-    linear_power_spectrogram,        # NEW
+    mel_power_spectrogram,
+    linear_power_spectrogram,
 )
 
 # Mute TensorFlow warnings
@@ -54,7 +54,7 @@ def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30
             sample_rate=sample_rate,
             chunk_duration=chunk_duration,
             fft_length=fft_length,
-            mag_scale=mag_scale,  # apply requested mag scale for plotting
+            mag_scale=mag_scale,
             name="audio_frontend_sanity",
         )
         fft_bins = fft_length // 2 + 1
@@ -98,7 +98,9 @@ def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30
         
 def get_classes_with_most_samples(directory, n_classes=25, include_noise=False):
     
-    """    Get the most common classes from the dataset directory.      
+    """    
+    Get the most common classes from the dataset directory.  
+        
     Args:
         n_classes (int): Number of classes to return.
         include_noise (bool): Whether to include noise-like classes.
@@ -248,7 +250,7 @@ def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa',
             batch_samples = np.stack(batch_samples)
             batch_labels = np.stack(batch_labels)
 
-            # Mixup (unchanged)
+            # Mixup
             if mixup_alpha > 0 and mixup_probability > 0:
                 num_mix = int(batch_samples.shape[0] * mixup_probability)
                 if num_mix > 0:
@@ -281,7 +283,7 @@ def load_dataset(file_paths, classes, audio_frontend='precomputed', batch_size=3
         input_spec = tf.TensorSpec(shape=(None, mel_bins, spec_width, 1), dtype=tf.float32)
     elif audio_frontend == 'hybrid':
         fft_bins = fft_length // 2 + 1
-        # CONSISTENT: [B, fft_bins, T, 1]
+        # [B, fft_bins, T, 1]
         input_spec = tf.TensorSpec(shape=(None, fft_bins, spec_width, 1), dtype=tf.float32)
     elif audio_frontend in ('tf', 'raw'):
         input_spec = tf.TensorSpec(shape=(None, chunk_len, 1), dtype=tf.float32)
@@ -708,7 +710,7 @@ def ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name="ds"):
 
 def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddings_size, num_classes,
                       audio_frontend='precomputed', alpha=1.0, depth_multiplier=1, fft_length=512,
-                      mag_scale='none', frontend_trainable=False):  # NEW
+                      mag_scale='none', frontend_trainable=False):
     """
     Build DS-CNN with selectable audio frontend (mag_scale: 'pcen'|'pwl'|'none').
     """
@@ -739,7 +741,7 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
         )(inputs)
     elif audio_frontend == 'hybrid':
         fft_bins = fft_length // 2 + 1
-        # CONSISTENT: [B, fft_bins, T, 1]
+        # [B, fft_bins, T, 1]
         inputs = tf.keras.Input(shape=(fft_bins, spec_width, 1), name='linear_spectrogram_input')
         x = AudioFrontendLayer(
             mode='hybrid',
@@ -834,8 +836,7 @@ def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.00
         initial_learning_rate=learning_rate,
         decay_steps=epochs * steps_per_epoch,
         alpha=0.0
-    )
-    
+    )    
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
         loss='binary_crossentropy',
@@ -969,7 +970,7 @@ if __name__ == "__main__":
         mag_scale=args.mag_scale
     )
 
-    # Update steps_per_epoch and val_steps (robust)
+    # Update steps_per_epoch and val_steps
     steps_per_epoch = max(1, math.ceil(len(train_paths) / float(args.batch_size)))
     val_steps = max(1, math.ceil(len(val_paths) / float(args.batch_size)))
 
@@ -1000,7 +1001,7 @@ if __name__ == "__main__":
         "spec_width": args.spec_width,
         "fft_length": args.fft_length,
         "chunk_duration": args.chunk_duration,
-        "hop_length": hop_length,  # NEW: derived from SR, duration, spec_width
+        "hop_length": hop_length, 
         "audio_frontend": args.audio_frontend,
         "mag_scale": args.mag_scale,
         "embeddings_size": args.embeddings_size,
