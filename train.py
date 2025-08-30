@@ -367,7 +367,7 @@ class AudioFrontendLayer(layers.Layer):
         - 'none': Pass-through.
         - 'pwl':  Piecewise-linear compression (1x1 DW convs, ReLU, Add).
         - 'pcen': PCEN-like compression (pool/conv/ReLU/Add), linear magnitude domain.
-        - 'db':   Log compression (10·log10 by default) after mel.
+        - 'db':   Log compression (10·log10 by default) after mel (be aware: does not quantize well).
 
     Notes:
         - Slaney mel basis from librosa is used to seed mel_mixer for parity.
@@ -818,7 +818,7 @@ def _make_divisible(v, divisor=8):
     v = int(v + divisor / 2) // divisor * divisor
     return max(divisor, v)
 
-def ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name="ds"):
+def ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name="ds", weight_decay=1e-4, drop_rate=0.1):
     """
     Depthwise-separable block (3x3 DW + 1x1 PW) with optional residual.
 
@@ -828,16 +828,20 @@ def ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name="ds"):
         stride_f (int): Stride along frequency axis (height).
         stride_t (int): Stride along time axis (width).
         name (str): Base name for layers.
+        weight_decay (float): L2 kernel regularization (weight decay).
+        drop_rate (float): Spatial dropout rate applied to the PW output (0..1).
 
     Returns:
         tf.Tensor: Output tensor after DW/PW + BN/ReLU (+ residual if aligned).
     """
+    reg = regularizers.l2(weight_decay) if weight_decay and weight_decay > 0 else None
     in_ch = x.shape[-1]
     y = layers.DepthwiseConv2D(
         kernel_size=(3, 3),
         strides=(stride_f, stride_t),
         padding='same',
         use_bias=False,
+        depthwise_regularizer=reg,
         name=f"{name}_dw",
     )(x)
     y = layers.BatchNormalization(name=f"{name}_dw_bn")(y)
@@ -849,9 +853,14 @@ def ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name="ds"):
         strides=(1, 1),
         padding='same',
         use_bias=False,
+        kernel_regularizer=reg,
         name=f"{name}_pw",
     )(y)
     y = layers.BatchNormalization(name=f"{name}_pw_bn")(y)
+
+    # Optional spatial dropout
+    if drop_rate and drop_rate > 0:
+        y = layers.SpatialDropout2D(drop_rate, name=f"{name}_drop")(y)
 
     if (stride_f == 1 and stride_t == 1) and (in_ch is not None and int(in_ch) == int(out_ch)):
         y = layers.Add(name=f"{name}_add")([x, y])
@@ -945,15 +954,14 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
     x = layers.ReLU(max_value=6, name="stem_relu")(x)
 
     # Stages: (filters, repeats, (stride_f, stride_t))
-    # Use stride 2 in both axes early to reduce HxW; last stage keeps 1x1.
-    base_filters = [24, 48, 96, 128]
+    base_filters = [32, 64, 128, 256]
     base_repeats = [2, 3, 4, 2]
     base_strides = [(2, 2), (2, 2), (2, 2), (2, 2)]
 
     for si, (bf, br, (sf, st)) in enumerate(zip(base_filters, base_repeats, base_strides), start=1):
         out_ch = _make_divisible(int(bf * alpha), 8)
         reps = max(1, int(math.ceil(br * depth_multiplier)))
-        # First block in stage may downsample both frequency and time
+        # First block in stage downsamples both frequency and time
         x = ds_conv_block(x, out_ch, stride_f=sf, stride_t=st, name=f"stage{si}_ds1")
         for bi in range(2, reps + 1):
             x = ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name=f"stage{si}_ds{bi}")
@@ -1066,7 +1074,7 @@ def get_args():
                         choices=['pcen', 'pwl', 'db', 'none'],
                         help='Magnitude compression in frontend: pcen | pwl | db | none')
     parser.add_argument('--embeddings_size', type=int, default=256, help='Size of the final embeddings layer')
-    parser.add_argument('--alpha', type=float, default=0.75, help='Alpha for model scaling')
+    parser.add_argument('--alpha', type=float, default=1.0, help='Alpha for model scaling')
     parser.add_argument('--depth_multiplier', type=int, default=1, help='Depth multiplier for model')
     parser.add_argument('--frontend_trainable', action='store_true', default=True, help='If set, make audio frontend trainable (mel_mixer/raw mixer/PCEN/PWL).')
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Mixup alpha')
