@@ -4,8 +4,8 @@
 best_model.keras
 best_model_labels.txt
 best_model_model_config.json
-*.keras
-*.tflite
+best_model.keras
+best_model_quantized.tflite
 *.npz
 test/
 validation/

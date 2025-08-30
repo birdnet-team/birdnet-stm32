@@ -378,9 +378,9 @@ For more command line options, visit the [ST Edge AI documentation](https://stm3
 
 ## Build and deploy demo application
 
-This repo comes with a pre-trained model (`birdnet_stm32n6_hybrid.tflite`) that was trained on the 100 most common species of the North-Eastern U.S., Central Europe, and Brazil and achieves a ROC-AUC of 0.XXX on iNatSounds data. The model uses a hybrid audio frontend and expects 257x256 pixel power spectrograms with a fft length of 512, hop length of 258 for 3-second audio chunks at 22050 Hz sample rate (more details in the `birdnet_stm32n6_hybrid_model_config.json` file).
+This repo comes with a pre-trained model (`birdnet_stm32n6_100.tflite`) that was trained on the 100 most common species of the North-Eastern U.S., Central Europe, and Brazil and achieves a ROC-AUC of 0.84 on iNatSounds data. The model uses a hybrid audio frontend and expects 257x256 pixel power spectrograms with a fft length of 512, hop length of 258 for 3-second audio chunks at 22050 Hz sample rate (more details in the `birdnet_stm32n6_100_model_config.json` file).
 
-The model is already quantized and can be flashed with `./stedgeai` as described above. Inference for a single chunk takes about X ms on the STM32N6570-DK (which is ~XXXx real-time).
+The model is already quantized and can be flashed with `./stedgeai` as described above. Inference for a single chunk takes about 3.3 ms on the STM32N6570-DK (which is ~900x real-time).
 
 The demo application is still `TODO`.
 
@@ -394,7 +394,7 @@ Here is a rough outline of the steps you would typically follow to build a demo 
 
 ## License
 
- - **Source Code & models**: The source code and models for this project is licensed under the [MIT License](https://opensource.org/licenses/MIT).
+ - **Source Code & models**: The source code and models for this project are licensed under the [MIT License](https://opensource.org/licenses/MIT).
  - **STM tools and scripts**: The STM tools and scripts used in this project are licensed under varying licenses, please refer to the respective documentation for details.
  - **Citation**: Feel free to use the code or models in your research. If you do, please cite as:
 
