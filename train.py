@@ -1062,13 +1062,13 @@ def get_args():
     parser.add_argument('--audio_frontend', type=str, default='hybrid',
                         choices=['precomputed', 'hybrid', 'raw', 'librosa', 'tf'],
                         help='Frontend: precomputed/librosa=melspec outside; hybrid=linear->fixed mel; raw/tf=STFT->fixed mel')
-    parser.add_argument('--mag_scale', type=str, default='db',
+    parser.add_argument('--mag_scale', type=str, default='pwl',
                         choices=['pcen', 'pwl', 'db', 'none'],
                         help='Magnitude compression in frontend: pcen | pwl | db | none')
     parser.add_argument('--embeddings_size', type=int, default=256, help='Size of the final embeddings layer')
-    parser.add_argument('--alpha', type=float, default=0.5, help='Alpha for model scaling')
+    parser.add_argument('--alpha', type=float, default=0.75, help='Alpha for model scaling')
     parser.add_argument('--depth_multiplier', type=int, default=1, help='Depth multiplier for model')
-    parser.add_argument('--frontend_trainable', action='store_true', default=False, help='If set, make audio frontend trainable (mel_mixer/raw mixer/PCEN/PWL).')
+    parser.add_argument('--frontend_trainable', action='store_true', default=True, help='If set, make audio frontend trainable (mel_mixer/raw mixer/PCEN/PWL).')
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Mixup alpha')
     parser.add_argument('--mixup_probability', type=float, default=0.25, help='Fraction of batch to apply mixup')
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
