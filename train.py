@@ -8,6 +8,9 @@ import math
 import json
 import librosa
 
+# Supported audio filename extensions (lowercase)
+SUPPORTED_AUDIO_EXTS = ('.wav', '.mp3', '.flac', '.ogg', '.m4a')
+
 from utils.audio import (
     load_audio_file,
     get_spectrogram_from_audio,
@@ -111,7 +114,7 @@ def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30
 
         plot_spectrogram(spec, title=f"{audio_frontend}_{mag_scale}_{os.path.basename(path)}")
         
-def get_classes_with_most_samples(directory, n_classes=25, include_noise=False):
+def get_classes_with_most_samples(directory, n_classes=25, include_noise=False, exts: tuple = SUPPORTED_AUDIO_EXTS):
     """
     Collect the most frequent class labels from a dataset root.
 
@@ -119,47 +122,45 @@ def get_classes_with_most_samples(directory, n_classes=25, include_noise=False):
         directory (str): Root dataset directory (class-subfolders).
         n_classes (int): Number of top classes to return.
         include_noise (bool): Include noise-like labels (noise/silence/background/other).
+        exts (tuple[str, ...]): Accepted audio file extensions (case-insensitive).
 
     Returns:
         list[str]: Class names, sorted by descending sample count (length ≤ n_classes).
     """
-    
-    classes = {} # 'class_name': num_samples
+    classes = {}  # 'class_name': num_samples
     noise_classes = {'noise', 'silence', 'background', 'other'}
-    
+
     for root, dirs, files in os.walk(directory):
         for fname in files:
-            if not fname.endswith('.wav'):
+            if not fname.lower().endswith(exts):
                 continue
             class_name = os.path.basename(root)
             if not include_noise and class_name.lower() in noise_classes:
                 continue
             classes[class_name] = classes.get(class_name, 0) + 1
-            
-    # Sort by number of samples, descending
+
     sorted_classes = sorted(classes.items(), key=lambda x: x[1], reverse=True)
-    
-    # Return only the class names, up to n_classes
     return [cls for cls, _ in sorted_classes[:n_classes]]    
 
-def load_file_paths_from_directory(directory, classes=None, max_samples=None):
+def load_file_paths_from_directory(directory, classes=None, max_samples=None, exts: tuple = SUPPORTED_AUDIO_EXTS):
     """
-    Recursively gather .wav files from a class-structured directory.
+    Recursively gather audio files from a class-structured directory.
 
     Structure:
         root/
-          class_a/*.wav
-          class_b/*.wav
+          class_a/*.(wav|mp3|flac|ogg|...)
+          class_b/*.(wav|mp3|flac|ogg|...)
           ...
 
     Args:
         directory (str): Dataset root directory.
         classes (list[str] | None): If given, restrict to these class names.
         max_samples (int | None): Cap the number of files per class.
+        exts (tuple[str, ...]): Accepted audio file extensions (case-insensitive).
 
     Returns:
         tuple[list[str], list[str]]:
-            - file_paths: Shuffled list of absolute .wav paths (capped per class if requested).
+            - file_paths: Shuffled list of absolute audio paths (capped per class if requested).
             - classes_sorted: Sorted class names found (noise-like names excluded).
     """
     per_class = {}
@@ -167,7 +168,7 @@ def load_file_paths_from_directory(directory, classes=None, max_samples=None):
     # Walk and bucket files by their immediate parent directory (class)
     for root, _, files in tf.io.gfile.walk(directory):
         for fname in files:
-            if not fname.endswith('.wav'):
+            if not fname.lower().endswith(exts):
                 continue
             full_path = tf.io.gfile.join(root, fname)
             parent_class = os.path.basename(os.path.dirname(full_path))
@@ -1058,7 +1059,7 @@ def get_args():
     Returns:
         argparse.Namespace: Parsed arguments (see --help for details).
     """
-    parser = argparse.ArgumentParser(description="Train iNat-tiny audio classifier")
+    parser = argparse.ArgumentParser(description="Train STM32N6 audio classifier")
     parser.add_argument('--data_path_train', type=str, required=True, help='Path to train dataset')
     parser.add_argument('--max_samples', type=int, default=None, help='Max samples per class for training (None for all)')
     parser.add_argument('--sample_rate', type=int, default=22050, help='Audio sample rate. Default is 22050 Hz.')
