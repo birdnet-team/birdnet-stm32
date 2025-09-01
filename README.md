@@ -69,7 +69,7 @@ Each folder contains `.wav` files of the respective species. Since we're trainin
 
 ### Train the Model
 
-This repo comes with a pre-trained and already quantized checkpoint (`checkpoints/birdnet_stm32n6_hybrid.tflite`) that you can use to test the model conversion and deployment process. To train a custom model, run `train.py` with the desired arguments. 
+This repo comes with a pre-trained and already quantized checkpoint (`checkpoints/birdnet_stm32n6_100.tflite`) that you can use to test the model conversion and deployment process. To train a custom model, run `train.py` with the desired arguments. 
 
 The script will:
 - Split your training data into train and validation sets (--val_split).
@@ -158,6 +158,42 @@ Notes:
 - Validation compares float32 Keras outputs to float32 TFLite outputs on the same inputs using cosine similarity, MSE, MAE, and Pearson r.
 - For meaningful validation, pass --data_path_train so samples come from real audio; otherwise random inputs will be used.
 - Validation samples are saved as `.npz` and can be used to validate the model on the STM32N6570-DK later with `stedgeai validate --valinput <file>.npz`.
+
+## Model testing
+
+Use test.py to evaluate a trained model on a folder of test audio files. It loads a Keras (.keras) or quantized TFLite (.tflite) model, prepares chunks per file using the saved model_config, runs batched inference, pools chunk scores to file-level, and reports metrics.
+
+Example (TFLite):
+```bash
+python test.py \
+  --model_path checkpoints/my_stm32_model_quantized.tflite \
+  --data_path_test data/test \
+  --pooling avg \
+  --batch_size 16
+```
+
+The script reads <checkpoint>_model_config.json to reconstruct the audio frontend and chunking parameters, runs inference on non-overlapping chunks up to a max duration (default: 60s) per file and predicts score on file-level.
+
+Pooling methods (per-file)
+- avg: arithmetic mean over chunk scores.
+- max: maximum over chunk scores.
+- lme: log-mean-exponential pooling, log(mean(exp(beta*s))) / beta with beta=10 (fixed).
+
+Metrics
+- roc-auc: micro ROC-AUC over all classes.
+- cmAP: class-macro Average Precision (mean AP over classes with positives).
+- mAP: micro Average Precision (AP over all decisions).
+- precision, recall, f1: computed at a 0.5 threshold on file-level scores.
+- The script also prints top-10 and bottom-10 classes by AP and can save per-file predictions to CSV.
+
+Arguments:
+- --model_path: Path to .keras or .tflite (required).
+- --model_config: Path to <checkpoint>_model_config.json (optional; inferred from --model_path).
+- --data_path_test: Test data root with class subfolders (required).
+- --max_files: Optional cap on files per class (default: -1 = all).
+- --batch_size: Chunk inference batch size (default: 16).
+- --pooling: avg | max | lme (default: lme).
+- --save_csv: Optional CSV path for per-file predictions.
 
 ### The STM deployment process
 
