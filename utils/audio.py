@@ -8,9 +8,9 @@ np.random.seed(42)
 
 def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3, random_offset=False):
     """
-    Load an audio file, resample to sample_rate, and split into fixed-length chunks.
+    Load an audio file with soundfile, resample to sample_rate, and split into fixed-length chunks.
 
-    If random_offset is True, a random starting offset up to half the file duration is used.
+    If random_offset is True, a random starting offset up to one chunk_duration (seconds) is used.
 
     Args:
         path (str): Path to the audio file on disk.
@@ -21,26 +21,58 @@ def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3, 
 
     Returns:
         np.ndarray: Array of shape (num_chunks, chunk_size) with float32 audio chunks.
+                    Returns [] on error.
     """
-    if random_offset:
-        offset = np.random.uniform(0, librosa.get_duration(filename=path) / 2)
-    else:
-        offset = 0.0
-
     try:
-        audio, sr = librosa.load(path, sr=sample_rate, mono=True, duration=max_duration, offset=offset)
-    except Exception:
-        print(f"Error loading audio file {path}. Returning random noise.")
-        audio = np.random.randn(sample_rate * chunk_duration).astype(np.float32)
-        sr = sample_rate
+        info = sf.info(path)
+        sr0 = int(info.samplerate)
+        total_frames = int(info.frames)
+        if total_frames <= 0 or sr0 <= 0:
+            return []
 
-    # Split into chunks, pad/truncate to a multiple of chunk_size
-    chunk_size = sample_rate * chunk_duration
-    num_chunks = len(audio) // chunk_size + (1 if len(audio) % chunk_size > 0 else 0)
-    audio = librosa.util.fix_length(audio, size=num_chunks * chunk_size)
-    audio = audio[:num_chunks * chunk_size]
-    chunks = audio.reshape(num_chunks, chunk_size)
-    return chunks
+        # Choose start offset (seconds)
+        if random_offset:
+            offset_sec = float(np.random.uniform(0.0, max(0.0, (total_frames / sr0) / 2) - chunk_duration))
+        else:
+            offset_sec = 0.0
+
+        # Compute frame window to read
+        start_frame = int(offset_sec * sr0)
+        if start_frame >= total_frames:
+            start_frame = 0
+        frames_left = total_frames - start_frame
+        frames_to_read = int(min(frames_left, (max_duration * sr0) if max_duration else frames_left))
+        if frames_to_read <= 0:
+            return []
+
+        # Read only needed frames; force mono
+        with sf.SoundFile(path, mode="r") as f:
+            f.seek(start_frame)
+            y = f.read(frames_to_read, dtype="float32", always_2d=True)
+        if y.size == 0:
+            return []
+        y = y.mean(axis=1)  # mono float32
+
+        # Resample if needed
+        if sr0 != sample_rate:
+            y = librosa.resample(y, orig_sr=sr0, target_sr=sample_rate, res_type="kaiser_fast")
+        else:
+            y = y.astype(np.float32, copy=False)
+
+        # Chunking with zero-pad to multiple
+        chunk_size = int(sample_rate * chunk_duration)
+        if chunk_size <= 0:
+            return []
+        n = y.shape[0]
+        num_chunks = (n + chunk_size - 1) // chunk_size  # ceil
+        pad = num_chunks * chunk_size - n
+        if pad > 0:
+            y = np.pad(y, (0, pad), mode="constant")
+        chunks = y.reshape(num_chunks, chunk_size).astype(np.float32, copy=False)
+        return chunks
+    except Exception:
+        # Keep behavior consistent with previous code
+        return []
 
 def get_spectrogram_from_audio(audio, sample_rate=22050, n_fft=512, mel_bins=64, spec_width=256, mag_scale: str = "none"):
     """
