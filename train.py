@@ -196,6 +196,44 @@ def load_file_paths_from_directory(directory, classes=None, max_samples=None, ex
 
     return all_paths, classes_out
 
+def upsample_minority_classes(file_paths, classes, ratio=0.25):
+    
+    """
+    Upsample minority classes to match the largest class size through random repetition.
+    Args:
+        file_paths (list[str]): List of audio file paths.
+        classes (list[str]): Ordered class names.
+        ratio (float): Fraction of the largest class size to upsample to (0 < ratio ≤ 1).
+    Returns:
+        list[str]: Augmented list of audio file paths with upsampled minority classes.
+    """
+    
+    assert 0 < ratio <= 1, "Ratio must be in (0, 1]."
+    class_to_paths = {cls: [] for cls in classes}
+    
+    # Bucket file paths by class
+    for path in file_paths:
+        class_name = os.path.basename(os.path.dirname(path))
+        if class_name in class_to_paths:
+            class_to_paths[class_name].append(path)
+    
+    # Determine target size based on the largest class
+    max_size = max(len(paths) for paths in class_to_paths.values())
+    target_size = int(max_size * ratio)
+    
+    augmented_paths = []
+    for cls, paths in class_to_paths.items():
+        current_size = len(paths)
+        if current_size < target_size:
+            # Upsample by random repetition
+            num_to_add = target_size - current_size
+            additional_paths = np.random.choice(paths, size=num_to_add, replace=True).tolist()
+            paths.extend(additional_paths)
+        augmented_paths.extend(paths)
+    
+    np.random.shuffle(augmented_paths)
+    return augmented_paths
+
 def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa', sample_rate=22050, max_duration=30, chunk_duration=3, spec_width=128, mixup_alpha=0.2, mixup_probability=0.25, mel_bins=48, fft_length=512, mag_scale='none'):
     """
     Yield batches of (inputs, one_hot_labels) for training/validation.
@@ -235,9 +273,12 @@ def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa',
             batch_samples, batch_labels = [], []
             for idx in batch_idxs:
                 path = file_paths[idx]
+                label_str = path.split('/')[-2]
                 audio_chunks = load_audio_file(path, sample_rate, max_duration, chunk_duration, random_offset=True)
                 if len(audio_chunks) == 0:
-                    continue
+                    # Use random noise of chunk_duration if file loading failed
+                    audio_chunks = [np.random.uniform(-1.0, 1.0, size=(T,)).astype(np.float32)]
+                    label_str = 'noise'
 
                 if audio_frontend in ('librosa', 'precomputed'):
                     specs = [get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=mel_bins, spec_width=spec_width, mag_scale=mag_scale) for chunk in audio_chunks]
@@ -267,7 +308,7 @@ def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa',
                 else:
                     raise ValueError("Invalid audio frontend. Choose 'precomputed', 'hybrid', or 'raw'.")
 
-                label_str = path.split('/')[-2]
+                # Make one-hot label; noise-like labels get all-zero vector
                 if label_str.lower() in ['noise', 'silence', 'background', 'other']:
                     one_hot_label = np.zeros(len(classes), dtype=np.float32)
                 else:
@@ -1062,12 +1103,13 @@ def get_args():
     parser = argparse.ArgumentParser(description="Train STM32N6 audio classifier")
     parser.add_argument('--data_path_train', type=str, required=True, help='Path to train dataset')
     parser.add_argument('--max_samples', type=int, default=None, help='Max samples per class for training (None for all)')
+    parser.add_argument('--upsample_ratio', type=float, default=0.25, help='Upsample ratio for minority classes')
     parser.add_argument('--sample_rate', type=int, default=22050, help='Audio sample rate. Default is 22050 Hz.')
     parser.add_argument('--num_mels', type=int, default=64, help='Number of mel bins for spectrogram')
     parser.add_argument('--spec_width', type=int, default=256, help='Spectrogram width')
     parser.add_argument('--fft_length', type=int, default=512, help='FFT length for STFT/linear spectrogram')
     parser.add_argument('--chunk_duration', type=int, default=3, help='Audio chunk duration (seconds)')
-    parser.add_argument('--max_duration', type=int, default=60, help='Max audio duration (seconds)')
+    parser.add_argument('--max_duration', type=int, default=30, help='Max audio duration (seconds)')
     parser.add_argument('--audio_frontend', type=str, default='hybrid',
                         choices=['precomputed', 'hybrid', 'raw', 'librosa', 'tf'],
                         help='Frontend: precomputed/librosa=melspec outside; hybrid=linear->fixed mel; raw/tf=STFT->fixed mel')
@@ -1080,7 +1122,7 @@ def get_args():
     parser.add_argument('--frontend_trainable', action='store_true', default=True, help='If set, make audio frontend trainable (mel_mixer/raw mixer/PCEN/PWL).')
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Mixup alpha')
     parser.add_argument('--mixup_probability', type=float, default=0.25, help='Fraction of batch to apply mixup')
-    parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
     parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate')
     parser.add_argument('--val_split', type=float, default=0.2, help='Validation split ratio')
@@ -1124,6 +1166,11 @@ if __name__ == "__main__":
     train_paths = file_paths[:split_idx]
     val_paths = file_paths[split_idx:]
     print(f"Training on {len(train_paths)} files, validating on {len(val_paths)} files.")
+    
+    # Upsample classes if requested
+    if args.upsample_ratio and args.upsample_ratio > 0 and args.upsample_ratio < 1.0:
+        train_paths = upsample_minority_classes(train_paths, classes, args.upsample_ratio)
+        print(f"After upsampling, training on {len(train_paths)} files.")
 
     # Create training dataset (with mixup)
     train_dataset = load_dataset(
