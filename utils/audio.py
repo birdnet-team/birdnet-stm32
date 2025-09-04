@@ -219,13 +219,14 @@ def sort_by_s2n(samples, threshold=0.1):
         filtered_samples = [sorted_samples[0]]
     return filtered_samples
 
-def pick_random_samples(samples, num_samples=1):
+def pick_random_samples(samples, num_samples=1, pick_first=False):
     """
     Randomly select one or more samples from a list.
 
     Args:
         samples (list[np.ndarray]): List of samples (spectrograms or raw audio).
         num_samples (int): Number of samples to select.
+        pick_first (bool): If True, always pick the first sample instead of random.
 
     Returns:
         list[np.ndarray] | np.ndarray: Selected samples. Returns a list if num_samples > 1,
@@ -237,7 +238,7 @@ def pick_random_samples(samples, num_samples=1):
         num_samples = len(samples)
 
     indices = np.random.choice(len(samples), size=num_samples, replace=False)
-    return [samples[i] for i in indices] if num_samples > 1 else samples[indices[0]]
+    return [samples[i] for i in indices] if num_samples > 1 and not pick_first else samples[0]
 
 def plot_spectrogram(spectrogram, title='Spectrogram'):
     """

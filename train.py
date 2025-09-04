@@ -234,7 +234,20 @@ def upsample_minority_classes(file_paths, classes, ratio=0.25):
     np.random.shuffle(augmented_paths)
     return augmented_paths
 
-def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa', sample_rate=22050, max_duration=30, chunk_duration=3, spec_width=128, mixup_alpha=0.2, mixup_probability=0.25, mel_bins=48, fft_length=512, mag_scale='none', random_offset=False):
+def data_generator(file_paths, 
+                   classes, batch_size=32, 
+                   audio_frontend='librosa', 
+                   sample_rate=22050, 
+                   max_duration=30, 
+                   chunk_duration=3, 
+                   spec_width=128, 
+                   mixup_alpha=0.2, 
+                   mixup_probability=0.25, 
+                   mel_bins=48, 
+                   fft_length=512, 
+                   mag_scale='none', 
+                   random_offset=False,
+                   snr_threshold=0.5):
     """
     Yield batches of (inputs, one_hot_labels) for training/validation.
 
@@ -261,6 +274,8 @@ def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa',
         mel_bins (int): Number of mel bins for mel spectrograms.
         fft_length (int): FFT size used by librosa/hybrid paths.
         mag_scale (str): 'pcen' | 'pwl' | 'db' | 'none' magnitude scaling.
+        random_offset (bool): If True, randomly offset chunk start within file.
+        snr_threshold (float): Minimum SNR threshold for chunk selection.
 
     Yields:
         tuple[np.ndarray, np.ndarray]: (inputs, labels) for a batch.
@@ -282,24 +297,24 @@ def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa',
 
                 if audio_frontend in ('librosa', 'precomputed'):
                     specs = [get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=mel_bins, spec_width=spec_width, mag_scale=mag_scale) for chunk in audio_chunks]
-                    pool = sort_by_s2n(specs, threshold=0.5) or specs
+                    pool = sort_by_s2n(specs, threshold=snr_threshold) or specs
                     if len(pool) == 0: continue
-                    sample = pick_random_samples(pool, num_samples=1)
+                    sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
                     sample = sample[0] if isinstance(sample, list) else sample   # [mel, T]
                     need_ch_last = True
 
                 elif audio_frontend == 'hybrid':
                     specs = [get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=spec_width) for chunk in audio_chunks]
-                    pool = sort_by_s2n(specs, threshold=0.5) or specs
+                    pool = sort_by_s2n(specs, threshold=snr_threshold) or specs
                     if len(pool) == 0: continue
-                    sample = pick_random_samples(pool, num_samples=1)
+                    sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
                     sample = sample[0] if isinstance(sample, list) else sample   # [fft_bins, T]
                     need_ch_last = True
 
                 elif audio_frontend in ('tf', 'raw'):
-                    pool = sort_by_s2n(audio_chunks, threshold=0.5) or audio_chunks
+                    pool = sort_by_s2n(audio_chunks, threshold=snr_threshold) or audio_chunks
                     if len(pool) == 0: continue
-                    sample = pick_random_samples(pool, num_samples=1)
+                    sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
                     x = sample[0] if isinstance(sample, list) else sample
                     x = x[:T]
                     if x.shape[0] < T: x = np.pad(x, (0, T - x.shape[0]))
@@ -363,6 +378,7 @@ def load_dataset(file_paths, classes, audio_frontend='precomputed', batch_size=3
     fft_length = kwargs.get('fft_length', 512)
     mag_scale = kwargs.get('mag_scale', 'none')
     random_offset = kwargs.get('random_offset', False)
+    snr_threshold = kwargs.get('snr_threshold', 0.5)
     chunk_len = sr * cd
 
     if audio_frontend in ('librosa', 'precomputed'):
@@ -1188,7 +1204,8 @@ if __name__ == "__main__":
         mel_bins=args.num_mels,
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
-        random_offset=True
+        random_offset=True,
+        snr_threshold=0.75
     )
 
     # Create validation dataset (without mixup)
@@ -1205,7 +1222,8 @@ if __name__ == "__main__":
         mel_bins=args.num_mels,
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
-        random_offset=False
+        random_offset=False,
+        snr_threshold=0.75
     )
 
     # Update steps_per_epoch and val_steps
