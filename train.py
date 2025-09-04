@@ -234,7 +234,7 @@ def upsample_minority_classes(file_paths, classes, ratio=0.25):
     np.random.shuffle(augmented_paths)
     return augmented_paths
 
-def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa', sample_rate=22050, max_duration=30, chunk_duration=3, spec_width=128, mixup_alpha=0.2, mixup_probability=0.25, mel_bins=48, fft_length=512, mag_scale='none'):
+def data_generator(file_paths, classes, batch_size=32, audio_frontend='librosa', sample_rate=22050, max_duration=30, chunk_duration=3, spec_width=128, mixup_alpha=0.2, mixup_probability=0.25, mel_bins=48, fft_length=512, mag_scale='none', random_offset=False):
     """
     Yield batches of (inputs, one_hot_labels) for training/validation.
 
@@ -362,6 +362,7 @@ def load_dataset(file_paths, classes, audio_frontend='precomputed', batch_size=3
     cd = kwargs.get('chunk_duration', 3)
     fft_length = kwargs.get('fft_length', 512)
     mag_scale = kwargs.get('mag_scale', 'none')
+    random_offset = kwargs.get('random_offset', False)
     chunk_len = sr * cd
 
     if audio_frontend in ('librosa', 'precomputed'):
@@ -390,7 +391,8 @@ def load_dataset(file_paths, classes, audio_frontend='precomputed', batch_size=3
             mixup_probability=kwargs.get('mixup_probability', 0.0),
             mel_bins=mel_bins,
             fft_length=fft_length,
-            mag_scale=mag_scale
+            mag_scale=mag_scale,
+            random_offset=random_offset
         ),
         output_signature=output_signature
     )
@@ -1144,7 +1146,7 @@ if __name__ == "__main__":
     # Load file paths and classes
     file_paths, classes = load_file_paths_from_directory(args.data_path_train, 
                                                          max_samples=args.max_samples, 
-                                                         #classes=get_classes_with_most_samples(args.data_path_train, 25, False) # DEBUG: Only use 25 classes for debugging
+                                                         classes=get_classes_with_most_samples(args.data_path_train, 100, False) # DEBUG: Only use 25 classes for debugging
                                                          )
 
     # Perform sanity check on the dataset
@@ -1185,7 +1187,8 @@ if __name__ == "__main__":
         mixup_probability=args.mixup_probability,
         mel_bins=args.num_mels,
         fft_length=args.fft_length,
-        mag_scale=args.mag_scale
+        mag_scale=args.mag_scale,
+        random_offset=True
     )
 
     # Create validation dataset (without mixup)
@@ -1201,7 +1204,8 @@ if __name__ == "__main__":
         mixup_probability=0.0,
         mel_bins=args.num_mels,
         fft_length=args.fft_length,
-        mag_scale=args.mag_scale
+        mag_scale=args.mag_scale,
+        random_offset=False
     )
 
     # Update steps_per_epoch and val_steps
