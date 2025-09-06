@@ -219,6 +219,56 @@ def sort_by_s2n(samples, threshold=0.1):
         filtered_samples = [sorted_samples[0]]
     return filtered_samples
 
+def get_activity_ratio(x, k=2.0, max_active=0.8, subsample=512):
+    """
+    Activity ratio: fraction of units above median + k*MAD,
+    capped to avoid broadband noise. Uses subsampling for speed.
+
+    Args:
+        x (np.ndarray): 1D or 2D array (audio or spectrogram).
+        k (float): MAD multiplier.
+        max_active (float): Max allowed fraction of active units.
+        subsample (int): Number of points to use for median/MAD (if x is large).
+
+    Returns:
+        float: Activity ratio in [0, 1].
+    """
+    x = np.abs(x)
+    flat = x.ravel()
+    n = flat.size
+    if n > subsample:
+        idx = np.linspace(0, n - 1, subsample, dtype=int)
+        flat = flat[idx]
+    med = np.median(flat)
+    mad = np.median(np.abs(flat - med)) + 1e-10
+    thresh = med + k * mad
+    active = np.count_nonzero(x > thresh)
+    total = x.size
+    ratio = float(active) / float(total)
+    if ratio > max_active:
+        return 0.0
+    return ratio
+
+def sort_by_activity(samples, threshold=0.25):
+    """
+    Sort samples by activity ratio and filter out low-activity ones.
+    Keeps at least one sample.
+
+    Args:
+        samples (list[np.ndarray]): List of 1D or 2D arrays.
+        threshold (float): Minimum activity ratio to keep.
+
+    Returns:
+        list[np.ndarray]: Sorted and filtered samples.
+    """
+    activity = np.array([get_activity_ratio(s) for s in samples])
+    sorted_idx = np.argsort(activity)[::-1]
+    sorted_samples = [samples[i] for i in sorted_idx]
+    filtered = [s for s, a in zip(sorted_samples, activity[sorted_idx]) if a >= threshold]
+    if not filtered:
+        filtered = [sorted_samples[0]]
+    return filtered
+
 def pick_random_samples(samples, num_samples=1, pick_first=False):
     """
     Randomly select one or more samples from a list.

@@ -15,6 +15,7 @@ from utils.audio import (
     load_audio_file,
     get_spectrogram_from_audio,
     sort_by_s2n,
+    sort_by_activity,
     pick_random_samples,
     plot_spectrogram,
 )
@@ -34,7 +35,18 @@ if gpus:
     except Exception as e:
         print(f"Could not set memory growth: {e}")
     
-def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30, chunk_duration=3, spec_width=128, mel_bins=64, audio_frontend='precomputed', tf_frontend_layer=None, fft_length=512, mag_scale='none'):
+def dataset_sanity_check(file_paths, 
+                         classes, 
+                         sample_rate=22050, 
+                         max_duration=30, 
+                         chunk_duration=3, 
+                         spec_width=128, 
+                         mel_bins=64, 
+                         audio_frontend='precomputed', 
+                         tf_frontend_layer=None, 
+                         fft_length=512, 
+                         mag_scale='pwl',
+                         snr_threshold=0.05):
     """
     Plot spectrograms for a quick visual inspection before/after training.
 
@@ -55,6 +67,7 @@ def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30
         tf_frontend_layer (AudioFrontendLayer | None): Trained frontend to use for plotting.
         fft_length (int): FFT length used for linear/hybrid paths.
         mag_scale (str): 'pcen' | 'pwl' | 'db' | 'none' magnitude scaling.
+        snr_threshold (float): Minimum SNR threshold for chunk selection.
 
     Returns:
         None. Saves/plots example spectrograms to the samples/ folder.
@@ -80,14 +93,14 @@ def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30
         dummy = tf.zeros(dummy_shape, dtype=tf.float32)
         _ = tf_frontend(dummy, training=False)
 
-    for i, path in enumerate(file_paths[:5]):
+    for i, path in enumerate(file_paths[:10]):
         audio_chunks = load_audio_file(path, sample_rate, max_duration, chunk_duration)
         if len(audio_chunks) == 0: continue
 
         if audio_frontend in ('librosa', 'precomputed'):
             # Precompute mel + requested mag_scale for visualization
             specs = [get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=mel_bins, spec_width=spec_width, mag_scale=mag_scale) for chunk in audio_chunks]
-            pool = sort_by_s2n(specs, threshold=0.5) or specs
+            pool = sort_by_activity(specs, threshold=snr_threshold) or specs
             if len(pool) == 0: continue
             spec = pick_random_samples(pool, num_samples=1)
             spec = spec[0] if isinstance(spec, list) else spec
@@ -95,7 +108,9 @@ def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30
         elif audio_frontend == 'hybrid':
             # Feed linear power to TF frontend (mel + mag_scale applied in TF layer)
             specs = [get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=spec_width) for chunk in audio_chunks]
-            pool = sort_by_s2n(specs, threshold=0.5) or specs
+            print(f"File {i+1}: {os.path.basename(path)} - {len(audio_chunks)} chunks, example spec shape: {specs[0].shape}")
+            pool = sort_by_activity(specs, threshold=snr_threshold) or specs
+            print(f"  Selected {len(pool)} chunks after activity-based filtering.")
             if len(pool) == 0: continue
             spec_in = pick_random_samples(pool, num_samples=1)
             spec_in = spec_in[0] if isinstance(spec_in, list) else spec_in  # [fft_bins, spec_width]
@@ -103,7 +118,7 @@ def dataset_sanity_check(file_paths, classes, sample_rate=22050, max_duration=30
             spec = tf_frontend(inp, training=False).numpy()[0, :, :, 0]
 
         else:  # raw/tf
-            pool = sort_by_s2n(audio_chunks, threshold=0.5) or audio_chunks
+            pool = sort_by_activity(audio_chunks, threshold=snr_threshold) or audio_chunks
             if len(pool) == 0: continue
             chunk = pick_random_samples(pool, num_samples=1)
             chunk = (chunk[0] if isinstance(chunk, list) else chunk)[:sample_rate * chunk_duration]
@@ -297,7 +312,7 @@ def data_generator(file_paths,
 
                 if audio_frontend in ('librosa', 'precomputed'):
                     specs = [get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=mel_bins, spec_width=spec_width, mag_scale=mag_scale) for chunk in audio_chunks]
-                    pool = sort_by_s2n(specs, threshold=snr_threshold) or specs
+                    pool = sort_by_activity(specs, threshold=snr_threshold) or specs
                     if len(pool) == 0: continue
                     sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
                     sample = sample[0] if isinstance(sample, list) else sample   # [mel, T]
@@ -305,14 +320,14 @@ def data_generator(file_paths,
 
                 elif audio_frontend == 'hybrid':
                     specs = [get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=spec_width) for chunk in audio_chunks]
-                    pool = sort_by_s2n(specs, threshold=snr_threshold) or specs
+                    pool = sort_by_activity(specs, threshold=snr_threshold) or specs
                     if len(pool) == 0: continue
                     sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
                     sample = sample[0] if isinstance(sample, list) else sample   # [fft_bins, T]
                     need_ch_last = True
 
                 elif audio_frontend in ('tf', 'raw'):
-                    pool = sort_by_s2n(audio_chunks, threshold=snr_threshold) or audio_chunks
+                    pool = sort_by_activity(audio_chunks, threshold=snr_threshold) or audio_chunks
                     if len(pool) == 0: continue
                     sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
                     x = sample[0] if isinstance(sample, list) else sample
@@ -1162,7 +1177,7 @@ if __name__ == "__main__":
     # Load file paths and classes
     file_paths, classes = load_file_paths_from_directory(args.data_path_train, 
                                                          max_samples=args.max_samples, 
-                                                         classes=get_classes_with_most_samples(args.data_path_train, 100, False) # DEBUG: Only use 25 classes for debugging
+                                                         classes=get_classes_with_most_samples(args.data_path_train, 250, True) # DEBUG: Only use N classes for debugging
                                                          )
 
     # Perform sanity check on the dataset
@@ -1175,7 +1190,8 @@ if __name__ == "__main__":
         mel_bins=args.num_mels,
         audio_frontend=args.audio_frontend,
         fft_length=args.fft_length,
-        mag_scale=args.mag_scale
+        mag_scale=args.mag_scale,
+        snr_threshold=0.25
     )
 
     # Split dataset into training and validation sets
@@ -1205,7 +1221,7 @@ if __name__ == "__main__":
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
         random_offset=True,
-        snr_threshold=0.75
+        snr_threshold=0.25
     )
 
     # Create validation dataset (without mixup)
@@ -1223,7 +1239,7 @@ if __name__ == "__main__":
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
         random_offset=False,
-        snr_threshold=0.75
+        snr_threshold=0.5
     )
 
     # Update steps_per_epoch and val_steps
@@ -1305,5 +1321,6 @@ if __name__ == "__main__":
             audio_frontend=args.audio_frontend,
             fft_length=args.fft_length,
             mag_scale=args.mag_scale,
-            tf_frontend_layer=trained_frontend
+            tf_frontend_layer=trained_frontend,
+            snr_threshold=0.25
         )
