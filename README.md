@@ -192,7 +192,8 @@ Arguments:
 - --data_path_test: Test data root with class subfolders (required).
 - --max_files: Optional cap on files per class (default: -1 = all).
 - --batch_size: Chunk inference batch size (default: 16).
-- --pooling: avg | max | lme (default: lme).
+- --pooling: avg | max | lme (default: avg).
+- --overlap: Chunk overlap in seconds (max. chunk_duration - 0.1)
 - --save_csv: Optional CSV path for per-file predictions.
 
 ### The STM deployment process
