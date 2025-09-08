@@ -118,7 +118,7 @@ def pool_scores(chunk_scores: np.ndarray, method: str = "average", beta: float =
     raise ValueError(f"Unsupported pooling method: {method}")
 
 
-def make_chunks_for_file(path: str, cfg: dict, frontend: str, mag_scale: str, n_fft: int):
+def make_chunks_for_file(path: str, cfg: dict, frontend: str, mag_scale: str, n_fft: int, chunk_overlap: float):
     """
     Produce a list of model-ready inputs (np arrays) for a given audio file.
     Returns:
@@ -133,7 +133,15 @@ def make_chunks_for_file(path: str, cfg: dict, frontend: str, mag_scale: str, n_
     spec_width = int(cfg["spec_width"])
     T = sr * cd
 
-    chunks = load_audio_file(path, sample_rate=sr, max_duration=60, chunk_duration=cd, random_offset=False)
+    chunks = load_audio_file(path, sample_rate=sr, max_duration=60, chunk_duration=cd, random_offset=False, chunk_overlap=chunk_overlap)
+    
+    # normalize per chunk to -1..1
+    #for i in range(len(chunks)):
+    #    ch = chunks[i]
+    #    max_val = np.max(np.abs(ch))
+    #    if max_val > 0:
+    #        chunks[i] = ch / max_val
+    
     out = []
     if frontend in ("precomputed", "librosa"):
         for ch in chunks:
@@ -160,7 +168,7 @@ def make_chunks_for_file(path: str, cfg: dict, frontend: str, mag_scale: str, n_
     return out
 
 
-def evaluate(model_runner, files, classes, cfg, pooling="average", batch_size=64, mep_beta=10.0):
+def evaluate(model_runner, files, classes, cfg, pooling="average", batch_size=64, overlap=0.0, mep_beta=10.0):
     """
     Run inference per chunk, pool to file-level, and compute metrics.
     Returns:
@@ -185,7 +193,7 @@ def evaluate(model_runner, files, classes, cfg, pooling="average", batch_size=64
         target[classes.index(label_name)] = 1.0
 
         # Build chunk inputs
-        chunks = make_chunks_for_file(path, cfg, frontend, mag_scale, n_fft)
+        chunks = make_chunks_for_file(path, cfg, frontend, mag_scale, n_fft, overlap)
         if len(chunks) == 0:
             continue
 
@@ -270,14 +278,23 @@ def evaluate(model_runner, files, classes, cfg, pooling="average", batch_size=64
 
 def save_predictions_csv(per_file, classes, out_path):
     """
-    Save per-file predictions to CSV: file,label,<class columns...>
+    Save per-file predictions to CSV: file,label,top1_label,top1_score,<class columns...>
     """
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w") as f:
-        header = ["file", "label"] + classes
+        header = ["file", "label", "top1_label", "top1_score"] + classes
         f.write(",".join(header) + "\n")
         for row in per_file:
-            vals = [row["file"], row["label"]] + [f"{s:.6f}" for s in row["scores"]]
+            scores = np.array(row["scores"])
+            top1_idx = int(np.argmax(scores))
+            top1_label = classes[top1_idx]
+            top1_score = scores[top1_idx]
+            vals = [
+                row["file"],
+                row["label"],
+                top1_label,
+                f"{top1_score:.3f}",
+            ] + [f"{s:.3f}" for s in scores]
             f.write(",".join(vals) + "\n")
 
 
@@ -288,7 +305,8 @@ def get_args():
     parser.add_argument("--data_path_test", type=str, required=True, help="Path to test dataset root (class-subfolders)")
     parser.add_argument("--max_files", type=int, default=-1, help="Optional max number of test files per class to use")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for chunk inference")
-    parser.add_argument("--pooling", type=str, default="lme", choices=["avg", "max", "lme"], help="Pooling method across chunks")
+    parser.add_argument("--overlap", type=float, default=0.0, help="Chunk overlap between consecutive audio segments (max. chunk_duration - 0.1)")
+    parser.add_argument("--pooling", type=str, default="avg", choices=["avg", "max", "lme"], help="Pooling method across chunks")
     parser.add_argument("--save_csv", type=str, default="", help="Optional path to save per-file predictions CSV")
     return parser.parse_args()
 
@@ -312,7 +330,10 @@ def main():
         raise ValueError("class_names missing in model_config; cannot evaluate.")
 
     # Collect test files restricted to known classes
-    files, _ = load_file_paths_from_directory(args.data_path_test, classes=classes, exts=SUPPORTED_AUDIO_EXTS, max_samples=args.max_files)
+    files, _ = load_file_paths_from_directory(args.data_path_test, 
+                                              classes=classes, 
+                                              exts=SUPPORTED_AUDIO_EXTS, 
+                                              max_samples=args.max_files)
     if len(files) == 0:
         raise RuntimeError(f"No test audio found in {args.data_path_test} with exts {SUPPORTED_AUDIO_EXTS}")
 
@@ -327,6 +348,7 @@ def main():
         cfg=cfg,
         pooling=args.pooling,
         batch_size=args.batch_size,
+        overlap=max(0.0, min(cfg['chunk_duration'] - 0.1, args.overlap)),
     )
 
     # Print summary
