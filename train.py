@@ -364,9 +364,16 @@ def data_generator(file_paths,
                     permuted_indices = np.random.permutation(batch_samples.shape[0])
                     lam = np.random.beta(mixup_alpha, mixup_alpha, size=(num_mix,))
                     lam_inp = lam.reshape((num_mix,) + (1,) * (batch_samples.ndim - 1))
-                    lam_lbl = lam.reshape((num_mix, 1))
-                    batch_samples[mix_indices] = lam_inp * batch_samples[mix_indices] + (1 - lam_inp) * batch_samples[permuted_indices[mix_indices]]
-                    batch_labels[mix_indices] = lam_lbl * batch_labels[mix_indices] + (1 - lam_lbl) * batch_labels[permuted_indices[mix_indices]]
+                    # Audio: weighted mix
+                    batch_samples[mix_indices] = (
+                        lam_inp * batch_samples[mix_indices] +
+                        (1 - lam_inp) * batch_samples[permuted_indices[mix_indices]]
+                    )
+                    # Labels: elementwise OR (multi-label union)
+                    batch_labels[mix_indices] = np.maximum(
+                        batch_labels[mix_indices],
+                        batch_labels[permuted_indices[mix_indices]]
+                    )
 
             yield batch_samples, batch_labels
 
