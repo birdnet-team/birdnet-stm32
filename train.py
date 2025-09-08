@@ -945,7 +945,7 @@ def ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name="ds", weight_decay=1e-
 
 def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddings_size, num_classes,
                       audio_frontend='precomputed', alpha=1.0, depth_multiplier=1, fft_length=512,
-                      mag_scale='none', frontend_trainable=False):
+                      mag_scale='none', frontend_trainable=False, class_activation='softmax'):
     """
     Build a DS-CNN model with a selectable audio frontend.
 
@@ -962,6 +962,7 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
         fft_length (int): FFT size for hybrid/librosa paths.
         mag_scale (str): 'pcen' | 'pwl' | 'db' | 'none' magnitude scaling.
         frontend_trainable (bool): Trainability of frontend sub-layers.
+        class_activation (str): 'softmax' | 'sigmoid' activation for the final layer.
 
     Returns:
         tf.keras.Model: Compiled DS-CNN model.
@@ -1052,10 +1053,20 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
     # Head
     x = layers.GlobalAveragePooling2D(name="gap")(x)
     x = layers.Dropout(0.5, name="dropout")(x)
-    outputs = layers.Dense(num_classes, activation='sigmoid', name="pred")(x)
+    outputs = layers.Dense(num_classes, activation=class_activation, name="pred")(x)
     return tf.keras.models.Model(inputs, outputs, name="dscnn_audio")
 
-def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.001, batch_size=64, patience=10, checkpoint_path="checkpoints/best_model.keras", steps_per_epoch=None, val_steps=None):
+def train_model(model, 
+                train_dataset, 
+                val_dataset, 
+                epochs=50, 
+                learning_rate=0.001, 
+                batch_size=64, 
+                patience=10, 
+                checkpoint_path="checkpoints/best_model.keras", 
+                steps_per_epoch=None, 
+                val_steps=None,
+                is_multilabel=False):
     """
     Train the model with cosine decay, early stopping, and checkpointing.
 
@@ -1073,6 +1084,7 @@ def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.00
         checkpoint_path (str): Path to save the best .keras model.
         steps_per_epoch (int): Training steps per epoch (> 0 required).
         val_steps (int | None): Validation steps per epoch.
+        is_multilabel (bool): If True, use binary_crossentropy else categorical_crossentropy.
 
     Returns:
         tf.keras.callbacks.History: Keras training history.
@@ -1093,7 +1105,7 @@ def train_model(model, train_dataset, val_dataset, epochs=50, learning_rate=0.00
     )    
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
-        loss='binary_crossentropy',
+        loss='binary_crossentropy' if is_multilabel else 'categorical_crossentropy',
         metrics=[tf.keras.metrics.AUC(curve='ROC', multi_label=True, name="roc_auc")]
     )
     callbacks = [
@@ -1136,7 +1148,7 @@ def get_args():
     parser = argparse.ArgumentParser(description="Train STM32N6 audio classifier")
     parser.add_argument('--data_path_train', type=str, required=True, help='Path to train dataset')
     parser.add_argument('--max_samples', type=int, default=None, help='Max samples per class for training (None for all)')
-    parser.add_argument('--upsample_ratio', type=float, default=0.25, help='Upsample ratio for minority classes')
+    parser.add_argument('--upsample_ratio', type=float, default=0.5, help='Upsample ratio for minority classes')
     parser.add_argument('--sample_rate', type=int, default=22050, help='Audio sample rate. Default is 22050 Hz.')
     parser.add_argument('--num_mels', type=int, default=64, help='Number of mel bins for spectrogram')
     parser.add_argument('--spec_width', type=int, default=256, help='Spectrogram width')
@@ -1154,7 +1166,7 @@ def get_args():
     parser.add_argument('--depth_multiplier', type=int, default=1, help='Depth multiplier for model')
     parser.add_argument('--frontend_trainable', action='store_true', default=True, help='If set, make audio frontend trainable (mel_mixer/raw mixer/PCEN/PWL).')
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Mixup alpha')
-    parser.add_argument('--mixup_probability', type=float, default=0.25, help='Fraction of batch to apply mixup')
+    parser.add_argument('--mixup_probability', type=float, default=0.25, help='Fraction of batch to apply mixup to.')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
     parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate')
@@ -1261,6 +1273,7 @@ if __name__ == "__main__":
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
         frontend_trainable=args.frontend_trainable,
+        class_activation='sigmoid'  if args.mixup_probability > 0 else 'softmax'  # Use sigmoid for mixup (multi-label), softmax otherwise
     )
     
     model.summary()
@@ -1297,7 +1310,8 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         checkpoint_path=args.checkpoint_path,
         steps_per_epoch=steps_per_epoch,
-        val_steps=val_steps
+        val_steps=val_steps,
+        is_multilabel=(args.mixup_probability > 0)
     )
     print(f"Training complete. Best model saved to '{args.checkpoint_path}'.")
 
