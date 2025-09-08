@@ -6,17 +6,16 @@ import soundfile as sf
 # random seed for reproducibility
 np.random.seed(42)
 
-def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3, random_offset=False):
+def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3, chunk_overlap=0.0, random_offset=False):
     """
-    Load an audio file with soundfile, resample to sample_rate, and split into fixed-length chunks.
-
-    If random_offset is True, a random starting offset up to one chunk_duration (seconds) is used.
+    Load an audio file with soundfile, resample to sample_rate, and split into fixed-length (possibly overlapping) chunks.
 
     Args:
         path (str): Path to the audio file on disk.
         sample_rate (int): Target sampling rate (Hz).
         max_duration (int): Maximum duration to load (seconds).
-        chunk_duration (int): Duration of each chunk (seconds).
+        chunk_duration (float): Duration of each chunk (seconds).
+        chunk_overlap (float): Overlap between chunks (seconds, 0 <= chunk_overlap < chunk_duration).
         random_offset (bool): Whether to start reading at a random offset.
 
     Returns:
@@ -59,19 +58,27 @@ def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3, 
         else:
             y = y.astype(np.float32, copy=False)
 
-        # Chunking with zero-pad to multiple
         chunk_size = int(sample_rate * chunk_duration)
         if chunk_size <= 0:
             return []
+
+        # Interpret chunk_overlap as seconds, clamp to [0, chunk_duration-0.1]
+        max_overlap = max(0.0, min(chunk_overlap, chunk_duration - 0.1))
+        step_size = int(sample_rate * (chunk_duration - max_overlap))
+        if step_size < 1:
+            step_size = 1
+
         n = y.shape[0]
-        num_chunks = (n + chunk_size - 1) // chunk_size  # ceil
-        pad = num_chunks * chunk_size - n
-        if pad > 0:
-            y = np.pad(y, (0, pad), mode="constant")
-        chunks = y.reshape(num_chunks, chunk_size).astype(np.float32, copy=False)
-        return chunks
+        # Compute start indices for each chunk
+        starts = np.arange(0, n - chunk_size + 1, step_size)
+        # Always include the last chunk if not already included
+        if len(starts) == 0 or (starts[-1] + chunk_size < n):
+            starts = np.append(starts, n - chunk_size)
+        starts = starts.astype(int)
+
+        chunks = np.stack([y[s:s + chunk_size] for s in starts])
+        return chunks.astype(np.float32, copy=False)
     except Exception:
-        # Keep behavior consistent with previous code
         return []
 
 def get_spectrogram_from_audio(audio, sample_rate=22050, n_fft=512, mel_bins=64, spec_width=256, mag_scale: str = "none"):
