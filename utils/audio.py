@@ -78,10 +78,10 @@ def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3, 
 
         chunks = np.stack([y[s:s + chunk_size] for s in starts])
         
-        # pad last chunk if needed
-        if chunks.shape[1] < chunk_size:
-            pad_width = chunk_size - chunks.shape[1]
-            chunks = np.pad(chunks, ((0, 0), (0, pad_width)), mode='constant', constant_values=0.0)        
+        # pad last chunk if it is shorter tha chunk_duration / 2
+        if chunks.shape[0] > 0 and chunks[-1].shape[0] < chunk_size // 2:
+            pad_width = chunk_size - chunks[-1].shape[0]
+            chunks[-1] = np.pad(chunks[-1], (0, pad_width), mode='constant', constant_values=0)        
         
         return chunks.astype(np.float32, copy=False)
     except Exception:
