@@ -4,3 +4,4 @@ numpy==1.26.4
 matplotlib==3.10.3
 scikit-learn==1.7.1
 tqdm==4.67.1
+resampy==0.4.3
