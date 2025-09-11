@@ -276,6 +276,19 @@ def evaluate(model_runner, files, classes, cfg, pooling="average", batch_size=64
     return metrics, per_file
 
 
+def print_ascii_histogram(scores, bins=10, width=40):
+    """
+    Print an ASCII histogram of scores in [0,1].
+    """
+    hist, bin_edges = np.histogram(scores, bins=bins, range=(0, 1))
+    max_count = np.max(hist)
+    for i in range(bins):
+        left = bin_edges[i]
+        right = bin_edges[i + 1]
+        bar = "#" * int(width * hist[i] / max_count) if max_count > 0 else ""
+        print(f"{left:4.2f} - {right:4.2f} | {bar} ({hist[i]})")
+
+
 def save_predictions_csv(per_file, classes, out_path):
     """
     Save per-file predictions to CSV: file,label,top1_label,top1_score,<class columns...>
@@ -369,6 +382,11 @@ def main():
         for class_name, ap in ap_with_names[-10:]:
             print(f"  {class_name}: {ap:.4f}")
         print("")
+
+    # Gather top-1 score per file
+    top1_scores = np.array([np.max(row["scores"]) for row in per_file])
+    print("\nHistogram of top-1 predicted scores per file:")
+    print_ascii_histogram(top1_scores, bins=10, width=40)
 
     # Optional CSV
     if args.save_csv:
