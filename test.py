@@ -5,7 +5,7 @@ import math
 from tqdm import tqdm
 import numpy as np
 import tensorflow as tf
-from sklearn.metrics import roc_auc_score, average_precision_score
+from sklearn.metrics import roc_auc_score, average_precision_score, precision_recall_curve
 import warnings  # NEW
 
 from train import SUPPORTED_AUDIO_EXTS, load_file_paths_from_directory, AudioFrontendLayer
@@ -274,7 +274,7 @@ def evaluate(model_runner, files, classes, cfg, pooling="average", batch_size=64
     except Exception:
         metrics["maP"] = float("nan")
 
-    return metrics, per_file
+    return metrics, per_file, y_true, y_scores
 
 
 def print_ascii_histogram(scores, bins=10, width=40):
@@ -289,6 +289,35 @@ def print_ascii_histogram(scores, bins=10, width=40):
         bar = "#" * int(width * hist[i] / max_count) if max_count > 0 else ""
         print(f"{left:4.2f} - {right:4.2f} | {bar} ({hist[i]})")
 
+
+def print_ascii_pr_curve(y_true, y_scores, bins=10, width=40):
+    """
+    Print an ASCII PR curve with fixed precision bins (1.0, 0.9, ..., 0.0).
+    For each precision bin, plot the max recall achieved at or above that precision.
+    """
+    # Flatten for micro-averaged PR
+    y_true = y_true.ravel()
+    y_scores = y_scores.ravel()
+    precisions, recalls, thresholds = precision_recall_curve(y_true, y_scores)
+    # Remove last point (sklearn adds an extra 0 recall, 1 precision point)
+    precisions = precisions[:-1]
+    recalls = recalls[:-1]
+
+    # Fixed bins: 1.0, 0.9, ..., 0.0 (top to bottom)
+    bin_edges = np.linspace(1.0, 0.0, bins + 1)
+    print("\nASCII Precision-Recall Curve (precision ↓, recall →):")
+    for i in range(bins):
+        p_lo = bin_edges[i + 1]
+        p_hi = bin_edges[i]
+        # Find recall for all points with precision in this bin
+        mask = (precisions >= p_lo) & (precisions <= p_hi)
+        if np.any(mask):
+            max_recall = np.max(recalls[mask])
+        else:
+            max_recall = 0.0
+        bar = "#" * int(width * max_recall)
+        print(f"{p_hi:4.1f} | {bar} ({max_recall:4.2f})")
+        
 
 def save_predictions_csv(per_file, classes, out_path):
     """
@@ -355,7 +384,7 @@ def main():
     runner = load_model_runner(args.model_path)
 
     # Evaluate
-    metrics, per_file = evaluate(
+    metrics, per_file, y_true, y_scores = evaluate(
         model_runner=runner,
         files=files,
         classes=classes,
@@ -388,6 +417,9 @@ def main():
     top1_scores = np.array([np.max(row["scores"]) for row in per_file])
     print("\nHistogram of top-1 predicted scores per file:")
     print_ascii_histogram(top1_scores, bins=10, width=40)
+
+    # Print ASCII PR curve    
+    print_ascii_pr_curve(y_true, y_scores, bins=20, width=40)
 
     # Optional CSV
     if args.save_csv:
