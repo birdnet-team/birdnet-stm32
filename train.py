@@ -46,7 +46,8 @@ def dataset_sanity_check(file_paths,
                          tf_frontend_layer=None, 
                          fft_length=512, 
                          mag_scale='pwl',
-                         snr_threshold=0.05):
+                         snr_threshold=0.05,
+                         prefix='pre'):
     """
     Plot spectrograms for a quick visual inspection before/after training.
 
@@ -68,6 +69,7 @@ def dataset_sanity_check(file_paths,
         fft_length (int): FFT length used for linear/hybrid paths.
         mag_scale (str): 'pcen' | 'pwl' | 'db' | 'none' magnitude scaling.
         snr_threshold (float): Minimum SNR threshold for chunk selection.
+        prefix (str): Prefix for saved plot filenames.
 
     Returns:
         None. Saves/plots example spectrograms to the samples/ folder.
@@ -89,13 +91,15 @@ def dataset_sanity_check(file_paths,
             name="audio_frontend_sanity",
         )
         fft_bins = fft_length // 2 + 1
-        dummy_shape = (1, chunk_duration * sample_rate, 1) if audio_frontend in ('tf', 'raw') else (1, fft_bins, spec_width, 1)
+        dummy_shape = (1, int(chunk_duration * sample_rate), 1) if audio_frontend in ('tf', 'raw') else (1, fft_bins, spec_width, 1)
         dummy = tf.zeros(dummy_shape, dtype=tf.float32)
         _ = tf_frontend(dummy, training=False)
 
     for i, path in enumerate(file_paths[:10]):
         audio_chunks = load_audio_file(path, sample_rate, max_duration, chunk_duration)
-        if len(audio_chunks) == 0: continue
+        if len(audio_chunks) == 0: 
+            print(f"Skipping file {path} (failed to load)")
+            continue
 
         if audio_frontend in ('librosa', 'precomputed'):
             # Precompute mel + requested mag_scale for visualization
@@ -121,13 +125,13 @@ def dataset_sanity_check(file_paths,
             pool = sort_by_activity(audio_chunks, threshold=snr_threshold) or audio_chunks
             if len(pool) == 0: continue
             chunk = pick_random_samples(pool, num_samples=1)
-            chunk = (chunk[0] if isinstance(chunk, list) else chunk)[:sample_rate * chunk_duration]
+            chunk = (chunk[0] if isinstance(chunk, list) else chunk)[:int(sample_rate * chunk_duration)]
             if len(chunk) < sample_rate * chunk_duration:
-                chunk = np.pad(chunk, (0, sample_rate * chunk_duration - len(chunk)))
+                chunk = np.pad(chunk, (0, int(sample_rate * chunk_duration) - len(chunk)))
             inp = chunk[np.newaxis, ..., np.newaxis].astype(np.float32)
             spec = tf_frontend(inp, training=False).numpy()[0, :, :, 0]
 
-        plot_spectrogram(spec, title=f"{audio_frontend}_{mag_scale}_{os.path.basename(path)}")
+        plot_spectrogram(spec, title=f"{audio_frontend}_{mag_scale}_{prefix}_{os.path.basename(path)}")
         
 def get_classes_with_most_samples(directory, n_classes=25, include_noise=False, exts: tuple = SUPPORTED_AUDIO_EXTS):
     """
@@ -295,7 +299,7 @@ def data_generator(file_paths,
     Yields:
         tuple[np.ndarray, np.ndarray]: (inputs, labels) for a batch.
     """
-    T = sample_rate * chunk_duration
+    T = int(sample_rate * chunk_duration)
     while True:
         idxs = np.random.permutation(len(file_paths))
         for batch_start in range(0, len(idxs), batch_size):
@@ -362,7 +366,8 @@ def data_generator(file_paths,
                 if num_mix > 0:
                     mix_indices = np.random.choice(batch_samples.shape[0], size=num_mix, replace=False)
                     permuted_indices = np.random.permutation(batch_samples.shape[0])
-                    lam = np.random.beta(mixup_alpha, mixup_alpha, size=(num_mix,))
+                    #lam = np.random.beta(mixup_alpha, mixup_alpha, size=(num_mix,)) # beta dist for mixup
+                    lam = np.random.uniform(mixup_alpha, 1 - mixup_alpha, size=(num_mix,)) # uniform dist for mixup
                     lam_inp = lam.reshape((num_mix,) + (1,) * (batch_samples.ndim - 1))
                     # Audio: weighted mix
                     batch_samples[mix_indices] = (
@@ -401,7 +406,7 @@ def load_dataset(file_paths, classes, audio_frontend='precomputed', batch_size=3
     mag_scale = kwargs.get('mag_scale', 'none')
     random_offset = kwargs.get('random_offset', False)
     snr_threshold = kwargs.get('snr_threshold', 0.5)
-    chunk_len = sr * cd
+    chunk_len = int(sr * cd)
 
     if audio_frontend in ('librosa', 'precomputed'):
         input_spec = tf.TensorSpec(shape=(None, mel_bins, spec_width, 1), dtype=tf.float32)
@@ -1015,7 +1020,7 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
             name="audio_frontend",
         )(inputs)
     elif audio_frontend in ('tf', 'raw'):
-        inputs = tf.keras.Input(shape=(chunk_duration * sample_rate, 1), name='raw_audio_input')
+        inputs = tf.keras.Input(shape=(int(chunk_duration * sample_rate), 1), name='raw_audio_input')
         x = AudioFrontendLayer(
             mode='raw',
             mel_bins=num_mels,
@@ -1160,7 +1165,7 @@ def get_args():
     parser.add_argument('--num_mels', type=int, default=64, help='Number of mel bins for spectrogram')
     parser.add_argument('--spec_width', type=int, default=256, help='Spectrogram width')
     parser.add_argument('--fft_length', type=int, default=512, help='FFT length for STFT/linear spectrogram')
-    parser.add_argument('--chunk_duration', type=int, default=3, help='Audio chunk duration (seconds)')
+    parser.add_argument('--chunk_duration', type=float, default=3, help='Audio chunk duration (seconds)')
     parser.add_argument('--max_duration', type=int, default=30, help='Max audio duration (seconds)')
     parser.add_argument('--audio_frontend', type=str, default='hybrid',
                         choices=['precomputed', 'hybrid', 'raw', 'librosa', 'tf'],
@@ -1196,7 +1201,7 @@ if __name__ == "__main__":
     # Load file paths and classes
     file_paths, classes = load_file_paths_from_directory(args.data_path_train, 
                                                          max_samples=args.max_samples, 
-                                                         classes=get_classes_with_most_samples(args.data_path_train, 250, True) # DEBUG: Only use N classes for debugging
+                                                         classes=get_classes_with_most_samples(args.data_path_train, 100, True) # DEBUG: Only use N classes for debugging
                                                          )
 
     # Perform sanity check on the dataset
@@ -1210,7 +1215,8 @@ if __name__ == "__main__":
         audio_frontend=args.audio_frontend,
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
-        snr_threshold=0.25
+        snr_threshold=0.25,
+        prefix='pre'
     )
 
     # Split dataset into training and validation sets
@@ -1343,5 +1349,6 @@ if __name__ == "__main__":
             fft_length=args.fft_length,
             mag_scale=args.mag_scale,
             tf_frontend_layer=trained_frontend,
-            snr_threshold=0.25
+            snr_threshold=0.25,
+            prefix='post'
         )
