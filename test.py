@@ -131,7 +131,7 @@ def make_chunks_for_file(path: str, cfg: dict, frontend: str, mag_scale: str, n_
     cd = int(cfg["chunk_duration"])
     num_mels = int(cfg["num_mels"])
     spec_width = int(cfg["spec_width"])
-    T = sr * cd
+    T = int(sr * cd)
 
     chunks = load_audio_file(path, sample_rate=sr, max_duration=60, chunk_duration=cd, random_offset=False, chunk_overlap=chunk_overlap)
     
@@ -158,10 +158,11 @@ def make_chunks_for_file(path: str, cfg: dict, frontend: str, mag_scale: str, n_
                 S = S[:fft_bins, :spec_width]
             out.append(S[:, :, None].astype(np.float32))
     elif frontend in ("tf", "raw"):
+        chunk_len = int(cfg["chunk_duration"] * cfg["sample_rate"])
         for ch in chunks:
-            x = ch[:T]
-            if x.shape[0] < T:
-                x = np.pad(x, (0, T - x.shape[0]))
+            x = ch[:chunk_len]
+            if x.shape[0] < chunk_len:
+                x = np.pad(x, (0, chunk_len - x.shape[0]))
             out.append(x[:, None].astype(np.float32))
     else:
         raise ValueError(f"Invalid audio_frontend: {frontend}")
