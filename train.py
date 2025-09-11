@@ -106,7 +106,7 @@ def dataset_sanity_check(file_paths,
             specs = [get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=mel_bins, spec_width=spec_width, mag_scale=mag_scale) for chunk in audio_chunks]
             pool = sort_by_activity(specs, threshold=snr_threshold) or specs
             if len(pool) == 0: continue
-            spec = pick_random_samples(pool, num_samples=1)
+            spec = pick_random_samples(pool, num_samples=1, pick_first=True)
             spec = spec[0] if isinstance(spec, list) else spec
 
         elif audio_frontend == 'hybrid':
@@ -116,7 +116,7 @@ def dataset_sanity_check(file_paths,
             pool = sort_by_activity(specs, threshold=snr_threshold) or specs
             print(f"  Selected {len(pool)} chunks after activity-based filtering.")
             if len(pool) == 0: continue
-            spec_in = pick_random_samples(pool, num_samples=1)
+            spec_in = pick_random_samples(pool, num_samples=1, pick_first=True)
             spec_in = spec_in[0] if isinstance(spec_in, list) else spec_in  # [fft_bins, spec_width]
             inp = spec_in[np.newaxis, :, :, np.newaxis].astype(np.float32)   # [B,fft_bins,T,1]
             spec = tf_frontend(inp, training=False).numpy()[0, :, :, 0]
@@ -124,7 +124,7 @@ def dataset_sanity_check(file_paths,
         else:  # raw/tf
             pool = sort_by_activity(audio_chunks, threshold=snr_threshold) or audio_chunks
             if len(pool) == 0: continue
-            chunk = pick_random_samples(pool, num_samples=1)
+            chunk = pick_random_samples(pool, num_samples=1, pick_first=True)
             chunk = (chunk[0] if isinstance(chunk, list) else chunk)[:int(sample_rate * chunk_duration)]
             if len(chunk) < sample_rate * chunk_duration:
                 chunk = np.pad(chunk, (0, int(sample_rate * chunk_duration) - len(chunk)))
@@ -1205,8 +1205,9 @@ if __name__ == "__main__":
                                                          )
 
     # Perform sanity check on the dataset
+    sanity_file_paths = file_paths[:10]
     dataset_sanity_check(
-        file_paths, classes,
+        sanity_file_paths, classes,
         sample_rate=args.sample_rate,
         max_duration=args.max_duration,
         chunk_duration=args.chunk_duration,
@@ -1339,7 +1340,7 @@ if __name__ == "__main__":
         print("Post-training sanity check using trained TF audio frontend...")
         trained_frontend = model.get_layer("audio_frontend")
         dataset_sanity_check(
-            val_paths, classes,
+            sanity_file_paths_paths, classes,
             sample_rate=args.sample_rate,
             max_duration=args.max_duration,
             chunk_duration=args.chunk_duration,
