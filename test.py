@@ -8,7 +8,7 @@ import tensorflow as tf
 from sklearn.metrics import roc_auc_score, average_precision_score, precision_recall_curve
 import warnings  # NEW
 
-from train import SUPPORTED_AUDIO_EXTS, load_file_paths_from_directory, AudioFrontendLayer
+from train import SUPPORTED_AUDIO_EXTS, load_file_paths_from_directory, AudioFrontendLayer, dataset_sanity_check
 from utils.audio import load_audio_file, get_spectrogram_from_audio
 
 np.random.seed(42)
@@ -382,6 +382,31 @@ def main():
 
     # Load model
     runner = load_model_runner(args.model_path)
+    tf_frontend_layer = None
+    if isinstance(runner, KerasRunner):
+        # Try to extract the frontend layer by name or type
+        for layer in runner.model.layers:
+            if isinstance(layer, AudioFrontendLayer) or "frontend" in layer.name:
+                tf_frontend_layer = layer
+                break
+
+    # Run sanity check on a few test files with the trained frontend (Keras only)
+    if tf_frontend_layer is not None:
+        test_files = files[:10]
+        dataset_sanity_check(
+            test_files, classes,
+            sample_rate=cfg["sample_rate"],
+            max_duration=cfg.get("max_duration", 30),
+            chunk_duration=cfg["chunk_duration"],
+            spec_width=cfg["spec_width"],
+            mel_bins=cfg["num_mels"],
+            audio_frontend=cfg["audio_frontend"],
+            fft_length=cfg["fft_length"],
+            mag_scale=cfg.get("mag_scale", "none"),
+            snr_threshold=0.25,
+            prefix='test',
+            tf_frontend_layer=tf_frontend_layer
+        )
 
     # Evaluate
     metrics, per_file, y_true, y_scores = evaluate(
