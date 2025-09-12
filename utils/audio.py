@@ -84,7 +84,8 @@ def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3, 
             chunks[-1] = np.pad(chunks[-1], (0, pad_width), mode='constant', constant_values=0)        
         
         return chunks.astype(np.float32, copy=False)
-    except Exception:
+    except Exception as e:
+        #print(f"Error loading {path}: {e}")
         return []
 
 def get_spectrogram_from_audio(audio, sample_rate=22050, n_fft=512, mel_bins=64, spec_width=256, mag_scale: str = "none"):

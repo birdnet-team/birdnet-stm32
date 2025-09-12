@@ -1340,7 +1340,7 @@ if __name__ == "__main__":
         print("Post-training sanity check using trained TF audio frontend...")
         trained_frontend = model.get_layer("audio_frontend")
         dataset_sanity_check(
-            sanity_file_paths_paths, classes,
+            sanity_file_paths, classes,
             sample_rate=args.sample_rate,
             max_duration=args.max_duration,
             chunk_duration=args.chunk_duration,
