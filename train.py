@@ -469,7 +469,7 @@ class AudioFrontendLayer(layers.Layer):
         sample_rate: int,
         chunk_duration: int,
         fft_length: int = 512,
-        pcen_K: int = 4,
+        pcen_K: int = 8,
         init_mel: bool = True,
         mel_fmin: float = 150.0,
         mel_fmax: Optional[float] = None,
@@ -555,7 +555,7 @@ class AudioFrontendLayer(layers.Layer):
 
         # PCEN/PWL sublayers (respect is_trainable)
         if self.mag_scale == "pcen":
-            self._pcen_pools = [layers.AveragePooling2D(pool_size=(1, 3), strides=(1, 1), padding="same",
+            self._pcen_pools = [layers.AveragePooling2D(pool_size=(1, 1), strides=(1, 1), padding="same",
                                                         name=f"{name}_pcen_ema{k}") for k in range(self.pcen_K)]
             self._pcen_agc_dw = layers.DepthwiseConv2D((1, 1), use_bias=False,
                                                     depthwise_initializer=tf.keras.initializers.Constant(0.6),
