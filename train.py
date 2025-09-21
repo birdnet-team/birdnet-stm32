@@ -1247,7 +1247,7 @@ if __name__ == "__main__":
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
         random_offset=True,
-        snr_threshold=0.25
+        snr_threshold=0.1
     )
 
     # Create validation dataset (without mixup)
