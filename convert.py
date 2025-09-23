@@ -24,7 +24,7 @@ def representative_data_gen(file_paths, cfg, num_samples=100, reps_per_file=4):
             - sample_rate (int)
             - num_mels (int)
             - spec_width (int)
-            - chunk_duration (int)
+            - chunk_duration (float)
             - fft_length (int)
             - audio_frontend (str): 'precomputed' | 'librosa' | 'hybrid' | 'raw' | 'tf'
             - mag_scale (str): 'none' | 'pcen' | 'pwl'
@@ -40,7 +40,7 @@ def representative_data_gen(file_paths, cfg, num_samples=100, reps_per_file=4):
     sr = int(cfg["sample_rate"])
     num_mels = int(cfg["num_mels"])
     spec_width = int(cfg["spec_width"])
-    cd = int(cfg["chunk_duration"])
+    cd = float(cfg["chunk_duration"])
     n_fft = int(cfg["fft_length"])
     frontend = cfg["audio_frontend"]
     mag_scale = cfg.get("mag_scale", "none")
@@ -258,7 +258,7 @@ def main():
     else:
         print(f"No training data directory provided, generating random representative dataset with {args.num_samples} samples.")
         def rep_data_gen():
-            sr = int(cfg["sample_rate"]); cd = int(cfg["chunk_duration"]); T = sr * cd
+            sr = int(cfg["sample_rate"]); cd = cfg["chunk_duration"]; T = int(sr * cd)
             spec_width = int(cfg["spec_width"]); n_fft = int(cfg["fft_length"])
             frontend = cfg["audio_frontend"]; num_mels = int(cfg["num_mels"])
             fft_bins = n_fft // 2 + 1
