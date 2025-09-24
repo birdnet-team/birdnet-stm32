@@ -2,6 +2,8 @@ import librosa
 import numpy as np
 import matplotlib.pyplot as plt
 import soundfile as sf
+from scipy.signal import resample_poly
+from math import gcd
 
 # random seed for reproducibility
 np.random.seed(42)
@@ -54,7 +56,7 @@ def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3, 
 
         # Resample if needed
         if sr0 != sample_rate:
-            y = librosa.resample(y, orig_sr=sr0, target_sr=sample_rate, res_type="kaiser_fast")
+            y = fast_resample(y, sr0, sample_rate)
         else:
             y = y.astype(np.float32, copy=False)
 
@@ -153,6 +155,20 @@ def get_spectrogram_from_audio(audio, sample_rate=22050, n_fft=512, mel_bins=64,
     S = normalize(S)
     
     return S
+
+def fast_resample(y, sr_in, sr_out):
+    """
+    Fast resampling using scipy.signal.resample_poly if possible, otherwise librosa.
+    """
+    if sr_in == sr_out:
+        return y.astype(np.float32, copy=False)
+    
+    g = gcd(sr_in, sr_out)
+    up = sr_out // g
+    down = sr_in // g
+    
+    return resample_poly(y, up, down).astype(np.float32, copy=False)
+    
 
 def normalize(S):
     """
