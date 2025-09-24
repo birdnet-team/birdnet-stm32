@@ -256,9 +256,6 @@ def evaluate(model_runner, files, classes, cfg, pooling="average", batch_size=64
     # Per-class AP (only for classes with positives)
     ap_per_class = []
     for ci in range(y_true.shape[1]):
-        if np.sum(y_true[:, ci] > 0.5) == 0:
-            ap_per_class.append(np.nan)
-            continue
         try:
             ap = average_precision_score(y_true[:, ci], y_scores[:, ci])
         except Exception:
