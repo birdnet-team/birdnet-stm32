@@ -52,6 +52,13 @@ def representative_data_gen(file_paths, cfg, num_samples=100, reps_per_file=4):
             break
 
         audio_chunks = load_audio_file(path, sample_rate=sr, max_duration=30, chunk_duration=cd)
+        
+        # Assert correct chunk shape
+        if isinstance(audio_chunks, np.ndarray):
+            assert audio_chunks.ndim == 2 and audio_chunks.shape[1] == T, f"Expected shape (num_chunks, {T}), got {audio_chunks.shape}"
+        else:
+            for ch in audio_chunks:
+                assert ch.ndim == 1 and ch.shape[0] == T, f"Expected shape ({T},), got {ch.shape}"
 
         if frontend in ('precomputed', 'librosa'):
             specs = [get_spectrogram_from_audio(ch, sample_rate=sr, n_fft=n_fft, mel_bins=num_mels, spec_width=spec_width, mag_scale=mag_scale) for ch in audio_chunks]
@@ -163,6 +170,8 @@ def validate_models(keras_model, tflite_model_path, rep_data_gen, num_samples=50
     out_det = interpreter.get_output_details()[0]
     assert in_det['dtype'] == np.float32, "Input type is not float32"
     assert out_det['dtype'] == np.float32, "Output type is not float32"
+    
+    print(f"TFLite input shape: {in_det['shape']}, output shape: {out_det['shape']}")
 
     cos_list, mse_list, mae_list, pcc_list = [], [], [], []
     cos_sm_list, mse_sm_list, mae_sm_list, pcc_sm_list = [], [], [], []
@@ -178,6 +187,7 @@ def validate_models(keras_model, tflite_model_path, rep_data_gen, num_samples=50
         # Keras forward
         yk = keras_model(sample, training=False).numpy()
         # TFLite forward
+        #print(sample.shape, in_det['shape'], flush=True)
         interpreter.set_tensor(in_det['index'], sample.astype(np.float32))
         interpreter.invoke()
         yt = interpreter.get_tensor(out_det['index'])
@@ -187,7 +197,7 @@ def validate_models(keras_model, tflite_model_path, rep_data_gen, num_samples=50
 
         cos_list.append(_cosine(a, b))
         mse_list.append(float(np.mean((a - b) ** 2)))
-        mae_list.append(float(np.mean(np.abs(a - b))))
+        mae_list.append(float(np.mean(np.abs(a - b)))) 
         pcc_list.append(_pearson(a, b))
 
         n_eval += 1
