@@ -63,6 +63,9 @@ def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3, 
         chunk_size = int(sample_rate * chunk_duration)
         if chunk_size <= 0:
             return []
+        
+        # Normalize to -1.0 to 1.0
+        y = y / (np.max(np.abs(y)) + 1e-10)
 
         # Interpret chunk_overlap as seconds, clamp to [0, chunk_duration-0.1]
         max_overlap = max(0.0, min(chunk_overlap, chunk_duration - 0.1))
