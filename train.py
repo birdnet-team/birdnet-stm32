@@ -337,6 +337,7 @@ def data_generator(file_paths,
                     x = sample[0] if isinstance(sample, list) else sample
                     x = x[:T]
                     if x.shape[0] < T: x = np.pad(x, (0, T - x.shape[0]))
+                    x = x / (np.max(np.abs(x)) + 1e-6)
                     sample = x                                           # [T]
                     need_ch_last = True
                 else:
@@ -448,7 +449,8 @@ class AudioFrontendLayer(layers.Layer):
     Modes:
         - precomputed: Input mel spectrogram [B, mel_bins, spec_width, 1].
         - hybrid:      Linear STFT bins [B, fft_bins, spec_width, 1] -> mel mixer.
-        - raw:         Waveform [B, T, 1] -> fold -> window -> DFT (1x1 convs) -> mel.
+        - raw:         Waveform [B, T, 1] -> ds avg-pool -> small Conv1D stack ->
+                       multi-branch pooling (short/long) -> 1x1 reduce -> [B, mel, W, 1].
 
     Magnitude scaling:
         - 'none': Pass-through.
@@ -457,27 +459,25 @@ class AudioFrontendLayer(layers.Layer):
         - 'db':   Log compression (10·log10 by default) after mel (be aware: does not quantize well).
 
     Notes:
-        - Slaney mel basis from librosa is used to seed mel_mixer for parity.
-        - Hybrid/raw paths feed magnitude to mel to match librosa (power=1.0).
-        - Layer is NPU-friendly (STM32N6) by construction.
+        - Slaney mel basis from librosa is used to seed mel_mixer for parity (hybrid).
+        - Raw path uses only Conv/Pool/ReLU/Add/Concat (STM32N6/NPU-friendly).
     """
-    def __init__(
-        self,
-        mode: str,
-        mel_bins: int,
-        spec_width: int,
-        sample_rate: int,
-        chunk_duration: int,
-        fft_length: int = 512,
-        pcen_K: int = 8,
-        init_mel: bool = True,
-        mel_fmin: float = 150.0,
-        mel_fmax: Optional[float] = None,
-        mel_norm: str = "slaney",
-        mag_scale: str = "none",
-        name: str = "audio_frontend",
-        is_trainable: bool = False,
-        **kwargs):
+    def __init__(self, 
+                 mode: str,
+                 mel_bins: int,
+                 spec_width: int,
+                 sample_rate: int,
+                 chunk_duration: int,
+                 fft_length: int = 512,
+                 pcen_K: int = 8,
+                 init_mel: bool = True,
+                 mel_fmin: float = 150.0,
+                 mel_fmax: Optional[float] = None,
+                 mel_norm: str = "slaney",
+                 mag_scale: str = "none",
+                 name: str = "audio_frontend",
+                 is_trainable: bool = False,
+                 **kwargs):
         super().__init__(name=name, **kwargs)
         assert mode in ("precomputed", "hybrid", "raw")
         assert mag_scale in ("pcen", "pwl", "db", "none")
@@ -485,7 +485,7 @@ class AudioFrontendLayer(layers.Layer):
         self.mel_bins = int(mel_bins)
         self.spec_width = int(spec_width)
         self.sample_rate = int(sample_rate)
-        self.chunk_duration = int(chunk_duration)
+        self.chunk_duration = float(chunk_duration)
         self.fft_length = int(fft_length)
         self.pcen_K = int(pcen_K)
         self.init_mel = bool(init_mel)
@@ -499,11 +499,11 @@ class AudioFrontendLayer(layers.Layer):
         self.db_eps = 1e-6
         self.db_ref = 1.0
 
-        # stride targeting spec_width (no external pad ops)
-        self._T = int(self.sample_rate) * int(self.chunk_duration)
-        self._frame_step = max(1, int(math.ceil(self._T / float(self.spec_width))))
+        # Fixed input samples for one chunk
+        self._T = int(self.sample_rate * self.chunk_duration)
+        self._pad_ch_in = 0
 
-        # Shared mel mixer (weights depend on mode-specific Cin; set in build)
+        # Hybrid mixer (unchanged)
         self.mel_mixer = layers.Conv2D(
             filters=int(self.mel_bins),
             kernel_size=(1, 1),
@@ -511,49 +511,43 @@ class AudioFrontendLayer(layers.Layer):
             use_bias=False,
             kernel_constraint=constraints.NonNeg(),
             name=f"{name}_mel_mixer",
-            trainable=False,#self.is_trainable,
+            trainable=False,
         )
 
-        # RAW: fold waveform -> window -> DFT via 1x1 convs -> mel_mixer
+        # RAW: Conv2D-only, NPU-friendly (only 1x1 kernels, stride (1,2)), channels % 8 == 0
         if self.mode == "raw":
-            self.frame_len = max(8, self._T // max(1, self.spec_width))
-            self.fft_bins_raw = self.frame_len // 2 + 1
-            self._frame_pad_in = (8 - (self.frame_len % 8)) % 8
+            ratio = max(1.0, (self._T / float(self.spec_width)))
+            n_down = int(math.ceil(math.log(ratio, 2.0)))
+            n_down = max(1, n_down)
 
-            self.v2d_window_dw = layers.DepthwiseConv2D(
+            fb_ch = 8  # multiple of 8 for offload
+            self.raw_conv2d_down = []
+            for i in range(n_down):
+                self.raw_conv2d_down.append((
+                    layers.Conv2D(
+                        filters=fb_ch,
+                        kernel_size=(1, 1),
+                        strides=(1, 2),
+                        padding='same',
+                        use_bias=False,
+                        name=f"{name}_raw_c2d_{i+1}",
+                        trainable=self.is_trainable,
+                    ),
+                    layers.ReLU(name=f"{name}_raw_relu_{i+1}")
+                ))
+            # Final 1x1 projection to mel_bins (keep multiple of 8 in config)
+            self.raw_proj2d = layers.Conv2D(
+                filters=int(self.mel_bins),
                 kernel_size=(1, 1),
-                depth_multiplier=1,
-                padding="same",
+                strides=(1, 1),
+                padding='same',
                 use_bias=False,
-                name=f"{name}_v2d_window_dw",
+                name=f"{name}_raw_proj2d",
                 trainable=self.is_trainable,
             )
-            # DFT across channelized frame samples
-            self.v2d_dft_real = layers.Conv2D(
-                filters=int(self.fft_bins_raw),
-                kernel_size=(1, 1),
-                padding="same",
-                use_bias=False,
-                name=f"{name}_v2d_dft_real",
-                trainable=self.is_trainable,
-            )
-            self.v2d_dft_imag = layers.Conv2D(
-                filters=int(self.fft_bins_raw),
-                kernel_size=(1, 1),
-                padding="same",
-                use_bias=False,
-                name=f"{name}_v2d_dft_imag",
-                trainable=self.is_trainable,
-            )
-        else:
-            self.frame_len = None
-            self.fft_bins_raw = None
-            self._frame_pad_in = 0
-            self.v2d_window_dw = None
-            self.v2d_dft_real = None
-            self.v2d_dft_imag = None
+            self.raw_proj2d_relu = layers.ReLU(name=f"{name}_raw_proj2d_relu")
 
-        # PCEN/PWL sublayers (respect is_trainable)
+        # Build PWL/PCEN helpers as before
         if self.mag_scale == "pcen":
             self._pcen_pools = [layers.AveragePooling2D(pool_size=(1, 1), strides=(1, 1), padding="same",
                                                         name=f"{name}_pcen_ema{k}") for k in range(self.pcen_K)]
@@ -594,26 +588,18 @@ class AudioFrontendLayer(layers.Layer):
             self._pwl_k_dws = []
 
     def build(self, input_shape):
-        """
-        Build sub-layers and set fixed kernels (mel basis, window, DFT).
-
-        Args:
-            input_shape (tf.TensorShape): Keras-provided input shape.
-        """
-        # Hybrid: mel mixer with n_fft=self.fft_length
         if self.mode == "hybrid":
             fft_bins = self.fft_length // 2 + 1
             self._build_and_set_mel_mixer(n_fft=self.fft_length, cin=fft_bins)
-
-        # Raw: window/DFT for frame_len, then mel mixer with n_fft=frame_len
-        elif self.mode == "raw":
-            in_ch = self.frame_len + self._frame_pad_in
-            self._build_raw_window_and_dft(in_ch=in_ch)
-            self._build_and_set_mel_mixer(n_fft=self.frame_len, cin=int(self.fft_bins_raw))
-
-        # Build mag-scale layers as needed
+        elif self.mode in ("raw", "tf"):
+            # Input to Conv2D is [B, 1, T, 1]
+            xshape = tf.TensorShape([None, 1, None, 1])
+            for conv, _relu in getattr(self, "raw_conv2d_down", []):
+                conv.build(xshape)
+                xshape = tf.TensorShape([None, 1, None, conv.filters])
+            if hasattr(self, "raw_proj2d"):
+                self.raw_proj2d.build(xshape)
         self._build_mag_layers()
-
         super().build(input_shape)
 
     # Helper: build mel mixer with a Slaney mel basis for a given n_fft and input channels
@@ -640,38 +626,6 @@ class AudioFrontendLayer(layers.Layer):
         self.mel_mixer.set_weights([mel_kernel])
         # Remember pad for call() path
         self._pad_ch_in = pad
-
-    # Helper: build and init raw window and DFT convs (length=self.frame_len)
-    def _build_raw_window_and_dft(self, in_ch: int):
-        """
-        Initialize raw frontend window (Hann) and DFT 1x1 conv kernels.
-
-        Args:
-            in_ch (int): Channelized frame length including padding.
-        """
-        # Window DWConv
-        if not self.v2d_window_dw.built:
-            self.v2d_window_dw.build(tf.TensorShape([None, 1, None, in_ch]))
-        n = np.arange(self.frame_len, dtype=np.float32)
-        hann = 0.5 - 0.5 * np.cos(2.0 * np.pi * n / max(1, (self.frame_len - 1)))
-        if self._frame_pad_in:
-            hann = np.concatenate([hann, np.zeros((self._frame_pad_in,), dtype=np.float32)], axis=0)
-        self.v2d_window_dw.set_weights([hann.reshape(1, 1, in_ch, 1).astype(np.float32)])
-
-        # DFT convs sized for frame_len
-        if not self.v2d_dft_real.built:
-            self.v2d_dft_real.build(tf.TensorShape([None, 1, None, in_ch]))
-        if not self.v2d_dft_imag.built:
-            self.v2d_dft_imag.build(tf.TensorShape([None, 1, None, in_ch]))
-        K = int(self.fft_bins_raw)
-        n_idx = np.arange(in_ch, dtype=np.float32)[:, None]  # [in_ch,1]
-        k_idx = np.arange(K, dtype=np.float32)[None, :]      # [1,K]
-        ang = 2.0 * np.pi * (n_idx / max(1.0, float(self.frame_len))) @ k_idx  # [in_ch,K]
-        valid = (n_idx < self.frame_len).astype(np.float32)
-        real_kernel = (np.cos(ang) * valid)[None, None, :, :].astype(np.float32)
-        imag_kernel = (-np.sin(ang) * valid)[None, None, :, :].astype(np.float32)
-        self.v2d_dft_real.set_weights([real_kernel])
-        self.v2d_dft_imag.set_weights([imag_kernel])
 
     # Helper: build mag-scale layers (PCEN/PWL)
     def _build_mag_layers(self):
@@ -803,21 +757,12 @@ class AudioFrontendLayer(layers.Layer):
             - precomputed: in [B, mel_bins, T, 1] -> out [B, mel_bins, spec_width, 1]
             - hybrid:      in [B, fft_bins, T, 1] -> out [B, mel_bins, spec_width, 1]
             - raw:         in [B, T, 1]           -> out [B, mel_bins, spec_width, 1]
-
-        Args:
-            inputs (tf.Tensor): Frontend input as per mode.
-            training (bool | None): Keras training flag (unused).
-
-        Returns:
-            tf.Tensor: [B, mel_bins, spec_width, 1] spectrogram-like tensor.
         """
-        # precomputed: [B, mel, T, 1]
+        # precomputed
         if self.mode == "precomputed":
-            y = inputs[:, :, :self.spec_width, :]
-            # Nothing to do because we assume precomputed has mel and mag_scale applied
-            return y
+            return inputs[:, :, :self.spec_width, :]
 
-        # hybrid: [B, fft_bins, T, 1] -> [B,1,T,fft_bins]
+        # hybrid (unchanged)
         if self.mode == "hybrid":
             fft_bins = self.fft_length // 2 + 1
             if inputs.shape.rank != 4 or (inputs.shape[1] is not None and int(inputs.shape[1]) != fft_bins):
@@ -828,39 +773,24 @@ class AudioFrontendLayer(layers.Layer):
                 b = tf.shape(y)[0]; t = tf.shape(y)[2]
                 z = tf.zeros([b, 1, t, self._pad_ch_in], dtype=y.dtype)
                 y = tf.concat([y, z], axis=-1)
-            y = self.mel_mixer(y)                   # [B,1,T,mel]
+            y = self.mel_mixer(y)
             y = tf.nn.relu(y)
             y = self._apply_mag(y)
-            #y = self._minmax_norm(y)
             y = tf.transpose(y, [0, 3, 2, 1])       # [B,mel,T,1]
             return y[:, :, :self.spec_width, :]
 
-        # raw (DFT -> magnitude -> mel)
-        x = inputs  # [B,T,1]
-        B = tf.shape(x)[0]
-        L = self.frame_len * self.spec_width
-        x = x[:, :L, :]                                              # [B,L,1]
-        y = tf.reshape(x, [B, self.spec_width, self.frame_len, 1])   # [B,T,C,1]
-        y = tf.transpose(y, [0, 3, 1, 2])                            # [B,1,T,C]
-        if self._frame_pad_in:
-            t = tf.shape(y)[2]
-            z = tf.zeros([B, 1, t, self._frame_pad_in], dtype=y.dtype)
-            y = tf.concat([y, z], axis=-1)                           # [B,1,T,C+pad]
-        y = self.v2d_window_dw(y)
-        real = self.v2d_dft_real(y)                                  # [B,1,T,fft_bins_raw]
-        imag = self.v2d_dft_imag(y)                                  # [B,1,T,fft_bins_raw]
-        sqr = tf.add(tf.multiply(real, real), tf.multiply(imag, imag), name=f"{self.name}_raw_power")
-        feat = tf.sqrt(tf.maximum(sqr, 0.0) + 1e-8)
-        if self._pad_ch_in:
-            t = tf.shape(feat)[2]
-            z = tf.zeros([B, 1, t, self._pad_ch_in], dtype=feat.dtype)
-            feat = tf.concat([feat, z], axis=-1)                     # [B,1,T,fft_bins_raw+pad]
-        y = self.mel_mixer(feat)                                     # [B,1,T,mel]
-        y = tf.nn.relu(y)
-        y = self._apply_mag(y)
-        #y = self._minmax_norm(y)
-        y = tf.transpose(y, [0, 3, 2, 1])                            # [B,mel,T,1]
-        return y[:, :, :self.spec_width, :]
+        # raw: [B,T,1] -> [B,1,T,1] -> (1x1,stride(1,2))*n -> 1x1 -> ReLU -> mag -> transpose -> slice
+        y = tf.expand_dims(inputs, axis=1)  # [B, 1, T, 1]
+        for conv, relu in getattr(self, "raw_conv2d_down", []):
+            y = conv(y)
+            y = relu(y)
+        if hasattr(self, "raw_proj2d"):
+            y = self.raw_proj2d(y)          # [B, 1, frames, mel]
+            y = self.raw_proj2d_relu(y)
+
+        y = self._apply_mag(y)              # [B, 1, frames, mel]
+        y = tf.transpose(y, [0, 3, 2, 1])   # [B, mel, frames, 1]
+        return y#[:, :, :self.spec_width, :] # for some reason, this fails in ONNX
 
     def compute_output_shape(self, input_shape):
         """
@@ -1176,7 +1106,7 @@ def get_args():
     parser.add_argument('--embeddings_size', type=int, default=256, help='Size of the final embeddings layer')
     parser.add_argument('--alpha', type=float, default=1.0, help='Alpha for model scaling')
     parser.add_argument('--depth_multiplier', type=int, default=1, help='Depth multiplier for model')
-    parser.add_argument('--frontend_trainable', action='store_true', default=True, help='If set, make audio frontend trainable (mel_mixer/raw mixer/PCEN/PWL).')
+    parser.add_argument('--frontend_trainable', action='store_true', default=False, help='If set, make audio frontend trainable (mel_mixer/raw mixer/PCEN/PWL).')
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Mixup alpha')
     parser.add_argument('--mixup_probability', type=float, default=0.25, help='Fraction of batch to apply mixup to.')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
@@ -1190,7 +1120,7 @@ if __name__ == "__main__":
     args = get_args()
     # Early warning for STM32N6 when using raw/tf frontend
     if args.audio_frontend in ('tf', 'raw'):
-        T = int(args.sample_rate) * int(args.chunk_duration)
+        T = int(args.sample_rate * args.chunk_duration)
         if T >= (1 << 16):
             print(f"[WARN] STM32N6 compile will fail: raw input length {T} >= 65536.")
             print("       Use --sample_rate 16000 or --chunk_duration 2, or switch to --audio_frontend hybrid/precomputed.")
