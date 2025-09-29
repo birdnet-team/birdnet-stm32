@@ -163,6 +163,7 @@ def make_chunks_for_file(path: str, cfg: dict, frontend: str, mag_scale: str, n_
             x = ch[:chunk_len]
             if x.shape[0] < chunk_len:
                 x = np.pad(x, (0, chunk_len - x.shape[0]))
+            x = x / (np.max(np.abs(x)) + 1e-6)
             out.append(x[:, None].astype(np.float32))
     else:
         raise ValueError(f"Invalid audio_frontend: {frontend}")
