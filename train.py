@@ -128,6 +128,7 @@ def dataset_sanity_check(file_paths,
             chunk = (chunk[0] if isinstance(chunk, list) else chunk)[:int(sample_rate * chunk_duration)]
             if len(chunk) < sample_rate * chunk_duration:
                 chunk = np.pad(chunk, (0, int(sample_rate * chunk_duration) - len(chunk)))
+            chunk = chunk / (np.max(np.abs(chunk)) + 1e-6)
             inp = chunk[np.newaxis, ..., np.newaxis].astype(np.float32)
             spec = tf_frontend(inp, training=False).numpy()[0, :, :, 0]
 
@@ -514,38 +515,39 @@ class AudioFrontendLayer(layers.Layer):
             trainable=False,
         )
 
-        # RAW: Conv2D-only, NPU-friendly (only 1x1 kernels, stride (1,2)), channels % 8 == 0
+        # RAW: single Conv2D with explicit VALID padding to guarantee TF/TFLite parity
         if self.mode == "raw":
-            ratio = max(1.0, (self._T / float(self.spec_width)))
-            n_down = int(math.ceil(math.log(ratio, 2.0)))
-            n_down = max(1, n_down)
+            T = int(self.sample_rate * self.chunk_duration)   # input samples
+            W = int(self.spec_width)                          # target frames
+            self._k_t = 9                                     # temporal kernel
+            self._stride_t = int(math.ceil(T / float(W)))     # stride s = ceil(T/W)
 
-            fb_ch = 8  # multiple of 8 for offload
-            self.raw_conv2d_down = []
-            for i in range(n_down):
-                self.raw_conv2d_down.append((
-                    layers.Conv2D(
-                        filters=fb_ch,
-                        kernel_size=(1, 1),
-                        strides=(1, 2),
-                        padding='same',
-                        use_bias=False,
-                        name=f"{name}_raw_c2d_{i+1}",
-                        trainable=self.is_trainable,
-                    ),
-                    layers.ReLU(name=f"{name}_raw_relu_{i+1}")
-                ))
-            # Final 1x1 projection to mel_bins (keep multiple of 8 in config)
-            self.raw_proj2d = layers.Conv2D(
+            # For VALID conv: out = floor((L_in + pad_total - k)/s) + 1  == W
+            pad_total = max(0, self._stride_t * (W - 1) + self._k_t - T)
+            self._pad_left = pad_total // 2
+            self._pad_right = pad_total - self._pad_left
+
+            self.fb2d = layers.Conv2D(
                 filters=int(self.mel_bins),
-                kernel_size=(1, 1),
-                strides=(1, 1),
-                padding='same',
+                kernel_size=(1, self._k_t),
+                strides=(1, self._stride_t),
+                padding='valid',                 # we pad ourselves to make width static
                 use_bias=False,
-                name=f"{name}_raw_proj2d",
+                name=f"{name}_raw_fb2d",
                 trainable=self.is_trainable,
             )
-            self.raw_proj2d_relu = layers.ReLU(name=f"{name}_raw_proj2d_relu")
+            # Quantization-friendly normalization + bounded activation
+            self.fb_bn = layers.BatchNormalization(momentum=0.99, epsilon=1e-3,
+                                                   name=f"{name}_raw_fb2d_bn",
+                                                   trainable=self.is_trainable)
+            self.fb_relu = layers.ReLU(max_value=6, name=f"{name}_raw_fb2d_relu")
+        else:
+            self._pad_left = 0
+            self._pad_right = 0
+            self._stride_t = 1
+            self.fb2d = None
+            self.fb_bn = None
+            self.fb_relu = None
 
         # Build PWL/PCEN helpers as before
         if self.mag_scale == "pcen":
@@ -591,14 +593,15 @@ class AudioFrontendLayer(layers.Layer):
         if self.mode == "hybrid":
             fft_bins = self.fft_length // 2 + 1
             self._build_and_set_mel_mixer(n_fft=self.fft_length, cin=fft_bins)
-        elif self.mode in ("raw", "tf"):
-            # Input to Conv2D is [B, 1, T, 1]
-            xshape = tf.TensorShape([None, 1, None, 1])
-            for conv, _relu in getattr(self, "raw_conv2d_down", []):
-                conv.build(xshape)
-                xshape = tf.TensorShape([None, 1, None, conv.filters])
-            if hasattr(self, "raw_proj2d"):
-                self.raw_proj2d.build(xshape)
+        elif self.mode in ("raw",):
+            # Build Conv2D and BN on static shapes to eliminate dynamic width
+            T = int(self.sample_rate * self.chunk_duration)
+            static_w = int(self.spec_width)  # guaranteed by VALID + our padding
+            in_w = T + int(self._pad_left) + int(self._pad_right)
+            self.fb2d.build(tf.TensorShape([None, 1, in_w, 1]))
+            if self.fb_bn is not None:
+                # fb2d output: [B, 1, static_w, mel_bins]
+                self.fb_bn.build(tf.TensorShape([None, 1, static_w, int(self.mel_bins)]))
         self._build_mag_layers()
         super().build(input_shape)
 
@@ -762,7 +765,6 @@ class AudioFrontendLayer(layers.Layer):
         if self.mode == "precomputed":
             return inputs[:, :, :self.spec_width, :]
 
-        # hybrid (unchanged)
         if self.mode == "hybrid":
             fft_bins = self.fft_length // 2 + 1
             if inputs.shape.rank != 4 or (inputs.shape[1] is not None and int(inputs.shape[1]) != fft_bins):
@@ -779,18 +781,18 @@ class AudioFrontendLayer(layers.Layer):
             y = tf.transpose(y, [0, 3, 2, 1])       # [B,mel,T,1]
             return y[:, :, :self.spec_width, :]
 
-        # raw: [B,T,1] -> [B,1,T,1] -> (1x1,stride(1,2))*n -> 1x1 -> ReLU -> mag -> transpose -> slice
-        y = tf.expand_dims(inputs, axis=1)  # [B, 1, T, 1]
-        for conv, relu in getattr(self, "raw_conv2d_down", []):
-            y = conv(y)
-            y = relu(y)
-        if hasattr(self, "raw_proj2d"):
-            y = self.raw_proj2d(y)          # [B, 1, frames, mel]
-            y = self.raw_proj2d_relu(y)
-
-        y = self._apply_mag(y)              # [B, 1, frames, mel]
-        y = tf.transpose(y, [0, 3, 2, 1])   # [B, mel, frames, 1]
-        return y#[:, :, :self.spec_width, :] # for some reason, this fails in ONNX
+        # raw: explicit symmetric pad -> VALID Conv2D -> BN -> ReLU6 -> mag -> transpose
+        x = inputs[:, :int(self.sample_rate * self.chunk_duration), :]  # [B,T,1]
+        if self._pad_left or self._pad_right:
+            x = tf.pad(x, [[0, 0], [int(self._pad_left), int(self._pad_right)], [0, 0]])
+        y = tf.expand_dims(x, axis=1)      # [B,1,T(+pad),1]
+        y = self.fb2d(y)                   # [B,1,W,mel] exactly
+        if self.fb_bn is not None:
+            y = self.fb_bn(y, training=training)
+        y = self.fb_relu(y)
+        y = self._apply_mag(y)
+        y = tf.transpose(y, [0, 3, 2, 1])  # [B, mel, W, 1]
+        return y
 
     def compute_output_shape(self, input_shape):
         """
