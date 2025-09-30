@@ -531,16 +531,23 @@ class AudioFrontendLayer(layers.Layer):
                 filters=int(self.mel_bins),
                 kernel_size=(1, self._k_t),
                 strides=(1, self._stride_t),
-                padding='valid',
+                padding='valid',                 # we pad ourselves to make width static
                 use_bias=False,
                 name=f"{name}_raw_fb2d",
                 trainable=self.is_trainable,
             )
+            # Quantization-friendly normalization + bounded activation
+            self.fb_bn = layers.BatchNormalization(momentum=0.99, epsilon=1e-3,
+                                                   name=f"{name}_raw_fb2d_bn",
+                                                   trainable=self.is_trainable)
+            self.fb_relu = layers.ReLU(max_value=6, name=f"{name}_raw_fb2d_relu")
         else:
             self._pad_left = 0
             self._pad_right = 0
             self._stride_t = 1
             self.fb2d = None
+            self.fb_bn = None
+            self.fb_relu = None
 
         # Build PWL/PCEN helpers as before
         if self.mag_scale == "pcen":
@@ -587,10 +594,14 @@ class AudioFrontendLayer(layers.Layer):
             fft_bins = self.fft_length // 2 + 1
             self._build_and_set_mel_mixer(n_fft=self.fft_length, cin=fft_bins)
         elif self.mode in ("raw",):
+            # Build Conv2D and BN on static shapes to eliminate dynamic width
             T = int(self.sample_rate * self.chunk_duration)
-            static_w = int(self.spec_width) 
+            static_w = int(self.spec_width)  # guaranteed by VALID + our padding
             in_w = T + int(self._pad_left) + int(self._pad_right)
             self.fb2d.build(tf.TensorShape([None, 1, in_w, 1]))
+            if self.fb_bn is not None:
+                # fb2d output: [B, 1, static_w, mel_bins]
+                self.fb_bn.build(tf.TensorShape([None, 1, static_w, int(self.mel_bins)]))
         self._build_mag_layers()
         super().build(input_shape)
 
@@ -776,6 +787,9 @@ class AudioFrontendLayer(layers.Layer):
             x = tf.pad(x, [[0, 0], [int(self._pad_left), int(self._pad_right)], [0, 0]])
         y = tf.expand_dims(x, axis=1)      # [B,1,T(+pad),1]
         y = self.fb2d(y)                   # [B,1,W,mel] exactly
+        if self.fb_bn is not None:
+            y = self.fb_bn(y, training=training)
+        y = self.fb_relu(y)
         y = self._apply_mag(y)
         y = tf.transpose(y, [0, 3, 2, 1])  # [B, mel, W, 1]
         return y
@@ -952,10 +966,6 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
         )(inputs)
     else:
         raise ValueError("Invalid audio_frontend.")
-    
-    # Batchnorm after frontend
-    x = layers.BatchNormalization(name="frontend_bn")(x)
-    x = layers.ReLU(max_value=6, name="frontend_relu")(x)
 
     # Stem (3x3, stride 1) to lift channels
     stem_ch = _make_divisible(int(16 * alpha), 8)
