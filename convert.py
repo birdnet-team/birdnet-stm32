@@ -5,7 +5,7 @@ This script:
 - Loads a trained Keras model (.keras) with the custom AudioFrontendLayer.
 - Builds a representative dataset generator aligned with training preprocessing.
 - Runs TFLite conversion with post-training quantization (PTQ) and float32 I/O.
-- Optionally validates TFLite vs. Keras on a subset of samples and saves inputs.
+- Validates TFLite vs. Keras on a subset of samples and saves inputs.
 
 Notes
 - Representative dataset shapes match the selected audio_frontend:
@@ -229,13 +229,13 @@ def validate_models(keras_model, tflite_model_path, rep_data_gen):
 
 def main():
     """
-    Convert a trained Keras model (.keras) to TFLite and optionally validate it.
+    Convert a trained Keras model (.keras) to TFLite and validate it.
 
     Workflow:
         1) Load model and its JSON config (infer config path if omitted).
         2) Build a representative dataset generator aligned with training.
         3) Convert to TFLite with PTQ using float32 I/O (internal INT8 ops).
-        4) Optionally validate TFLite vs. Keras on a subset of samples.
+        4) Validate TFLite vs. Keras on a subset of samples.
         5) Save a small .npz with validation inputs for future checks.
 
     CLI:
@@ -244,7 +244,6 @@ def main():
         --output_path      Output .tflite path; defaults to <checkpoint>_quantized.tflite.
         --data_path_train  Directory of audio files for representative dataset (recommended).
         --num_samples      Number of representative samples (e.g., 512–2048 typical).
-        --validate         Run post-conversion validation (recommended).
         --validate_samples Max samples to use for validation metrics.
 
     Notes:
@@ -258,9 +257,7 @@ def main():
     parser.add_argument('--model_config', type=str, default='', help='Path to <checkpoint>_model_config.json. If empty, inferred from checkpoint_path.')
     parser.add_argument('--output_path', type=str, default='', help='Path to save .tflite model. Defaults to <checkpoint>_quantized.tflite')
     parser.add_argument('--data_path_train', type=str, default='', help='Path to training data directory for representative dataset.')
-    parser.add_argument('--reps_per_file', type=int, default=4, help='How many representative samples to draw per file.')
     parser.add_argument('--num_samples', type=int, default=1024, help='Number of samples for representative dataset')
-    parser.add_argument('--validate', action='store_true', default=True, help='Validate TFLite vs. Keras after conversion')
     parser.add_argument('--validate_samples', type=int, default=256, help='Max number of samples to validate')
     args = parser.parse_args()
 
@@ -321,14 +318,13 @@ def main():
         f.write(tflite_model)
     print(f"TFLite model saved to {args.output_path}")
 
-    # Optional validation
-    if args.validate:
-        print("Validating TFLite vs. Keras outputs...")
-        validate_models(
-            keras_model=model,
-            tflite_model_path=args.output_path if args.output_path else os.path.splitext(args.checkpoint_path)[0] + "_quantized.tflite",
-            rep_data_gen=rep_data_gen_val
-        )
+    # Model validation
+    print("Validating TFLite vs. Keras outputs...")
+    validate_models(
+        keras_model=model,
+        tflite_model_path=args.output_path if args.output_path else os.path.splitext(args.checkpoint_path)[0] + "_quantized.tflite",
+        rep_data_gen=rep_data_gen_val
+    )
         
     # Always save representative samples as .npz
     validation_data = []
