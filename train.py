@@ -14,7 +14,6 @@ SUPPORTED_AUDIO_EXTS = ('.wav', '.mp3', '.flac', '.ogg', '.m4a')
 from utils.audio import (
     load_audio_file,
     get_spectrogram_from_audio,
-    sort_by_s2n,
     sort_by_activity,
     pick_random_samples,
     plot_spectrogram,
@@ -448,20 +447,21 @@ class AudioFrontendLayer(layers.Layer):
     Audio frontend with interchangeable input modes.
 
     Modes:
-        - precomputed: Input mel spectrogram [B, mel_bins, spec_width, 1].
-        - hybrid:      Linear STFT bins [B, fft_bins, spec_width, 1] -> mel mixer.
-        - raw:         Waveform [B, T, 1] -> ds avg-pool -> small Conv1D stack ->
-                       multi-branch pooling (short/long) -> 1x1 reduce -> [B, mel, W, 1].
+      - precomputed: Input mel spectrogram [B, mel_bins, spec_width, 1] -> slice to spec_width.
+      - hybrid:      Linear STFT bins [B, fft_bins, spec_width, 1] -> 1x1 mel mixer (optionally train mel spacing).
+      - raw:         Waveform [B, T, 1] -> explicit symmetric pad -> VALID Conv2D(1,k) stride s -> BN -> ReLU6
+                     -> magnitude scaling -> transpose -> [B, mel_bins, spec_width, 1].
 
     Magnitude scaling:
-        - 'none': Pass-through.
-        - 'pwl':  Piecewise-linear compression (1x1 DW convs, ReLU, Add).
-        - 'pcen': PCEN-like compression (pool/conv/ReLU/Add), linear magnitude domain.
-        - 'db':   Log compression (10·log10 by default) after mel (be aware: does not quantize well).
+      - 'none': Pass-through.
+      - 'pwl':  Piecewise-linear compression (1x1 DW convs + ReLU + Add).
+      - 'pcen': PCEN-like compression (pool/conv/ReLU/Add), linear magnitude domain.
+      - 'db':   Log compression (10·log10) after mel (can quantize poorly).
 
     Notes:
-        - Slaney mel basis from librosa is used to seed mel_mixer for parity (hybrid).
-        - Raw path uses only Conv/Pool/ReLU/Add/Concat (STM32N6/NPU-friendly).
+      - Slaney mel basis (librosa) seeds mel_mixer for parity in hybrid mode.
+      - Hybrid can train mel spacing but exports to a single 1x1 Conv2D (NPU-friendly).
+      - Raw branch keeps explicit VALID padding for TF/TFLite parity.
     """
     def __init__(self, 
                  mode: str,
@@ -478,6 +478,7 @@ class AudioFrontendLayer(layers.Layer):
                  mag_scale: str = "none",
                  name: str = "audio_frontend",
                  is_trainable: bool = False,
+                 train_mel_scale: bool = False,   # NEW
                  **kwargs):
         super().__init__(name=name, **kwargs)
         assert mode in ("precomputed", "hybrid", "raw")
@@ -495,6 +496,7 @@ class AudioFrontendLayer(layers.Layer):
         self.mel_norm = mel_norm
         self.mag_scale = mag_scale
         self.is_trainable = bool(is_trainable)
+        self.train_mel_scale = bool(is_trainable)
 
         # DB params
         self.db_eps = 1e-6
@@ -504,7 +506,7 @@ class AudioFrontendLayer(layers.Layer):
         self._T = int(self.sample_rate * self.chunk_duration)
         self._pad_ch_in = 0
 
-        # Hybrid mixer (unchanged)
+        # Hybrid 1x1 mel mixer (weights will be updated when training mel spacing)
         self.mel_mixer = layers.Conv2D(
             filters=int(self.mel_bins),
             kernel_size=(1, 1),
@@ -512,8 +514,15 @@ class AudioFrontendLayer(layers.Layer):
             use_bias=False,
             kernel_constraint=constraints.NonNeg(),
             name=f"{name}_mel_mixer",
-            trainable=False,
+            trainable=False,  # keep kernel non-trainable; we overwrite it from learned breakpoints
         )
+
+        # Placeholders for learnable mel (only used in hybrid)
+        self._bins_mel = None
+        self._mel_fmin = None
+        self._mel_fmax = None
+        self._mel_range = None
+        self._mel_seg_logits = None  # [mel_bins + 1], intervals between breakpoints
 
         # RAW: single Conv2D with explicit VALID padding to guarantee TF/TFLite parity
         if self.mode == "raw":
@@ -591,8 +600,29 @@ class AudioFrontendLayer(layers.Layer):
 
     def build(self, input_shape):
         if self.mode == "hybrid":
+            # Setup fixed mel mixer (and record any input-channel pad)
             fft_bins = self.fft_length // 2 + 1
             self._build_and_set_mel_mixer(n_fft=self.fft_length, cin=fft_bins)
+
+            # Learnable mel spacing setup
+            if self.train_mel_scale:
+                sr = int(self.sample_rate)
+                fmax = int(self.mel_fmax) if self.mel_fmax is not None else (sr // 2)
+                freqs = np.linspace(0.0, float(sr) / 2.0, fft_bins, dtype=np.float32)
+                bins_mel = librosa.hz_to_mel(freqs)
+                self._bins_mel = tf.constant(bins_mel.astype(np.float32), dtype=tf.float32)   # [F]
+                self._mel_fmin = float(librosa.hz_to_mel(float(self.mel_fmin)))
+                self._mel_fmax = float(librosa.hz_to_mel(float(fmax)))
+                self._mel_range = float(self._mel_fmax - self._mel_fmin)
+                # Intervals logits (M+1), init to equal spacing
+                init_logits = np.zeros((self.mel_bins + 1,), dtype=np.float32)
+                self._mel_seg_logits = self.add_weight(
+                    name=f"{self.name}_mel_seg_logits",
+                    shape=(self.mel_bins + 1,),
+                    initializer=tf.keras.initializers.Constant(init_logits),
+                    trainable=self.is_trainable,  # controlled by is_trainable
+                )
+
         elif self.mode in ("raw",):
             # Build Conv2D and BN on static shapes to eliminate dynamic width
             T = int(self.sample_rate * self.chunk_duration)
@@ -602,8 +632,59 @@ class AudioFrontendLayer(layers.Layer):
             if self.fb_bn is not None:
                 # fb2d output: [B, 1, static_w, mel_bins]
                 self.fb_bn.build(tf.TensorShape([None, 1, static_w, int(self.mel_bins)]))
+
         self._build_mag_layers()
         super().build(input_shape)
+
+    def _compute_tri_matrix(self) -> tf.Tensor:
+        """
+        Returns [F, M] triangular weights built from learnable breakpoints.
+        """
+        eps = tf.constant(1e-6, tf.float32)
+        F = tf.shape(self._bins_mel)[0]
+        M = int(self.mel_bins)
+
+        # Positive intervals via softplus, normalized to full mel range
+        seg = tf.nn.softplus(self._mel_seg_logits) + 1e-3           # [M+1]
+        seg = seg / (tf.reduce_sum(seg) + eps) * tf.constant(self._mel_range, tf.float32)
+        cs = tf.cumsum(seg)                                         # [M+1]
+        p_full = tf.concat([
+            tf.constant([self._mel_fmin], tf.float32),
+            tf.constant([self._mel_fmin], tf.float32) + cs
+        ], axis=0)                                                  # [M+2]
+
+        left   = p_full[0:M]          # [M]
+        center = p_full[1:M+1]        # [M]
+        right  = p_full[2:M+2]        # [M]
+
+        bm = self._bins_mel                                             # [F]
+
+        denom_l = tf.maximum(center - left, eps)
+        denom_r = tf.maximum(right - center, eps)
+        up   = (bm[:, None] - left[None, :]) / denom_l[None, :]
+        down = (right[None, :] - bm[:, None]) / denom_r[None, :]
+
+        tri = tf.maximum(tf.minimum(up, down), 0.0)                     # [F, M]
+        # Normalize per filter for stability (sum over F)
+        tri = tri / (tf.reduce_sum(tri, axis=0, keepdims=True) + eps)
+        return tri  # [F, M]
+
+    def _assign_mel_kernel_from_tri(self, tri: tf.Tensor):
+        """
+        Updates the mel_mixer 1x1 conv kernel from a [F, M] triangle.
+        Handles input-channel padding for NPU-friendly channel alignment.
+        """
+        if self.mel_mixer is None or not hasattr(self.mel_mixer, "kernel"):
+            return
+        # Account for any input channel padding added in _build_and_set_mel_mixer
+        if getattr(self, "_pad_ch_in", 0):
+            pad = self._pad_ch_in
+            zeros = tf.zeros([pad, int(self.mel_bins)], dtype=tri.dtype)
+            tri = tf.concat([tri, zeros], axis=0)  # [F+pad, M]
+        # Conv2D kernel shape is [1, 1, C_in, C_out]
+        k = tf.reshape(tri, [1, 1, tf.shape(tri)[0], int(self.mel_bins)])
+        # Overwrite kernel (non-trainable) so inference/export sees a fixed Conv2D
+        self.mel_mixer.kernel.assign(k)
 
     # Helper: build mel mixer with a Slaney mel basis for a given n_fft and input channels
     def _build_and_set_mel_mixer(self, n_fft: int, cin: int):
@@ -675,22 +756,6 @@ class AudioFrontendLayer(layers.Layer):
         b2 = self._pcen_k2mk1_dw(relu) if self._pcen_k2mk1_dw is not None else relu
         y = b1 + b2
         return tf.nn.relu(y)
-
-    # per-sample min-max normalization helper (to [0,1])
-    def _minmax_norm(self, x):
-        """
-        Per-sample min–max normalization to [0, 1].
-
-        Args:
-            x (tf.Tensor): Input tensor [B, 1, T, C].
-
-        Returns:
-            tf.Tensor: Normalized tensor [B, 1, T, C].
-        """
-        # x is [B,1,T,C]
-        x_min = tf.reduce_min(x, axis=[1, 2, 3], keepdims=True)
-        x_max = tf.reduce_max(x, axis=[1, 2, 3], keepdims=True)
-        return (x - x_min) / (x_max - x_min + 1e-6)
 
     def _apply_pwl(self, x):
         """
@@ -771,27 +836,56 @@ class AudioFrontendLayer(layers.Layer):
                 raise ValueError(f"Hybrid expects [B,{fft_bins},T,1], got {inputs.shape}")
             y = tf.transpose(inputs, [0, 3, 2, 1])  # [B,1,T,fft_bins]
             y = y[:, :, :self.spec_width, :]
-            if self._pad_ch_in:
-                b = tf.shape(y)[0]; t = tf.shape(y)[2]
-                z = tf.zeros([b, 1, t, self._pad_ch_in], dtype=y.dtype)
-                y = tf.concat([y, z], axis=-1)
-            y = self.mel_mixer(y)
+
+            if self.train_mel_scale and self.is_trainable:
+                def _train_branch(y_in: tf.Tensor) -> tf.Tensor:
+                    # Compute triangles, update 1x1 kernel for future inference, and use matmul for gradients
+                    tri = self._compute_tri_matrix()                         # [F, M]
+                    # Keep kernel in sync but stop gradients through the assignment
+                    self._assign_mel_kernel_from_tri(tf.stop_gradient(tri))
+                    B = tf.shape(y_in)[0]; Tt = tf.shape(y_in)[2]; F = tf.shape(y_in)[3]
+                    y_flat = tf.reshape(y_in, [B * Tt, F])                   # [B*T, F]
+                    y_mel = tf.matmul(y_flat, tri)                           # [B*T, M]
+                    return tf.reshape(y_mel, [B, 1, Tt, int(self.mel_bins)]) # [B,1,T,M]
+
+                def _infer_branch(y_in: tf.Tensor) -> tf.Tensor:
+                    # N6-friendly 1x1 Conv2D only (no assigns in inference graph)
+                    if self._pad_ch_in:
+                        b = tf.shape(y_in)[0]; t = tf.shape(y_in)[2]
+                        z = tf.zeros([b, 1, t, self._pad_ch_in], dtype=y_in.dtype)
+                        y_in = tf.concat([y_in, z], axis=-1)
+                    return self.mel_mixer(y_in)
+
+                if isinstance(training, bool):
+                    y = _train_branch(y) if training else _infer_branch(y)
+                else:
+                    y = tf.cond(tf.cast(training, tf.bool),
+                                lambda: _train_branch(y),
+                                lambda: _infer_branch(y))
+            else:
+                # Fixed mel mixer (Conv2D only)
+                if self._pad_ch_in:
+                    b = tf.shape(y)[0]; t = tf.shape(y)[2]
+                    z = tf.zeros([b, 1, t, self._pad_ch_in], dtype=y.dtype)
+                    y = tf.concat([y, z], axis=-1)
+                y = self.mel_mixer(y)
+
             y = tf.nn.relu(y)
             y = self._apply_mag(y)
             y = tf.transpose(y, [0, 3, 2, 1])       # [B,mel,T,1]
             return y[:, :, :self.spec_width, :]
 
         # raw: explicit symmetric pad -> VALID Conv2D -> BN -> ReLU6 -> mag -> transpose
-        x = inputs[:, :int(self.sample_rate * self.chunk_duration), :]  # [B,T,1]
+        x = inputs[:, :int(self.sample_rate * self.chunk_duration), :]
         if self._pad_left or self._pad_right:
             x = tf.pad(x, [[0, 0], [int(self._pad_left), int(self._pad_right)], [0, 0]])
-        y = tf.expand_dims(x, axis=1)      # [B,1,T(+pad),1]
-        y = self.fb2d(y)                   # [B,1,W,mel] exactly
+        y = tf.expand_dims(x, axis=1)
+        y = self.fb2d(y)
         if self.fb_bn is not None:
             y = self.fb_bn(y, training=training)
         y = self.fb_relu(y)
         y = self._apply_mag(y)
-        y = tf.transpose(y, [0, 3, 2, 1])  # [B, mel, W, 1]
+        y = tf.transpose(y, [0, 3, 2, 1])
         return y
 
     def compute_output_shape(self, input_shape):
@@ -966,6 +1060,10 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
         )(inputs)
     else:
         raise ValueError("Invalid audio_frontend.")
+    
+    # BN+ReLU after frontend
+    x = layers.BatchNormalization(name="frontend_bn")(x)
+    x = layers.ReLU(max_value=6, name="frontend_relu")(x)
 
     # Stem (3x3, stride 1) to lift channels
     stem_ch = _make_divisible(int(16 * alpha), 8)
