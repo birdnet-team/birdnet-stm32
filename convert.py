@@ -1,3 +1,21 @@
+"""
+TFLite conversion utilities for birdnet-stm32 models.
+
+This script:
+- Loads a trained Keras model (.keras) with the custom AudioFrontendLayer.
+- Builds a representative dataset generator aligned with training preprocessing.
+- Runs TFLite conversion with post-training quantization (PTQ) and float32 I/O.
+- Optionally validates TFLite vs. Keras on a subset of samples and saves inputs.
+
+Notes
+- Representative dataset shapes match the selected audio_frontend:
+  - 'raw'/'tf': [B, T, 1] where T = sample_rate * chunk_duration, normalized to [-1, 1]
+  - 'hybrid':   [B, fft_bins, spec_width, 1] with fft_bins = n_fft//2 + 1 (linear spectrogram)
+  - 'precomputed'/'librosa': [B, num_mels, spec_width, 1] (mel spectrogram)
+- More representative samples can widen activation ranges (due to outliers) and
+  reduce cosine similarity after PTQ. Prefer a calibrated but not overly permissive set.
+"""
+
 import os
 
 import argparse
@@ -16,26 +34,39 @@ np.random.seed(42)
 
 def representative_data_gen(file_paths, cfg, num_samples=100):
     """
-    Build a representative dataset generator from training configuration.
+    Build a representative dataset generator aligned with training preprocessing.
 
-    Uses training-time settings to produce inputs consistent with the model's
-    expected frontend and shape for post-training quantization (PTQ).
+    This generator yields one input tensor per iteration in the exact shape and
+    normalization expected by the model input, suitable for TFLite PTQ calibration.
+
+    Shapes per frontend:
+    - 'raw' or 'tf':        [1, T, 1], where T = sample_rate * chunk_duration
+                            Each chunk is peak-normalized to [-1, 1].
+    - 'hybrid':             [1, fft_bins, spec_width, 1], where fft_bins = n_fft // 2 + 1
+                            Values come from a linear-STFT magnitude (no mel).
+    - 'precomputed'/'librosa': [1, num_mels, spec_width, 1], mel spectrogram magnitude.
 
     Args:
-        file_paths (list[str]): Audio file paths for sampling.
-        cfg (dict): Training config with keys:
-            - sample_rate (int)
-            - num_mels (int)
-            - spec_width (int)
-            - chunk_duration (float)
-            - fft_length (int)
-            - audio_frontend (str): 'precomputed' | 'librosa' | 'hybrid' | 'raw' | 'tf'
-            - mag_scale (str): 'none' | 'pcen' | 'pwl'
-        num_samples (int): Maximum number of samples to yield.
+        file_paths (list[str]): Audio file paths to sample from. The generator selects
+            a center chunk per file to avoid silence-only calibration when possible.
+        cfg (dict): Training config keys used here:
+            - 'sample_rate' (int)
+            - 'num_mels' (int)
+            - 'spec_width' (int)
+            - 'chunk_duration' (float)
+            - 'fft_length' (int)
+            - 'audio_frontend' (str): 'precomputed' | 'librosa' | 'hybrid' | 'raw' | 'tf'
+            - 'mag_scale' (str): 'none' | 'pcen' | 'pwl' (affects precomputed/librosa)
+        num_samples (int): Maximum number of samples to draw across files.
 
     Yields:
-        list[np.ndarray]: A single-element list containing one input tensor
-            with batch dimension (shape depends on frontend).
+        list[np.ndarray]: Single-element list containing the input tensor, with batch dimension.
+
+    Notes:
+        - Using many, highly diverse samples can widen activation ranges seen during PTQ,
+          which may reduce cosine similarity. Consider capping extremes/outliers.
+        - Ensure the normalization here matches training-time normalization, especially
+          for 'raw'/'tf' frontends (peak-normalized to [-1, 1]).
     """
     sr = int(cfg["sample_rate"])
     num_mels = int(cfg["num_mels"])
@@ -45,9 +76,8 @@ def representative_data_gen(file_paths, cfg, num_samples=100):
     frontend = cfg["audio_frontend"]
     mag_scale = cfg.get("mag_scale", "none")
     T = int(sr * cd)
-    yielded = 0
     
-    # Suffle paths and limit to num_samples
+    # Shuffle paths and limit to num_samples
     if len(file_paths) == 0:
         raise ValueError("No audio files found for representative dataset generation.")
     file_paths = random.sample(file_paths, num_samples)
@@ -56,13 +86,13 @@ def representative_data_gen(file_paths, cfg, num_samples=100):
 
         audio_chunks = load_audio_file(path, sample_rate=sr, max_duration=30, chunk_duration=cd)
         
-        # Pick center chunk if multiple
+        # Pick center chunk if multiple (simple heuristic to avoid very quiet heads/tails)
         if isinstance(audio_chunks, list) and len(audio_chunks) > 1:
             audio_chunks = [audio_chunks[len(audio_chunks) // 2]]
         elif isinstance(audio_chunks, np.ndarray) and audio_chunks.shape[0] > 1:
             audio_chunks = [audio_chunks[audio_chunks.shape[0] // 2]]
 
-        # Convert to spectrogram if needed (still supports multiple chunks, but we only have 1 for now)
+        # Convert to spectrogram if needed
         if frontend in ('precomputed', 'librosa'):
             specs = [get_spectrogram_from_audio(ch, sample_rate=sr, n_fft=n_fft, mel_bins=num_mels, spec_width=spec_width, mag_scale=mag_scale) for ch in audio_chunks]
             pool = [s for s in specs if s is not None and np.size(s) > 0]
@@ -87,6 +117,7 @@ def representative_data_gen(file_paths, cfg, num_samples=100):
                 x = sample[:T]
                 if x.shape[0] < T:
                     x = np.pad(x, (0, T - x.shape[0]))
+                # Match training: per-chunk peak-normalization to [-1, 1]
                 x = x / (np.max(np.abs(x)) + 1e-6)
                 x = x.astype(np.float32)[None, :, None]
             elif frontend == 'hybrid':
@@ -99,16 +130,17 @@ def representative_data_gen(file_paths, cfg, num_samples=100):
             
 def _cosine(a, b, eps=1e-12):
     """
-    Compute cosine similarity between two flattened arrays.
+    Cosine similarity between two flattened arrays.
 
     Args:
         a (np.ndarray): Flattened predictions from Keras.
         b (np.ndarray): Flattened predictions from TFLite.
-        eps (float): Small value to avoid division by zero.
+        eps (float): Small constant to avoid division-by-zero.
 
     Returns:
-        float: Cosine similarity in [-1, 1]. If either vector has near-zero norm,
-            returns 1.0 when both are near-zero, otherwise 0.0.
+        float: Cosine similarity in [-1, 1].
+               If either vector has near-zero norm, returns 1.0 when both are near-zero,
+               else 0.0.
     """
     an = np.linalg.norm(a)
     bn = np.linalg.norm(b)
@@ -118,16 +150,16 @@ def _cosine(a, b, eps=1e-12):
 
 def _pearson(a, b, eps=1e-12):
     """
-    Compute Pearson correlation coefficient between two flattened arrays.
+    Pearson correlation coefficient between two flattened arrays.
 
     Args:
         a (np.ndarray): Flattened predictions from Keras.
         b (np.ndarray): Flattened predictions from TFLite.
-        eps (float): Small value to guard against zero variance.
+        eps (float): Small constant to guard against zero variance.
 
     Returns:
         float: Pearson's r in [-1, 1]. If both vectors have near-zero variance,
-            returns 1.0.
+               returns 1.0.
     """
     a = a - np.mean(a)
     b = b - np.mean(b)
@@ -138,7 +170,23 @@ def _pearson(a, b, eps=1e-12):
 
 def validate_models(keras_model, tflite_model_path, rep_data_gen):
     """
-    Validate TFLite vs. Keras predictions on representative samples.
+    Compare Keras vs. TFLite predictions over a set of samples.
+
+    This runs the TFLite interpreter without delegates (builtin kernels only)
+    to minimize numeric differences due to acceleration libraries and prints:
+    - cosine similarity (mean/std/min/max)
+    - MSE, MAE
+    - Pearson correlation
+
+    Args:
+        keras_model (tf.keras.Model): Loaded Keras model (compiled=False is fine).
+        tflite_model_path (str): Path to the converted .tflite model.
+        rep_data_gen (Callable[[], Iterable[List[np.ndarray]]]): A zero-arg callable
+            that returns an iterator/generator yielding [input_tensor] shaped exactly
+            like the model's input.
+
+    Returns:
+        None. Prints summary statistics to stdout.
     """
     # Create interpreter without delegates (disables XNNPACK explicitly)
     interpreter = tf.lite.Interpreter(model_path=tflite_model_path, 
@@ -155,7 +203,6 @@ def validate_models(keras_model, tflite_model_path, rep_data_gen):
     cos_list, mse_list, mae_list, pcc_list = [], [], [], []
     
     for sample in rep_data_gen():
-
         # Keras forward
         yk = keras_model(sample[0], training=False).numpy()
         # TFLite forward
@@ -182,20 +229,29 @@ def validate_models(keras_model, tflite_model_path, rep_data_gen):
 
 def main():
     """
-    Convert a trained Keras model (.keras) to TFLite with PTQ and optional validation.
+    Convert a trained Keras model (.keras) to TFLite and optionally validate it.
 
     Workflow:
-        1) Load model and its JSON config.
-        2) Build representative dataset generator from training config.
-        3) Convert to TFLite using float32 I/O and default optimizations.
-        4) Optionally validate TFLite vs. Keras on representative samples.
+        1) Load model and its JSON config (infer config path if omitted).
+        2) Build a representative dataset generator aligned with training.
+        3) Convert to TFLite with PTQ using float32 I/O (internal INT8 ops).
+        4) Optionally validate TFLite vs. Keras on a subset of samples.
         5) Save a small .npz with validation inputs for future checks.
 
-    Args:
-        None. Command-line arguments are parsed via argparse.
+    CLI:
+        --checkpoint_path  Path to the trained .keras model.
+        --model_config     Path to JSON with training config; defaults to <checkpoint>_model_config.json.
+        --output_path      Output .tflite path; defaults to <checkpoint>_quantized.tflite.
+        --data_path_train  Directory of audio files for representative dataset (recommended).
+        --num_samples      Number of representative samples (e.g., 512–2048 typical).
+        --validate         Run post-conversion validation (recommended).
+        --validate_samples Max samples to use for validation metrics.
 
-    Returns:
-        None. Writes converted model and validation data to disk.
+    Notes:
+        - Conversion uses float32 I/O with INT8 internal ops:
+          converter.target_spec.supported_ops = [TFLITE_BUILTINS_INT8]
+          converter.inference_input_type = converter.inference_output_type = float32
+        - Ensure representative samples reflect deployment data distribution.
     """
     parser = argparse.ArgumentParser(description="Convert a trained Keras model (.keras) to TFLite with PTQ (float32 IO).")
     parser.add_argument('--checkpoint_path', type=str, required=True, help='Path to trained .keras model')
