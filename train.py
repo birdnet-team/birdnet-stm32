@@ -53,11 +53,11 @@ def dataset_sanity_check(file_paths,
     Behavior:
       - precomputed/librosa: computes mel + mag_scale offline and plots.
       - hybrid/raw(tf): runs the TF AudioFrontendLayer and plots its output.
-      - if tf_frontend_layer is provided, it is used (trained params).
+      - If tf_frontend_layer is provided, it is used (e.g., trained frontend).
 
     Args:
         file_paths (list[str]): Dataset audio file paths.
-        classes (list[str]): Ordered class names for labels.
+        classes (list[str]): Ordered class names for labels (unused here, kept for API parity).
         sample_rate (int): Audio sampling rate (Hz).
         max_duration (int): Max seconds to read from a file.
         chunk_duration (int): Chunk length (seconds) per sample.
@@ -66,12 +66,12 @@ def dataset_sanity_check(file_paths,
         audio_frontend (str): 'precomputed' | 'librosa' | 'hybrid' | 'raw' | 'tf'.
         tf_frontend_layer (AudioFrontendLayer | None): Trained frontend to use for plotting.
         fft_length (int): FFT length used for linear/hybrid paths.
-        mag_scale (str): 'pcen' | 'pwl' | 'db' | 'none' magnitude scaling.
-        snr_threshold (float): Minimum SNR threshold for chunk selection.
-        prefix (str): Prefix for saved plot filenames.
+        mag_scale (str): 'pcen' | 'pwl' | 'db' | 'none' magnitude scaling (for visualized output).
+        snr_threshold (float): Minimum activity threshold for chunk selection.
+        prefix (str): Prefix for saved plot filenames in the samples/ folder.
 
     Returns:
-        None. Saves/plots example spectrograms to the samples/ folder.
+        None. Saves up to 10 example spectrogram images under samples/.
     """
     os.makedirs("samples", exist_ok=True)
     np.random.shuffle(file_paths)
@@ -139,12 +139,12 @@ def get_classes_with_most_samples(directory, n_classes=25, include_noise=False, 
 
     Args:
         directory (str): Root dataset directory (class-subfolders).
-        n_classes (int): Number of top classes to return.
-        include_noise (bool): Include noise-like labels (noise/silence/background/other).
+        n_classes (int): Number of top classes to return (upper bound).
+        include_noise (bool): If False, exclude noise-like labels (noise/silence/background/other).
         exts (tuple[str, ...]): Accepted audio file extensions (case-insensitive).
 
     Returns:
-        list[str]: Class names, sorted by descending sample count (length ≤ n_classes).
+        list[str]: Up to n_classes class names, sorted by descending sample count.
     """
     classes = {}  # 'class_name': num_samples
     noise_classes = {'noise', 'silence', 'background', 'other'}
@@ -165,16 +165,16 @@ def load_file_paths_from_directory(directory, classes=None, max_samples=None, ex
     """
     Recursively gather audio files from a class-structured directory.
 
-    Structure:
+    Expected layout:
         root/
-          class_a/*.(wav|mp3|flac|ogg|...)
-          class_b/*.(wav|mp3|flac|ogg|...)
+          class_a/*.(wav|mp3|flac|ogg|m4a)
+          class_b/*.(wav|mp3|flac|ogg|m4a)
           ...
 
     Args:
         directory (str): Dataset root directory.
-        classes (list[str] | None): If given, restrict to these class names.
-        max_samples (int | None): Cap the number of files per class.
+        classes (list[str] | None): If given, restrict to these class names only.
+        max_samples (int | None): Cap the number of files per class (uniform random).
         exts (tuple[str, ...]): Accepted audio file extensions (case-insensitive).
 
     Returns:
@@ -216,15 +216,20 @@ def load_file_paths_from_directory(directory, classes=None, max_samples=None, ex
     return all_paths, classes_out
 
 def upsample_minority_classes(file_paths, classes, ratio=0.25):
-    
     """
-    Upsample minority classes to match the largest class size through random repetition.
+    Upsample minority classes to approach the largest class size via repetition.
+
     Args:
         file_paths (list[str]): List of audio file paths.
         classes (list[str]): Ordered class names.
-        ratio (float): Fraction of the largest class size to upsample to (0 < ratio ≤ 1).
+        ratio (float): Target fraction of the largest class size (0 < ratio ≤ 1).
+
     Returns:
         list[str]: Augmented list of audio file paths with upsampled minority classes.
+
+    Notes:
+        - Sampling is with replacement; randomness follows numpy’s global RNG state.
+        - This does not rebalance perfectly; it raises all classes up to ratio * max_size.
     """
     
     assert 0 < ratio <= 1, "Ratio must be in (0, 1]."
@@ -270,14 +275,14 @@ def data_generator(file_paths,
     """
     Yield batches of (inputs, one_hot_labels) for training/validation.
 
-    Frontends:
-        - precomputed/librosa: mel spectrogram (mel_bins, spec_width, 1)
-        - hybrid: linear magnitude STFT (fft_bins, spec_width, 1)
-        - raw/tf: raw waveform (T, 1) where T = sample_rate*chunk_duration
+    Frontends and input shapes:
+        - precomputed/librosa: mel spectrogram -> [B, mel_bins, spec_width, 1]
+        - hybrid: linear STFT magnitude -> [B, fft_bins(=n_fft//2+1), spec_width, 1]
+        - raw/tf: waveform -> [B, T, 1], where T = sample_rate * chunk_duration (peak-normalized to [-1, 1])
 
-    Selection:
-        - Loads multiple chunks per file and picks one by SNR ranking.
-        - Optional mixup applied to a subset of the batch.
+    Selection and augmentation:
+        - Loads multiple chunks per file and selects one by activity (SNR) ranking.
+        - Optional mixup applied to a random subset of the batch (inputs mixed, labels merged by OR).
 
     Args:
         file_paths (list[str]): Audio file paths.
@@ -288,16 +293,20 @@ def data_generator(file_paths,
         max_duration (int): Max duration to read per file (seconds).
         chunk_duration (int): Chunk duration (seconds).
         spec_width (int): Target spectrogram width (frames).
-        mixup_alpha (float): Beta distribution alpha for mixup.
-        mixup_probability (float): Fraction of batch to apply mixup to.
+        mixup_alpha (float): Mixup strength parameter (uniform here).
+        mixup_probability (float): Fraction of the batch to apply mixup to.
         mel_bins (int): Number of mel bins for mel spectrograms.
         fft_length (int): FFT size used by librosa/hybrid paths.
-        mag_scale (str): 'pcen' | 'pwl' | 'db' | 'none' magnitude scaling.
+        mag_scale (str): 'pcen' | 'pwl' | 'db' | 'none' magnitude scaling inside the frontend.
         random_offset (bool): If True, randomly offset chunk start within file.
-        snr_threshold (float): Minimum SNR threshold for chunk selection.
+        snr_threshold (float): Minimum activity threshold for chunk selection.
 
     Yields:
-        tuple[np.ndarray, np.ndarray]: (inputs, labels) for a batch.
+        tuple[np.ndarray, np.ndarray]: (inputs, labels) for a batch. Infinite generator.
+
+    Notes:
+        - Files with labels not present in 'classes' are skipped.
+        - Noise-like labels produce all-zero target vectors (treated as background).
     """
     T = int(sample_rate * chunk_duration)
     while True:
@@ -385,7 +394,7 @@ def data_generator(file_paths,
 
 def load_dataset(file_paths, classes, audio_frontend='precomputed', batch_size=32, spec_width=128, mel_bins=48, **kwargs):
     """
-    Wrap a Python generator as a tf.data.Dataset with static shapes.
+    Wrap the Python generator as a tf.data.Dataset with static shapes.
 
     Args:
         file_paths (list[str]): Audio file paths.
@@ -395,11 +404,16 @@ def load_dataset(file_paths, classes, audio_frontend='precomputed', batch_size=3
         spec_width (int): Target spectrogram width (frames).
         mel_bins (int): Number of mel bins.
         **kwargs: sample_rate (int), chunk_duration (int), fft_length (int),
-                  mag_scale (str: 'pcen' | 'pwl' | 'db' | 'none'), max_duration (int),
-                  mixup_alpha (float), mixup_probability (float).
+                  mag_scale (str), max_duration (int),
+                  mixup_alpha (float), mixup_probability (float),
+                  random_offset (bool), snr_threshold (float).
 
     Returns:
-        tf.data.Dataset: Infinite dataset of (inputs, labels), prefetching enabled.
+        tf.data.Dataset: Infinite dataset of (inputs, labels), with prefetching enabled.
+
+    Shapes:
+        - Inputs follow the selected frontend (see data_generator).
+        - Labels are [B, len(classes)] float32 one-hot/multi-hot vectors.
     """
     sr = kwargs.get('sample_rate', 16000)
     cd = kwargs.get('chunk_duration', 3)
@@ -444,7 +458,7 @@ def load_dataset(file_paths, classes, audio_frontend='precomputed', batch_size=3
 
 class AudioFrontendLayer(layers.Layer):
     """
-    Audio frontend with interchangeable input modes.
+    Audio frontend with interchangeable input modes and optional magnitude scaling.
 
     Modes:
       - precomputed: Input mel spectrogram [B, mel_bins, spec_width, 1] -> slice to spec_width.
@@ -454,14 +468,19 @@ class AudioFrontendLayer(layers.Layer):
 
     Magnitude scaling:
       - 'none': Pass-through.
-      - 'pwl':  Piecewise-linear compression (1x1 DW convs + ReLU + Add).
+      - 'pwl':  Piecewise-linear compression (DW 1x1 branches + ReLU + Add).
       - 'pcen': PCEN-like compression (pool/conv/ReLU/Add), linear magnitude domain.
-      - 'db':   Log compression (10·log10) after mel (can quantize poorly).
+      - 'db':   Log compression (10·log10) after mel (often unfriendly to PTQ).
+
+    Trainability:
+      - is_trainable=True enables training of mag-scale sublayers (PCEN/PWL).
+      - In hybrid mode, mel filter spacing (breakpoints) is currently tied to is_trainable
+        and trained via a matmul path during training; at inference, a single 1x1 Conv2D is used.
 
     Notes:
       - Slaney mel basis (librosa) seeds mel_mixer for parity in hybrid mode.
-      - Hybrid can train mel spacing but exports to a single 1x1 Conv2D (NPU-friendly).
-      - Raw branch keeps explicit VALID padding for TF/TFLite parity.
+      - Raw branch uses explicit VALID padding to avoid TF vs. TFLite SAME-padding differences.
+      - Channel padding to multiples of 8 may be applied internally for NPU-friendly tensors.
     """
     def __init__(self, 
                  mode: str,
@@ -638,7 +657,15 @@ class AudioFrontendLayer(layers.Layer):
 
     def _compute_tri_matrix(self) -> tf.Tensor:
         """
-        Returns [F, M] triangular weights built from learnable breakpoints.
+        Build a triangular mel weight matrix from learnable breakpoints.
+
+        Returns:
+            tf.Tensor: [F, M] triangle weights, where
+                F = fft_bins = n_fft//2 + 1, M = mel_bins.
+        Notes:
+            - Breakpoints are parameterized as positive intervals via softplus and normalized
+              to the [mel_fmin, mel_fmax] range.
+            - Used only during training in hybrid mode to obtain gradients w.r.t. breakpoints.
         """
         eps = tf.constant(1e-6, tf.float32)
         F = tf.shape(self._bins_mel)[0]
@@ -671,8 +698,13 @@ class AudioFrontendLayer(layers.Layer):
 
     def _assign_mel_kernel_from_tri(self, tri: tf.Tensor):
         """
-        Updates the mel_mixer 1x1 conv kernel from a [F, M] triangle.
-        Handles input-channel padding for NPU-friendly channel alignment.
+        Mirror the [F, M] triangle matrix into the 1x1 Conv2D mel_mixer kernel.
+
+        This keeps the inference path NPU-friendly (Conv2D-only). Any channel padding
+        added in _build_and_set_mel_mixer is honored.
+
+        Args:
+            tri (tf.Tensor): [F, M] triangle weights (nonnegative).
         """
         if self.mel_mixer is None or not hasattr(self.mel_mixer, "kernel"):
             return
@@ -689,11 +721,16 @@ class AudioFrontendLayer(layers.Layer):
     # Helper: build mel mixer with a Slaney mel basis for a given n_fft and input channels
     def _build_and_set_mel_mixer(self, n_fft: int, cin: int):
         """
-        Initialize mel_mixer with a Slaney mel basis for a given n_fft.
+        Initialize mel_mixer from a Slaney mel basis and pad input channels if needed.
 
         Args:
             n_fft (int): FFT length used to compute the mel basis.
             cin (int): Number of input channels (fft_bins = n_fft//2 + 1).
+
+        Side effects:
+            - Builds mel_mixer on input shape [B, 1, T, cin(+pad)].
+            - Sets mel_mixer weights to [1, 1, cin(+pad), mel_bins].
+            - Stores channel padding in self._pad_ch_in.
         """
         upper = int(self.mel_fmax) if self.mel_fmax is not None else (self.sample_rate // 2)
         mel_mat = librosa.filters.mel(
@@ -714,7 +751,7 @@ class AudioFrontendLayer(layers.Layer):
     # Helper: build mag-scale layers (PCEN/PWL)
     def _build_mag_layers(self):
         """
-        Build magnitude scaling sub-layers as needed (PCEN/PWL/DB).
+        Ensure magnitude scaling sub-layers are built (PCEN/PWL), if selected.
 
         Returns:
             None.
@@ -740,8 +777,13 @@ class AudioFrontendLayer(layers.Layer):
     # Magnitude scaling implementations (N6-friendly: only conv/pool/relu/add ops)
     def _apply_pcen(self, x):
         """
-        PCEN-like compression using only pool/conv/relu/add ops.
-        x: [B, 1, T, C]
+        PCEN-like compression using only pool/conv/ReLU/Add ops.
+
+        Args:
+            x (tf.Tensor): Power-like input [B, 1, T, C].
+
+        Returns:
+            tf.Tensor: Compressed output [B, 1, T, C].
         """
         if not self._pcen_pools:
             return x
@@ -759,7 +801,7 @@ class AudioFrontendLayer(layers.Layer):
 
     def _apply_pwl(self, x):
         """
-        Apply piecewise-linear compression via 1x1 DW conv branches.
+        Apply piecewise-linear compression via 1x1 depthwise branches.
 
         Args:
             x (tf.Tensor): Power-like input [B, 1, T, C].
@@ -783,13 +825,13 @@ class AudioFrontendLayer(layers.Layer):
 
     def _apply_db(self, x: tf.Tensor) -> tf.Tensor:
         """
-        Apply dB log compression.
+        Apply dB log compression (10 * log10).
 
         Args:
-            x: [B, 1, T, C] linear input.
+            x (tf.Tensor): Linear input [B, 1, T, C].
 
         Returns:
-            [B, 1, T, C] dB-scaled output (not normalized).
+            tf.Tensor: dB-scaled output [B, 1, T, C].
         """
         eps = tf.cast(self.db_eps, x.dtype)
         ref = tf.cast(self.db_ref, x.dtype)
@@ -824,7 +866,16 @@ class AudioFrontendLayer(layers.Layer):
         Shapes:
             - precomputed: in [B, mel_bins, T, 1] -> out [B, mel_bins, spec_width, 1]
             - hybrid:      in [B, fft_bins, T, 1] -> out [B, mel_bins, spec_width, 1]
+                • If is_trainable: training uses a matmul path (for gradients),
+                  inference uses a single 1x1 Conv2D (mel_mixer).
             - raw:         in [B, T, 1]           -> out [B, mel_bins, spec_width, 1]
+
+        Args:
+            inputs (tf.Tensor): See shapes above.
+            training (bool | tf.Tensor | None): Keras training flag.
+
+        Returns:
+            tf.Tensor: Frontend output [B, mel_bins, spec_width, 1].
         """
         # precomputed
         if self.mode == "precomputed":
@@ -890,7 +941,7 @@ class AudioFrontendLayer(layers.Layer):
 
     def compute_output_shape(self, input_shape):
         """
-        Keras shape inference for the layer.
+        Keras static shape inference for the layer.
 
         Args:
             input_shape (tuple): Input shape tuple.
@@ -902,10 +953,10 @@ class AudioFrontendLayer(layers.Layer):
     
     def get_config(self):
         """
-        Return the layer config for serialization.
+        Return a serializable configuration of the frontend layer.
 
         Returns:
-            dict: Serializable configuration of the frontend layer.
+            dict: JSON-serializable config for model saving/loading.
         """
         cfg = {
             "mode": self.mode,
@@ -928,6 +979,16 @@ class AudioFrontendLayer(layers.Layer):
         return base
 
 def _make_divisible(v, divisor=8):
+    """
+    Round channel counts to be divisible by a given divisor.
+
+    Args:
+        v (int | float): Target channel count.
+        divisor (int): Divisor to align to (default 8).
+
+    Returns:
+        int: Max(divisor, nearest multiple of 'divisor').
+    """
     v = int(v + divisor / 2) // divisor * divisor
     return max(divisor, v)
 
@@ -941,11 +1002,11 @@ def ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name="ds", weight_decay=1e-
         stride_f (int): Stride along frequency axis (height).
         stride_t (int): Stride along time axis (width).
         name (str): Base name for layers.
-        weight_decay (float): L2 kernel regularization (weight decay).
-        drop_rate (float): Spatial dropout rate applied to the PW output (0..1).
+        weight_decay (float): L2 kernel regularization (weight decay) for DW/PW.
+        drop_rate (float): Spatial dropout rate (applied after PW BN).
 
     Returns:
-        tf.Tensor: Output tensor after DW/PW + BN/ReLU (+ residual if aligned).
+        tf.Tensor: Output tensor after DW/PW + BN/ReLU (+ residual when stride==1 and channels match).
     """
     reg = regularizers.l2(weight_decay) if weight_decay and weight_decay > 0 else None
     in_ch = x.shape[-1]
@@ -987,23 +1048,28 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
     """
     Build a DS-CNN model with a selectable audio frontend.
 
+    Frontends:
+        - precomputed/librosa: expects mel spectrogram input.
+        - hybrid: expects linear STFT magnitude; applies mel mixer inside the model.
+        - raw/tf: expects waveform; applies a TF frontend to produce mel features.
+
     Args:
         num_mels (int): Number of mel bins in the spectrogram.
         spec_width (int): Spectrogram width (frames).
         sample_rate (int): Sampling rate (Hz).
         chunk_duration (int): Chunk duration (seconds).
-        embeddings_size (int): Channels in the embeddings layer.
+        embeddings_size (int): Channels in the embeddings layer (final 1x1 conv).
         num_classes (int): Number of output classes.
         audio_frontend (str): 'precomputed' | 'librosa' | 'hybrid' | 'raw' | 'tf'.
         alpha (float): Width multiplier for the backbone.
-        depth_multiplier (int): Repeats multiplier for DS blocks.
+        depth_multiplier (int): Repeats multiplier for DS blocks per stage.
         fft_length (int): FFT size for hybrid/librosa paths.
-        mag_scale (str): 'pcen' | 'pwl' | 'db' | 'none' magnitude scaling.
-        frontend_trainable (bool): Trainability of frontend sub-layers.
-        class_activation (str): 'softmax' | 'sigmoid' activation for the final layer.
+        mag_scale (str): 'pcen' | 'pwl' | 'db' | 'none' magnitude scaling inside the frontend.
+        frontend_trainable (bool): If True, make frontend sub-layers trainable (mel spacing in hybrid, PCEN/PWL).
+        class_activation (str): 'softmax' | 'sigmoid' for the classifier head.
 
     Returns:
-        tf.keras.Model: Compiled DS-CNN model.
+        tf.keras.Model: Uncompiled DS-CNN model ready for training.
     """
     # Enforce STM32N6 constraint if building a raw/tf frontend
     if audio_frontend in ('tf', 'raw'):
@@ -1110,10 +1176,10 @@ def train_model(model,
                 val_steps=None,
                 is_multilabel=False):
     """
-    Train the model with cosine decay, early stopping, and checkpointing.
+    Train the model with cosine LR schedule, early stopping, and checkpointing.
 
-    Metrics:
-        - ROC AUC (multi-label)
+    Monitors:
+        - val_loss (min). Best model is saved as a full .keras file.
 
     Args:
         model (tf.keras.Model): Model to train.
@@ -1121,15 +1187,15 @@ def train_model(model,
         val_dataset (tf.data.Dataset): Validation dataset (infinite).
         epochs (int): Number of epochs.
         learning_rate (float): Initial learning rate for cosine schedule.
-        batch_size (int): Unused; kept for API symmetry.
+        batch_size (int): Unused here; kept for API symmetry with data loader.
         patience (int): Early stopping patience (epochs).
         checkpoint_path (str): Path to save the best .keras model.
         steps_per_epoch (int): Training steps per epoch (> 0 required).
-        val_steps (int | None): Validation steps per epoch.
-        is_multilabel (bool): If True, use binary_crossentropy else categorical_crossentropy.
+        val_steps (int | None): Validation steps per epoch (defaults to 1 if <= 0).
+        is_multilabel (bool): If True, uses binary_crossentropy; else categorical_crossentropy.
 
     Returns:
-        tf.keras.callbacks.History: Keras training history.
+        tf.keras.callbacks.History: Keras training history object.
     """
 
     if steps_per_epoch is None or steps_per_epoch <= 0:
@@ -1167,7 +1233,7 @@ def train_model(model,
 
 def compute_hop_length(sample_rate: int, chunk_duration: int, spec_width: int) -> int:
     """
-    Compute hop length to produce spec_width frames from a chunk.
+    Compute hop length to produce spec_width frames from an input chunk.
 
     Args:
         sample_rate (int): Sampling rate (Hz).
@@ -1175,7 +1241,7 @@ def compute_hop_length(sample_rate: int, chunk_duration: int, spec_width: int) -
         spec_width (int): Desired number of frames.
 
     Returns:
-        int: hop_length in samples (floor(T/spec_width), at least 1).
+        int: hop_length in samples (floor(T / spec_width), at least 1), where T = sample_rate*chunk_duration.
     """
     T = int(sample_rate) * int(chunk_duration)
     return max(1, T // int(spec_width))
@@ -1185,7 +1251,7 @@ def get_args():
     Parse command-line arguments for training.
 
     Returns:
-        argparse.Namespace: Parsed arguments (see --help for details).
+        argparse.Namespace: Parsed arguments. See --help for details on each flag.
     """
     parser = argparse.ArgumentParser(description="Train STM32N6 audio classifier")
     parser.add_argument('--data_path_train', type=str, required=True, help='Path to train dataset')
