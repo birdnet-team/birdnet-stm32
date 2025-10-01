@@ -1,3 +1,26 @@
+"""
+Evaluation script for birdnet-stm32 models on a class-structured audio dataset.
+
+This module:
+- Loads either a Keras (.keras) or TFLite (.tflite) model and wraps it with a simple runner.
+- Splits each audio file into fixed-length chunks matching training, runs inference per chunk,
+  pools chunk-level scores to file-level, and computes metrics.
+- Optionally renders a few frontend spectrograms for sanity checking (Keras models only).
+- Prints summary metrics and simple ASCII visualizations (histogram, PR curve). Can save CSV.
+
+Input conventions by frontend (see training config JSON):
+- precomputed/librosa: inputs are mel spectrograms [B, num_mels, spec_width, 1]
+- hybrid: inputs are linear STFT magnitudes [B, fft_bins, spec_width, 1]
+- raw/tf: inputs are waveforms [B, T, 1], T = sample_rate * chunk_duration, peak-normalized to [-1,1]
+
+Metrics:
+- ROC-AUC (micro), F1/precision/recall at 0.5 threshold, AP per class, class-mean AP (cmAP), and micro mAP.
+
+Notes:
+- Random seeds are set (NumPy, TF) but full determinism is not enforced.
+- TFLite interpreter runs without delegates here to reduce numeric variation across platforms.
+"""
+
 import os
 import argparse
 import json
@@ -6,7 +29,7 @@ from tqdm import tqdm
 import numpy as np
 import tensorflow as tf
 from sklearn.metrics import roc_auc_score, average_precision_score, precision_recall_curve
-import warnings  # NEW
+import warnings
 
 from train import SUPPORTED_AUDIO_EXTS, load_file_paths_from_directory, AudioFrontendLayer, dataset_sanity_check
 from utils.audio import load_audio_file, get_spectrogram_from_audio
@@ -20,6 +43,12 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 def load_model_runner(model_path):
     """
     Load a .keras or .tflite model and return a runner with a predict(batch) method.
+
+    Args:
+        model_path (str): Path to a saved model (.keras or .tflite).
+
+    Returns:
+        KerasRunner | TFLiteRunner: Object exposing predict(x_batch) -> np.ndarray with shape [B, C].
     """
     if model_path.lower().endswith(".tflite"):
         return TFLiteRunner(model_path)
@@ -31,7 +60,15 @@ def load_model_runner(model_path):
 
 
 class KerasRunner:
+    """
+    Thin wrapper for a Keras model to standardize batch prediction.
+    """
+
     def __init__(self, model: tf.keras.Model):
+        """
+        Args:
+            model (tf.keras.Model): Loaded Keras model (compiled=False is fine).
+        """
         self.model = model
         # Determine input names for dict feeding
         try:
@@ -40,6 +77,15 @@ class KerasRunner:
             self.input_names = []
 
     def predict(self, x_batch: np.ndarray) -> np.ndarray:
+        """
+        Run a forward pass on a batch.
+
+        Args:
+            x_batch (np.ndarray): Input batch in the model's expected shape and dtype.
+
+        Returns:
+            np.ndarray: Model outputs [B, C] as float32.
+        """
         x_batch = x_batch.astype(np.float32, copy=False)
         # Prefer dict feeding to match named inputs (avoids warnings)
         if getattr(self, "input_names", None) and len(self.input_names) == 1:
@@ -47,19 +93,30 @@ class KerasRunner:
             try:
                 return self.model(feed, training=False).numpy()
             except Exception:
-                pass  # fallback below
+                pass
         # Fallback: positional feeding
         return self.model(x_batch, training=False).numpy()
 
 
 class TFLiteRunner:
+    """
+    TFLite model runner using the builtin interpreter (no delegates).
+    """
+
     def __init__(self, model_path: str):
+        """
+        Args:
+            model_path (str): Path to a .tflite model file.
+        """
         self.interpreter = tf.lite.Interpreter(model_path=model_path, experimental_delegates=[])
         self.input_index = None
         self.output_index = None
         self._allocate()
 
     def _allocate(self):
+        """
+        Allocate tensors and cache input/output tensor indices.
+        """
         self.interpreter.allocate_tensors()
         in_det = self.interpreter.get_input_details()[0]
         out_det = self.interpreter.get_output_details()[0]
@@ -67,6 +124,12 @@ class TFLiteRunner:
         self.output_index = out_det["index"]
 
     def _ensure_shape(self, shape):
+        """
+        Resize the interpreter input tensor to match the batch shape, if needed.
+
+        Args:
+            shape (tuple[int, ...]): Desired input tensor shape.
+        """
         in_det = self.interpreter.get_input_details()[0]
         cur = in_det["shape"]
         if list(cur) != list(shape):
@@ -74,6 +137,15 @@ class TFLiteRunner:
             self._allocate()
 
     def predict(self, x_batch: np.ndarray) -> np.ndarray:
+        """
+        Run a forward pass on a batch.
+
+        Args:
+            x_batch (np.ndarray): Input batch in the model's expected shape and dtype.
+
+        Returns:
+            np.ndarray: Model outputs [B, C] as float32.
+        """
         # TFLite supports batching; ensure matching shape then run once
         x_batch = x_batch.astype(np.float32, copy=False)
         self._ensure_shape(x_batch.shape)
@@ -85,13 +157,18 @@ class TFLiteRunner:
 
 def lme_pooling(scores: np.ndarray, beta: float = 10.0) -> np.ndarray:
     """
-    Log Mean Exponential Pooling (lme):
+    Log-Mean-Exponential pooling over chunks:
         pooled = log(mean(exp(beta * s_i))) / beta
+
     Args:
-        scores: [N_chunks, C] chunk scores in [0,1].
-        beta: temperature; beta->0 ~ mean, beta->inf ~ max.
+        scores (np.ndarray): [N_chunks, C] chunk scores in [0, 1].
+        beta (float): Temperature; beta→0 approximates mean, beta→∞ approximates max.
+
     Returns:
-        [C] pooled scores.
+        np.ndarray: [C] pooled scores.
+
+    Notes:
+        Uses a max-trick for numerical stability on large beta.
     """
     if scores.size == 0:
         return scores
@@ -102,7 +179,15 @@ def lme_pooling(scores: np.ndarray, beta: float = 10.0) -> np.ndarray:
 
 def pool_scores(chunk_scores: np.ndarray, method: str = "average", beta: float = 10.0) -> np.ndarray:
     """
-    Pool chunk-level scores [N,C] to file-level [C].
+    Pool chunk-level scores [N, C] to file-level [C].
+
+    Args:
+        chunk_scores (np.ndarray): Array of shape [N_chunks, C].
+        method (str): 'avg'|'mean'|'average' | 'max' | 'lme' (log-mean-exp).
+        beta (float): Temperature for 'lme' pooling.
+
+    Returns:
+        np.ndarray: [C] pooled scores.
     """
     method = method.lower()
     if chunk_scores.ndim != 2:
@@ -120,12 +205,23 @@ def pool_scores(chunk_scores: np.ndarray, method: str = "average", beta: float =
 
 def make_chunks_for_file(path: str, cfg: dict, frontend: str, mag_scale: str, n_fft: int, chunk_overlap: float):
     """
-    Produce a list of model-ready inputs (np arrays) for a given audio file.
+    Build a list of model-ready inputs from one audio file by chunking.
+
+    Shapes per frontend:
+      - precomputed/librosa: [mel_bins, spec_width, 1] (mel spectrogram magnitude)
+      - hybrid:              [fft_bins, spec_width, 1] (linear STFT magnitude)
+      - raw/tf:              [T, 1] waveform, peak-normalized to [-1, 1]
+
+    Args:
+        path (str): Audio file path.
+        cfg (dict): Training config dict with keys: sample_rate, chunk_duration, num_mels, spec_width.
+        frontend (str): 'precomputed'|'librosa'|'hybrid'|'raw'|'tf'.
+        mag_scale (str): Magnitude scaling applied in precomputed paths ('none'|'pcen'|'pwl'|'db').
+        n_fft (int): FFT length for spectrogram computation.
+        chunk_overlap (float): Overlap fraction (seconds) between consecutive chunks.
+
     Returns:
-        list[np.ndarray] of shapes depending on frontend:
-          - precomputed/librosa: [mel_bins, spec_width, 1]
-          - hybrid: [fft_bins, spec_width, 1]
-          - raw/tf: [T, 1]
+        list[np.ndarray]: List of per-chunk inputs ready for model.predict.
     """
     sr = int(cfg["sample_rate"])
     cd = int(cfg["chunk_duration"])
@@ -134,13 +230,6 @@ def make_chunks_for_file(path: str, cfg: dict, frontend: str, mag_scale: str, n_
     T = int(sr * cd)
 
     chunks = load_audio_file(path, sample_rate=sr, max_duration=60, chunk_duration=cd, random_offset=False, chunk_overlap=chunk_overlap)
-    
-    # normalize per chunk to -1..1
-    #for i in range(len(chunks)):
-    #    ch = chunks[i]
-    #    max_val = np.max(np.abs(ch))
-    #    if max_val > 0:
-    #        chunks[i] = ch / max_val
     
     out = []
     if frontend in ("precomputed", "librosa"):
@@ -172,9 +261,24 @@ def make_chunks_for_file(path: str, cfg: dict, frontend: str, mag_scale: str, n_
 
 def evaluate(model_runner, files, classes, cfg, pooling="average", batch_size=64, overlap=0.0, mep_beta=10.0):
     """
-    Run inference per chunk, pool to file-level, and compute metrics.
+    Run inference per chunk, pool to file-level, and compute evaluation metrics.
+
+    Args:
+        model_runner (KerasRunner|TFLiteRunner): Runner exposing predict(x_batch).
+        files (list[str]): List of file paths to evaluate.
+        classes (list[str]): Ordered class names (used to derive labels from directory names).
+        cfg (dict): Training config dict (sample_rate, chunk_duration, num_mels, spec_width, fft_length, audio_frontend, mag_scale).
+        pooling (str): 'avg'|'max'|'lme' pooling for chunk-to-file aggregation.
+        batch_size (int): Batch size for per-chunk inference.
+        overlap (float): Overlap in seconds for chunking (0..chunk_duration-0.1).
+        mep_beta (float): Temperature for LME pooling.
+
     Returns:
-        dict with metrics and a per-file results list.
+        tuple:
+            - metrics (dict): roc-auc, f1, precision, recall, mAP, cmAP, ap_per_class.
+            - per_file (list[dict]): One dict per file with file path, label, and pooled scores list.
+            - y_true (np.ndarray): One-hot ground-truth labels [N_files, C].
+            - y_scores (np.ndarray): Pooled scores [N_files, C].
     """
     frontend = cfg["audio_frontend"]
     mag_scale = cfg.get("mag_scale", "none")
@@ -254,7 +358,7 @@ def evaluate(model_runner, files, classes, cfg, pooling="average", batch_size=64
     metrics["recall"] = recall
 
     # Average Precision (AP)
-    # Per-class AP (only for classes with positives)
+    # Per-class AP
     ap_per_class = []
     for ci in range(y_true.shape[1]):
         try:
@@ -278,6 +382,11 @@ def evaluate(model_runner, files, classes, cfg, pooling="average", batch_size=64
 def print_ascii_histogram(scores, bins=10, width=40):
     """
     Print an ASCII histogram of scores in [0,1].
+
+    Args:
+        scores (np.ndarray): Array of scores in [0, 1].
+        bins (int): Number of histogram bins.
+        width (int): Bar width in characters.
     """
     hist, bin_edges = np.histogram(scores, bins=bins, range=(0, 1))
     max_count = np.max(hist)
@@ -291,7 +400,12 @@ def print_ascii_histogram(scores, bins=10, width=40):
 def print_ascii_pr_curve(y_true, y_scores, bins=10, width=40):
     """
     Print an ASCII PR curve with fixed precision bins (1.0, 0.9, ..., 0.0).
-    For each precision bin, plot the max recall achieved at or above that precision.
+    
+    Args:
+        y_true (np.ndarray): One-hot ground-truth labels [N_files, C].
+        y_scores (np.ndarray): Pooled scores [N_files, C].
+        bins (int): Number of precision bins.
+        width (int): Bar width in characters.
     """
     # Flatten for micro-averaged PR
     y_true = y_true.ravel()
@@ -320,6 +434,10 @@ def print_ascii_pr_curve(y_true, y_scores, bins=10, width=40):
 def save_predictions_csv(per_file, classes, out_path):
     """
     Save per-file predictions to CSV: file,label,top1_label,top1_score,<class columns...>
+    Args:
+        per_file (list[dict]): One dict per file with keys: file, label, scores (list of floats).
+        classes (list[str]): Ordered class names.
+        out_path (str): Path to save the CSV.
     """
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w") as f:
@@ -353,6 +471,12 @@ def get_args():
 
 
 def main():
+    """Evaluate a trained model on a class-structured test dataset.
+    1) Load model and its JSON config (infer config path if omitted).
+    2) Collect test files and ground-truth labels.
+    3) Run inference and compute metrics.
+    4) Save per-file predictions (optional).
+    """
     args = get_args()
 
     # Resolve model_config
