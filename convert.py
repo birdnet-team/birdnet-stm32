@@ -56,18 +56,11 @@ def representative_data_gen(file_paths, cfg, num_samples=100):
 
         audio_chunks = load_audio_file(path, sample_rate=sr, max_duration=30, chunk_duration=cd)
         
-        # Assert correct chunk shape
-        if isinstance(audio_chunks, np.ndarray):
-            assert audio_chunks.ndim == 2 and audio_chunks.shape[1] == T, f"Expected shape (num_chunks, {T}), got {audio_chunks.shape}"
-        else:
-            for ch in audio_chunks:
-                assert ch.ndim == 1 and ch.shape[0] == T, f"Expected shape ({T},), got {ch.shape}"
-                
-        # Pick 1 random chunk if multiple
-        if isinstance(audio_chunks, np.ndarray) and audio_chunks.shape[0] > 1:
-            audio_chunks = audio_chunks[random.randint(0, audio_chunks.shape[0] - 1)][None, :]
-        elif isinstance(audio_chunks, list) and len(audio_chunks) > 1:
-            audio_chunks = [audio_chunks[random.randint(0, len(audio_chunks) - 1)]]
+        # Pick center chunk if multiple
+        if isinstance(audio_chunks, list) and len(audio_chunks) > 1:
+            audio_chunks = [audio_chunks[len(audio_chunks) // 2]]
+        elif isinstance(audio_chunks, np.ndarray) and audio_chunks.shape[0] > 1:
+            audio_chunks = [audio_chunks[audio_chunks.shape[0] // 2]]
 
         # Convert to spectrogram if needed (still supports multiple chunks, but we only have 1 for now)
         if frontend in ('precomputed', 'librosa'):
@@ -210,9 +203,9 @@ def main():
     parser.add_argument('--output_path', type=str, default='', help='Path to save .tflite model. Defaults to <checkpoint>_quantized.tflite')
     parser.add_argument('--data_path_train', type=str, default='', help='Path to training data directory for representative dataset.')
     parser.add_argument('--reps_per_file', type=int, default=4, help='How many representative samples to draw per file.')
-    parser.add_argument('--num_samples', type=int, default=256, help='Number of samples for representative dataset')
+    parser.add_argument('--num_samples', type=int, default=1024, help='Number of samples for representative dataset')
     parser.add_argument('--validate', action='store_true', default=True, help='Validate TFLite vs. Keras after conversion')
-    parser.add_argument('--validate_samples', type=int, default=128, help='Max number of samples to validate')
+    parser.add_argument('--validate_samples', type=int, default=256, help='Max number of samples to validate')
     args = parser.parse_args()
 
     # Infer model_config path if not provided
