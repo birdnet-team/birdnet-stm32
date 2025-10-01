@@ -258,7 +258,7 @@ def main():
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     converter.representative_dataset = rep_data_gen
     converter._experimental_new_quantizer = True
-    converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8, tf.lite.OpsSet.TFLITE_BUILTINS]
+    converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
     converter.inference_input_type = tf.float32
     converter.inference_output_type = tf.float32
 
