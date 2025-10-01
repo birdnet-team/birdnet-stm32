@@ -77,7 +77,7 @@ The script will:
 - Generate spectrograms using a selectable frontend:
   - precomputed/librosa: mel spectrograms (magnitude, power=1.0) computed in utils/audio.py (mag_scale applied there).
   - hybrid: linear magnitude spectrogram (|STFT|) provided to the model; model applies fixed mel and optional magnitude scaling.
-  - raw/tf: raw audio to model; model does windowed DFT -> linear magnitude -> fixed mel -> optional magnitude scaling.
+  - raw/tf: raw audio provided to the model; a TF frontend inside the model produces mel features and optional magnitude scaling.
 - Build a compact DS-CNN model with width scaling (--alpha) and depth multiplier (--depth_multiplier).
 - Optionally apply mixup augmentation (--mixup_alpha, --mixup_probability).
 - Train with cosine LR and early stopping; save the best model to .keras (--checkpoint_path).
@@ -96,21 +96,22 @@ python train.py \
 Arguments:
 - --data_path_train: Path to your training dataset (required)
 - --max_samples: Max files per class for training (default: None = all)
+- --upsample_ratio: Upsample ratio for minority classes (default: 0.5)
 - --sample_rate: Audio sample rate (default: 22050)
 - --num_mels: Number of mel bins (default: 64)
 - --spec_width: Spectrogram width (frames) (default: 256)
 - --fft_length: FFT length for STFT/linear spec (default: 512)
 - --chunk_duration: Chunk duration in seconds (default: 3)
-- --max_duration: Max seconds to load per file (default: 60)
+- --max_duration: Max seconds to load per file (default: 30)
 - --audio_frontend: precomputed, hybrid, raw, librosa, or tf (default: hybrid)
 - --mag_scale: Magnitude compression: pcen | pwl | db | none (default: pwl)
 - --embeddings_size: Embedding channels before head (default: 256)
 - --alpha: Model width scaling (default: 1.0)
 - --depth_multiplier: Repeats per stage (default: 1)
-- --frontend_trainable: If set, make audio frontend trainable (mel_mixer/raw mixer/PCEN/PWL) (default: True)
+- --frontend_trainable: If set, make audio frontend trainable (mel mixer/PCEN/PWL) (default: False)
 - --mixup_alpha: Mixup alpha (0 disables, default: 0.2)
 - --mixup_probability: Fraction of batch to mix (default: 0.25)
-- --batch_size: Batch size (default: 64)
+- --batch_size: Batch size (default: 32)
 - --epochs: Number of epochs (default: 50)
 - --learning_rate: Initial LR (default: 0.001)
 - --val_split: Validation split (default: 0.2)
@@ -130,9 +131,9 @@ Run convert.py to convert the trained .keras model to a quantized TFLite model (
 The script will:
 - Load the trained .keras model (with AudioFrontendLayer).
 - Read <checkpoint>_model_config.json to reconstruct shapes/modes.
-- Build a representative dataset from training data (no SNR filtering this time).
+- Build a representative dataset from training data.
 - Convert to TFLite with PTQ and save <checkpoint>_quantized.tflite.
-- Optionally validate TFLite vs. Keras outputs on representative samples.
+- Validate TFLite vs. Keras outputs on representative samples and save a small .npz for on-device validation.
 
 Example:
 ```bash
@@ -140,7 +141,6 @@ python convert.py \
   --checkpoint_path checkpoints/my_stm32_model.keras \
   --model_config  checkpoints/my_stm32_model_model_config.json \
   --data_path_train data/train \
-  --validate \
   --validate_samples 50
 ```
 
@@ -149,14 +149,11 @@ Arguments:
 - --model_config: Path to <checkpoint>_model_config.json (optional; inferred if omitted)
 - --output_path: Path to save the .tflite (optional; inferred as <checkpoint>_quantized.tflite)
 - --data_path_train: Path to training data for representative dataset (optional; random data used if omitted)
-- --reps_per_file: Representative samples to draw per file (default: 4)
 - --num_samples: Number of representative samples (default: 1024)
-- --validate: If set, runs a Keras vs. TFLite validation pass after conversion
-- --validate_samples: Max samples to use for validation (default: 128)
+- --validate_samples: Max samples to use for validation (default: 256)
 
 Notes:
 - Validation compares float32 Keras outputs to float32 TFLite outputs on the same inputs using cosine similarity, MSE, MAE, and Pearson r.
-- For meaningful validation, pass --data_path_train so samples come from real audio; otherwise random inputs will be used.
 - Validation samples are saved as `.npz` and can be used to validate the model on the STM32N6570-DK later with `stedgeai validate --valinput <file>.npz`.
 
 ## Model testing
