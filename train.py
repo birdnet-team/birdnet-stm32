@@ -547,7 +547,7 @@ class AudioFrontendLayer(layers.Layer):
         if self.mode == "raw":
             T = int(self.sample_rate * self.chunk_duration)   # input samples
             W = int(self.spec_width)                          # target frames
-            self._k_t = 9                                     # temporal kernel
+            self._k_t = 16                                    # temporal kernel
             self._stride_t = int(math.ceil(T / float(W)))     # stride s = ceil(T/W)
 
             # For VALID conv: out = floor((L_in + pad_total - k)/s) + 1  == W
