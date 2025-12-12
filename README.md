@@ -444,6 +444,9 @@ Here is a rough outline of the steps you would typically follow to build a demo 
 }
 ```
 
+## Terms of Use
+Please refer to the [TERMS OF USE](TERMS_OF_USE.md) file for detailed terms and conditions regarding the use of the code and models.
+
 ## Funding
 
 Our work in the K. Lisa Yang Center for Conservation Bioacoustics is made possible by the generosity of K. Lisa Yang to advance innovative conservation technologies to inspire and inform the conservation of wildlife and habitats.
