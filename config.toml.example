@@ -1,0 +1,25 @@
+# BirdNet-STM32 deployment configuration
+# Copy this file to config.toml and fill in your local paths.
+# Values can also be set via environment variables (X_CUBE_AI_PATH, BIRDNET_MODEL_PATH)
+# or CLI arguments, which take highest priority.
+
+[deploy]
+# Path to X-CUBE-AI installation (e.g., "/opt/X-CUBE-AI.10.2.0")
+x_cube_ai_path = ""
+
+# Path to quantized TFLite model
+model_path = "checkpoints/best_model_quantized.tflite"
+
+# stedgeai output and workspace directories
+output_dir = "validation/st_ai_output"
+workspace_dir = "validation/st_ai_ws"
+
+# N6 loader config file
+n6_loader_config = "config_n6l.json"
+
+[build]
+# GCC compiler type: "gcc" or path to arm-none-eabi-gcc
+compiler_type = "gcc"
+
+# Path to STM32CubeIDE (only needed for CubeIDE builds)
+# cubeide_path = "/opt/stm32cubeide"

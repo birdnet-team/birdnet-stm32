@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+title: "BirdNet-STM32: Bird Sound Classification for Edge Deployment"
+message: >-
+  If you use this software, please cite it using the metadata from this file.
+type: software
+authors:
+  - family-names: Kahl
+    given-names: Stefan
+    affiliation: Cornell University / Chemnitz University of Technology
+    orcid: "https://orcid.org/0000-0002-2411-8877"
+  - family-names: Marshall
+    given-names: Isabella
+    affiliation: Cornell Lab of Ornithology
+  - family-names: Chaopricha
+    given-names: Patrick T.
+    affiliation: Cornell Lab of Ornithology
+  - family-names: Aceto
+    given-names: Jordan
+    affiliation: Cornell Lab of Ornithology
+  - family-names: Klinck
+    given-names: Holger
+    affiliation: Cornell Lab of Ornithology
+repository-code: "https://github.com/birdnet-team/birdnet-stm32"
+license: MIT
+keywords:
+  - bioacoustics
+  - bird sound classification
+  - edge deployment
+  - STM32
+  - neural processing unit
+  - quantization
+  - TFLite
