@@ -48,6 +48,7 @@ bash deploy.sh
 
 ## Pitfalls
 
+- **N6 compatibility is the absolute priority.** Every model, layer, and quantization decision must be verified against the STM32N6 NPU operator set. QAT may leave artifacts (fake-quant nodes, unsupported fused ops) that prevent deployment — always validate with `stedgeai analyze` before committing model changes.
 - **Raw frontend + 22kHz × 3s**: Exceeds 16-bit activation size limit (65536 samples). Use hybrid/precomputed frontend, or reduce to 16kHz / shorter chunks.
 - **Quantization similarity**: Overly diverse representative datasets widen INT8 ranges → worse cosine similarity. Target > 0.95 cosine sim in `convert.py` output.
 - **Channel alignment**: Keep channel counts as multiples of 8 for NPU vectorization.
