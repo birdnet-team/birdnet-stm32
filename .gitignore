@@ -1,5 +1,4 @@
 # Custom
-*.png
 *.wav
 samples/
 checkpoints/*.keras
