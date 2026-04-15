@@ -9,6 +9,8 @@ checkpoints/*.tflite
 checkpoints/*_labels.txt
 checkpoints/*_model_config.json
 notes.txt
+/dev/
+/report/
 
 # Machine-local config (ship .example files instead)
 config_n6l.json
