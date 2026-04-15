@@ -38,12 +38,16 @@ def make_chunks_for_file(
     num_mels = int(cfg["num_mels"])
     spec_width = int(cfg["spec_width"])
 
-    chunks = load_audio_file(path, sample_rate=sr, max_duration=60, chunk_duration=cd, random_offset=False, chunk_overlap=chunk_overlap)
+    chunks = load_audio_file(
+        path, sample_rate=sr, max_duration=60, chunk_duration=cd, random_offset=False, chunk_overlap=chunk_overlap
+    )
 
     out: list[np.ndarray] = []
     if frontend in ("precomputed", "librosa"):
         for ch in chunks:
-            S = get_spectrogram_from_audio(ch, sample_rate=sr, n_fft=n_fft, mel_bins=num_mels, spec_width=spec_width, mag_scale=mag_scale)
+            S = get_spectrogram_from_audio(
+                ch, sample_rate=sr, n_fft=n_fft, mel_bins=num_mels, spec_width=spec_width, mag_scale=mag_scale
+            )
             out.append(S[:, :, None].astype(np.float32))
     elif frontend == "hybrid":
         fft_bins = n_fft // 2 + 1

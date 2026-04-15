@@ -22,15 +22,19 @@ def main():
 
     if command == "train":
         from birdnet_stm32.cli.train import main as train_main
+
         train_main()
     elif command == "convert":
         from birdnet_stm32.cli.convert import main as convert_main
+
         convert_main()
     elif command == "evaluate":
         from birdnet_stm32.cli.evaluate import main as evaluate_main
+
         evaluate_main()
     elif command == "deploy":
         from birdnet_stm32.cli.deploy import main as deploy_main
+
         deploy_main()
     else:
         print(f"Unknown command: {command}")

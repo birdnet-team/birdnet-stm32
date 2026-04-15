@@ -5,9 +5,6 @@ import json
 import math
 import os
 
-import numpy as np
-import tensorflow as tf
-
 from birdnet_stm32.data.dataset import load_file_paths_from_directory, upsample_minority_classes
 from birdnet_stm32.data.generator import load_dataset
 from birdnet_stm32.models.dscnn import build_dscnn_model

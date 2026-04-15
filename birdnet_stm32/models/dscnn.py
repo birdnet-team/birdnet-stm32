@@ -197,7 +197,7 @@ def build_dscnn_model(
     base_repeats = [2, 3, 4, 2]
     base_strides = [(2, 2), (2, 2), (2, 2), (2, 2)]
 
-    for si, (bf, br, (sf, st)) in enumerate(zip(base_filters, base_repeats, base_strides), start=1):
+    for si, (bf, br, (sf, st)) in enumerate(zip(base_filters, base_repeats, base_strides, strict=True), start=1):
         out_ch = _make_divisible(int(bf * alpha), 8)
         reps = max(1, int(math.ceil(br * depth_multiplier)))
         x = ds_conv_block(x, out_ch, stride_f=sf, stride_t=st, name=f"stage{si}_ds1")

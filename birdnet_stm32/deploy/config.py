@@ -7,8 +7,6 @@ Resolves paths to X-CUBE-AI tools, models, and project directories from
 import json
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Optional
 
 
 @dataclass
@@ -41,7 +39,7 @@ class DeployConfig:
 
 
 def resolve_deploy_config(
-    cli_args: Optional[dict] = None,
+    cli_args: dict | None = None,
     config_path: str = "config.json",
 ) -> DeployConfig:
     """Resolve deployment configuration from CLI args, environment, and config file.
@@ -71,7 +69,9 @@ def resolve_deploy_config(
 
     cfg = DeployConfig(
         x_cube_ai_path=_resolve("x_cube_ai_path", "X_CUBE_AI_PATH", "x_cube_ai_path"),
-        model_path=_resolve("model_path", "BIRDNET_MODEL_PATH", "model_path", "checkpoints/best_model_quantized.tflite"),
+        model_path=_resolve(
+            "model_path", "BIRDNET_MODEL_PATH", "model_path", "checkpoints/best_model_quantized.tflite"
+        ),
         output_dir=_resolve("output_dir", "", "output_dir", "validation/st_ai_output"),
         workspace_dir=_resolve("workspace_dir", "", "workspace_dir", "validation/st_ai_ws"),
         n6_loader_config=_resolve("n6_loader_config", "", "n6_loader_config", "config_n6l.json"),

@@ -7,9 +7,9 @@ and a tf.data.Dataset wrapper with static shape signatures.
 import numpy as np
 import tensorflow as tf
 
+from birdnet_stm32.audio.activity import pick_random_samples, sort_by_activity
 from birdnet_stm32.audio.io import load_audio_file
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
-from birdnet_stm32.audio.activity import sort_by_activity, pick_random_samples
 
 
 def data_generator(
@@ -73,7 +73,12 @@ def data_generator(
                 if audio_frontend in ("librosa", "precomputed"):
                     specs = [
                         get_spectrogram_from_audio(
-                            chunk, sample_rate, n_fft=fft_length, mel_bins=mel_bins, spec_width=spec_width, mag_scale=mag_scale
+                            chunk,
+                            sample_rate,
+                            n_fft=fft_length,
+                            mel_bins=mel_bins,
+                            spec_width=spec_width,
+                            mag_scale=mag_scale,
                         )
                         for chunk in audio_chunks
                     ]
@@ -85,7 +90,9 @@ def data_generator(
 
                 elif audio_frontend == "hybrid":
                     specs = [
-                        get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=spec_width)
+                        get_spectrogram_from_audio(
+                            chunk, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=spec_width
+                        )
                         for chunk in audio_chunks
                     ]
                     pool = sort_by_activity(specs, threshold=snr_threshold) or specs
@@ -134,7 +141,8 @@ def data_generator(
                     lam = np.random.uniform(mixup_alpha, 1 - mixup_alpha, size=(num_mix,))
                     lam_inp = lam.reshape((num_mix,) + (1,) * (batch_samples.ndim - 1))
                     batch_samples[mix_indices] = (
-                        lam_inp * batch_samples[mix_indices] + (1 - lam_inp) * batch_samples[permuted_indices[mix_indices]]
+                        lam_inp * batch_samples[mix_indices]
+                        + (1 - lam_inp) * batch_samples[permuted_indices[mix_indices]]
                     )
                     batch_labels[mix_indices] = np.maximum(
                         batch_labels[mix_indices], batch_labels[permuted_indices[mix_indices]]

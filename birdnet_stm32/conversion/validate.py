@@ -76,7 +76,9 @@ def validate_models(keras_model: tf.keras.Model, tflite_model_path: str, rep_dat
 
     def _summ(name: str, vals: list[float]):
         if vals:
-            print(f"{name}: mean={np.mean(vals):.6f}  std={np.std(vals):.6f}  min={np.min(vals):.6f}  max={np.max(vals):.6f}")
+            print(
+                f"{name}: mean={np.mean(vals):.6f}  std={np.std(vals):.6f}  min={np.min(vals):.6f}  max={np.max(vals):.6f}"
+            )
 
     _summ("cosine", cos_list)
     _summ("mse", mse_list)

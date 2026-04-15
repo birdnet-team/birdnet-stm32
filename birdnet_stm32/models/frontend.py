@@ -13,7 +13,6 @@ NPU-friendly depthwise convolution branches.
 """
 
 import math
-from typing import Optional
 
 import librosa
 import numpy as np
@@ -52,7 +51,7 @@ class AudioFrontendLayer(layers.Layer):
         pcen_K: int = 8,
         init_mel: bool = True,
         mel_fmin: float = 150.0,
-        mel_fmax: Optional[float] = None,
+        mel_fmax: float | None = None,
         mel_norm: str = "slaney",
         mag_scale: str = "none",
         name: str = "audio_frontend",
@@ -142,9 +141,7 @@ class AudioFrontendLayer(layers.Layer):
         # PCEN sublayers
         if self.mag_scale == "pcen":
             self._pcen_pools = [
-                layers.AveragePooling2D(
-                    pool_size=(1, 1), strides=(1, 1), padding="same", name=f"{name}_pcen_ema{k}"
-                )
+                layers.AveragePooling2D(pool_size=(1, 1), strides=(1, 1), padding="same", name=f"{name}_pcen_ema{k}")
                 for k in range(self.pcen_K)
             ]
             self._pcen_agc_dw = layers.DepthwiseConv2D(
@@ -297,18 +294,15 @@ class AudioFrontendLayer(layers.Layer):
     def _build_and_set_mel_mixer(self, n_fft: int, cin: int):
         """Initialize mel_mixer from a Slaney mel basis and pad input channels if needed."""
         upper = int(self.mel_fmax) if self.mel_fmax is not None else (self.sample_rate // 2)
-        mel_mat = (
-            librosa.filters.mel(
-                sr=int(self.sample_rate),
-                n_fft=int(n_fft),
-                n_mels=int(self.mel_bins),
-                fmin=float(self.mel_fmin),
-                fmax=float(upper),
-                htk=False,
-                norm="slaney",
-            )
-            .T.astype(np.float32)
-        )
+        mel_mat = librosa.filters.mel(
+            sr=int(self.sample_rate),
+            n_fft=int(n_fft),
+            n_mels=int(self.mel_bins),
+            fmin=float(self.mel_fmin),
+            fmax=float(upper),
+            htk=False,
+            norm="slaney",
+        ).T.astype(np.float32)
         pad = (8 - (cin % 8)) % 8
         if pad:
             mel_mat = np.pad(mel_mat, ((0, pad), (0, 0)), mode="constant")
@@ -359,7 +353,7 @@ class AudioFrontendLayer(layers.Layer):
         branches = []
         if self._pwl_k0_dw is not None:
             branches.append(self._pwl_k0_dw(x))
-        for i, (shift_dw, k_dw) in enumerate(zip(self._pwl_shift_dws, self._pwl_k_dws), start=1):
+        for _i, (shift_dw, k_dw) in enumerate(zip(self._pwl_shift_dws, self._pwl_k_dws, strict=True), start=1):
             relu = tf.nn.relu(shift_dw(x))
             branches.append(k_dw(relu))
         if not branches:

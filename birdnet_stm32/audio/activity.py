@@ -57,7 +57,7 @@ def sort_by_s2n(samples: list[np.ndarray], threshold: float = 0.1) -> list[np.nd
     sorted_indices = np.argsort(s2n_values)[::-1]
     sorted_samples = [samples[i] for i in sorted_indices]
 
-    filtered = [s for s, v in zip(sorted_samples, s2n_values[sorted_indices]) if v >= threshold]
+    filtered = [s for s, v in zip(sorted_samples, s2n_values[sorted_indices], strict=False) if v >= threshold]
     if len(filtered) == 0:
         filtered = [sorted_samples[0]]
     return filtered
@@ -105,7 +105,7 @@ def sort_by_activity(samples: list[np.ndarray], threshold: float = 0.25) -> list
     activity = np.array([get_activity_ratio(s) for s in samples])
     sorted_idx = np.argsort(activity)[::-1]
     sorted_samples = [samples[i] for i in sorted_idx]
-    filtered = [s for s, a in zip(sorted_samples, activity[sorted_idx]) if a >= threshold]
+    filtered = [s for s, a in zip(sorted_samples, activity[sorted_idx], strict=False) if a >= threshold]
     if not filtered:
         filtered = [sorted_samples[0]]
     return filtered

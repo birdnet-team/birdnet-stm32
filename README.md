@@ -1,4 +1,4 @@
-# BirdNet-STM32
+# BirdNET-STM32
 
 <p align="center">
   <img src="birdnet-logo.png" alt="BirdNET Live" width="250"><br>

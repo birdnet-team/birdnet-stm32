@@ -53,7 +53,9 @@ def representative_data_gen(file_paths: list[str], cfg: dict, num_samples: int =
 
         if frontend in ("precomputed", "librosa"):
             specs = [
-                get_spectrogram_from_audio(ch, sample_rate=sr, n_fft=n_fft, mel_bins=num_mels, spec_width=spec_width, mag_scale=mag_scale)
+                get_spectrogram_from_audio(
+                    ch, sample_rate=sr, n_fft=n_fft, mel_bins=num_mels, spec_width=spec_width, mag_scale=mag_scale
+                )
                 for ch in audio_chunks
             ]
             pool = [s for s in specs if s is not None and np.size(s) > 0]

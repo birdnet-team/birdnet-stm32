@@ -83,10 +83,7 @@ def load_audio_file(
         y = y.mean(axis=1)  # mono float32
 
         # Resample if needed
-        if sr0 != sample_rate:
-            y = fast_resample(y, sr0, sample_rate)
-        else:
-            y = y.astype(np.float32, copy=False)
+        y = fast_resample(y, sr0, sample_rate) if sr0 != sample_rate else y.astype(np.float32, copy=False)
 
         chunk_size = int(sample_rate * chunk_duration)
         if chunk_size <= 0:

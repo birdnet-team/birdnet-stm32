@@ -22,9 +22,7 @@ def main():
     """Deploy a quantized model to the STM32N6570-DK board."""
     args = get_args()
 
-    cli_args = {
-        k: v for k, v in vars(args).items() if v and k != "config"
-    }
+    cli_args = {k: v for k, v in vars(args).items() if v and k != "config"}
 
     cfg = resolve_deploy_config(cli_args=cli_args, config_path=args.config)
     deploy_full(cfg)

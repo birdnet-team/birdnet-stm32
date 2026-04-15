@@ -21,7 +21,9 @@ np.random.seed(42)
 
 def get_args() -> argparse.Namespace:
     """Parse command-line arguments for conversion."""
-    parser = argparse.ArgumentParser(description="Convert Keras model to quantized TFLite (float32 I/O, INT8 internal).")
+    parser = argparse.ArgumentParser(
+        description="Convert Keras model to quantized TFLite (float32 I/O, INT8 internal)."
+    )
     parser.add_argument("--checkpoint_path", type=str, required=True, help="Path to trained .keras model")
     parser.add_argument("--model_config", type=str, default="", help="Path to model config JSON")
     parser.add_argument("--output_path", type=str, default="", help="Output .tflite path")
@@ -52,10 +54,14 @@ def main():
     # Build representative dataset generator
     if os.path.isdir(args.data_path_train):
         file_paths, _ = load_file_paths_from_directory(args.data_path_train)
-        rep_data_gen = lambda: representative_data_gen(file_paths, cfg, num_samples=args.num_samples)
-        rep_data_gen_val = lambda: representative_data_gen(file_paths, cfg, num_samples=args.validate_samples)
+
+        def rep_data_gen():
+            return representative_data_gen(file_paths, cfg, num_samples=args.num_samples)
+
+        def rep_data_gen_val():
+            return representative_data_gen(file_paths, cfg, num_samples=args.validate_samples)
     else:
-        print(f"No training data directory provided; generating random representative dataset.")
+        print("No training data directory provided; generating random representative dataset.")
 
         def rep_data_gen(num_samples=args.num_samples):
             sr = int(cfg["sample_rate"])
@@ -74,7 +80,8 @@ def main():
                 else:
                     yield [np.random.randn(1, T, 1).astype(np.float32)]
 
-        rep_data_gen_val = lambda: rep_data_gen(num_samples=args.validate_samples)
+        def rep_data_gen_val():
+            return rep_data_gen(num_samples=args.validate_samples)
 
     # Output path
     if not args.output_path:

@@ -5,7 +5,6 @@ and performing minority-class upsampling.
 """
 
 import os
-from typing import Optional
 
 import numpy as np
 import tensorflow as tf
@@ -49,8 +48,8 @@ def get_classes_with_most_samples(
 
 def load_file_paths_from_directory(
     directory: str,
-    classes: Optional[list[str]] = None,
-    max_samples: Optional[int] = None,
+    classes: list[str] | None = None,
+    max_samples: int | None = None,
     exts: tuple = SUPPORTED_AUDIO_EXTS,
 ) -> tuple[list[str], list[str]]:
     """Recursively gather audio files from a class-structured directory.

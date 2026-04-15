@@ -5,9 +5,6 @@ import json
 import math
 import os
 
-import numpy as np
-import tensorflow as tf
-
 from birdnet_stm32.data.dataset import SUPPORTED_AUDIO_EXTS, load_file_paths_from_directory
 from birdnet_stm32.evaluation.metrics import evaluate
 from birdnet_stm32.evaluation.reporting import print_ascii_histogram, print_ascii_pr_curve, save_predictions_csv
@@ -47,7 +44,9 @@ def main():
         raise ValueError("class_names missing in model config.")
 
     # Collect test files
-    files, _ = load_file_paths_from_directory(args.data_path_test, classes=classes, exts=SUPPORTED_AUDIO_EXTS, max_samples=args.max_files)
+    files, _ = load_file_paths_from_directory(
+        args.data_path_test, classes=classes, exts=SUPPORTED_AUDIO_EXTS, max_samples=args.max_files
+    )
     if not files:
         raise RuntimeError(f"No test audio found in {args.data_path_test}")
 

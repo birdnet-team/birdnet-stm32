@@ -56,9 +56,7 @@ def train_model(
         metrics=[tf.keras.metrics.AUC(curve="ROC", multi_label=True, name="roc_auc")],
     )
     callbacks = [
-        tf.keras.callbacks.EarlyStopping(
-            monitor="val_loss", patience=patience, restore_best_weights=True, mode="min"
-        ),
+        tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=patience, restore_best_weights=True, mode="min"),
         tf.keras.callbacks.ModelCheckpoint(
             checkpoint_path, monitor="val_loss", save_best_only=True, mode="min", save_weights_only=False
         ),
