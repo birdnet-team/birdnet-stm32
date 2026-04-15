@@ -15,6 +15,18 @@ config_n6l.json
 config.json
 test/
 dev/
+report/
+deploy.sh
+
+# Latex
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
 
 # VSCode
 .vscode
