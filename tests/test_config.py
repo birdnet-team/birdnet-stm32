@@ -1,9 +1,5 @@
 """Unit tests for deployment configuration resolution."""
 
-import os
-
-import pytest
-
 from birdnet_stm32.deploy.config import DeployConfig, resolve_deploy_config
 
 

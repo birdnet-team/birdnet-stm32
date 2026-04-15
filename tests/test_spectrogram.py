@@ -1,7 +1,6 @@
 """Unit tests for spectrogram computation."""
 
 import numpy as np
-import pytest
 
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio, normalize
 
@@ -18,9 +17,7 @@ class TestGetSpectrogram:
 
     def test_output_shape_linear(self, sine_wave, sample_rate, spec_width, fft_length):
         """Linear spectrogram (mel_bins=-1) should have fft_bins = n_fft//2+1."""
-        spec = get_spectrogram_from_audio(
-            sine_wave, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=spec_width
-        )
+        spec = get_spectrogram_from_audio(sine_wave, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=spec_width)
         expected_bins = fft_length // 2 + 1
         assert spec.shape[0] == expected_bins
         assert spec.shape[1] == spec_width

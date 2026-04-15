@@ -1,8 +1,5 @@
 """Unit tests for dataset loading utilities."""
 
-import os
-
-import numpy as np
 import pytest
 
 tf = pytest.importorskip("tensorflow", reason="TensorFlow required for dataset tests")

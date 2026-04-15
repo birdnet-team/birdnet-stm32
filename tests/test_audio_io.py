@@ -1,7 +1,6 @@
 """Unit tests for audio I/O utilities."""
 
 import numpy as np
-import pytest
 
 from birdnet_stm32.audio.io import fast_resample
 
