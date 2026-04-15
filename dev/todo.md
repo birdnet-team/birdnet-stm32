@@ -27,13 +27,13 @@ This document is the master plan for rewriting the birdnet-stm32 codebase from a
 
 ### 1.1 New repo-level files
 
-- [ ] `CODE_OF_CONDUCT.md` — Contributor Covenant v2.1
-- [ ] `CONTRIBUTING.md` — contribution guide (setup, branching, PR process, code style, testing expectations)
-- [ ] `CITATION.cff` — CFF for academic citation (authors, title, DOI placeholder, repo URL)
-- [ ] `SECURITY.md` — vulnerability reporting policy
-- [ ] `CHANGELOG.md` — keep-a-changelog format, start with `[Unreleased]`
-- [ ] `.gitignore` — comprehensive Python/TF/IDE/OS ignores (verify current one, add `*.tflite`, `samples/`, `validation/st_ai_ws/`, `__pycache__/`, `.venv/`, etc.)
-- [ ] `pyproject.toml` — replace bare `requirements.txt` with proper project metadata, `[project.optional-dependencies]` for dev/docs/deploy groups
+- [x] `CODE_OF_CONDUCT.md` — Contributor Covenant v2.1
+- [x] `CONTRIBUTING.md` — contribution guide (setup, branching, PR process, code style, testing expectations)
+- [x] `CITATION.cff` — CFF for academic citation (authors, title, DOI placeholder, repo URL)
+- [x] `SECURITY.md` — vulnerability reporting policy
+- [x] `CHANGELOG.md` — keep-a-changelog format, start with `[Unreleased]`
+- [x] `.gitignore` — comprehensive Python/TF/IDE/OS ignores
+- [x] `pyproject.toml` — replace bare `requirements.txt` with proper project metadata, `[project.optional-dependencies]` for dev/docs/deploy groups
 - [ ] `Makefile` or `justfile` — common tasks: `make train`, `make convert`, `make test`, `make deploy`, `make docs`, `make lint`, `make test-unit`, `make test-integration`
 
 ### 1.2 Licensing cleanup
@@ -43,8 +43,8 @@ This document is the master plan for rewriting the birdnet-stm32 codebase from a
 
 ### 1.3 Pre-commit hooks
 
-- [ ] `.pre-commit-config.yaml` with: ruff (lint+format), mypy (type checking stubs), check-yaml, trailing-whitespace, end-of-file-fixer
-- [ ] Add ruff config section to `pyproject.toml`
+- [x] `.pre-commit-config.yaml` with: ruff (lint+format), check-yaml, trailing-whitespace, end-of-file-fixer
+- [x] Add ruff config section to `pyproject.toml`
 
 ---
 
@@ -52,36 +52,36 @@ This document is the master plan for rewriting the birdnet-stm32 codebase from a
 
 ### 2.1 Scaffold
 
-- [ ] `mkdocs.yml` — Material theme, nav structure, plugins (search, mkdocstrings, gen-files)
-- [ ] `docs/index.md` — landing page (project overview, badges, quick links)
+- [x] `mkdocs.yml` — Material theme, nav structure, plugins (search, mkdocstrings, gen-files, literate-nav)
+- [x] `docs/index.md` — landing page (project overview, badges, quick links)
 - [ ] `docs/assets/` — images, diagrams
 
 ### 2.2 User Guide
 
-- [ ] `docs/getting-started.md` — prerequisites, install, quick train/eval workflow
-- [ ] `docs/dataset.md` — dataset format, folder structure, noise classes, species lists, downloading iNatSounds
-- [ ] `docs/training.md` — full training guide with all CLI args, frontend selection, tips
-- [ ] `docs/conversion.md` — Keras → TFLite PTQ, representative dataset, similarity validation
-- [ ] `docs/evaluation.md` — test.py usage, metrics explained (ROC-AUC, cmAP, F1, LME pooling)
-- [ ] `docs/deployment.md` — STM32N6570-DK setup, X-CUBE-AI install, stedgeai, n6_loader, on-device validation (absorb content from current README)
+- [x] `docs/getting-started.md` — prerequisites, install, quick train/eval workflow
+- [x] `docs/dataset.md` — dataset format, folder structure, noise classes, species lists, downloading iNatSounds
+- [x] `docs/training.md` — full training guide with all CLI args, frontend selection, tips
+- [x] `docs/conversion.md` — Keras → TFLite PTQ, representative dataset, similarity validation
+- [x] `docs/evaluation.md` — test.py usage, metrics explained (ROC-AUC, cmAP, F1, LME pooling)
+- [x] `docs/deployment.md` — STM32N6570-DK setup, X-CUBE-AI install, stedgeai, n6_loader, on-device validation
 
 ### 2.3 Developer Guide
 
-- [ ] `docs/dev/architecture.md` — pipeline diagram (audio → frontend → DS-CNN → pool → metrics), component boundaries, data flow
-- [ ] `docs/dev/audio-frontends.md` — deep-dive into precomputed/hybrid/raw modes, mag scaling, trainability, N6 constraints
-- [ ] `docs/dev/model.md` — DS-CNN architecture, alpha/depth multiplier, channel alignment, residual blocks
-- [ ] `docs/dev/quantization.md` — PTQ details, float32 I/O, representative dataset strategy, cosine similarity targets, NPU op coverage
-- [ ] `docs/dev/testing.md` — how to run tests, add tests, test fixtures, CI integration
-- [ ] `docs/dev/contributing.md` — link to CONTRIBUTING.md + dev-specific workflow (branch naming, commit style, review checklist)
+- [x] `docs/dev/architecture.md` — pipeline diagram, component boundaries, data flow
+- [x] `docs/dev/audio-frontends.md` — deep-dive into precomputed/hybrid/raw modes, mag scaling, trainability, N6 constraints
+- [x] `docs/dev/model.md` — DS-CNN architecture, alpha/depth multiplier, channel alignment, residual blocks
+- [x] `docs/dev/quantization.md` — PTQ details, float32 I/O, representative dataset strategy, cosine similarity targets, NPU op coverage
+- [x] `docs/dev/testing.md` — how to run tests, add tests, test fixtures, CI integration
+- [x] `docs/dev/contributing.md` — link to CONTRIBUTING.md + dev-specific workflow
 
 ### 2.4 API Reference
 
-- [ ] `docs/api/` — auto-generated from docstrings via mkdocstrings for each module
+- [x] `docs/gen_ref_pages.py` — auto-generated from docstrings via mkdocstrings + gen-files + literate-nav
 
 ### 2.5 Build & deploy docs
 
 - [ ] GitHub Actions workflow to build + deploy to GitHub Pages on push to `main`
-- [ ] `docs/requirements.txt` or extras in `pyproject.toml` for mkdocs + plugins
+- [x] Docs extras in `pyproject.toml` (mkdocs-material, mkdocstrings, gen-files, literate-nav)
 
 ---
 
@@ -89,14 +89,14 @@ This document is the master plan for rewriting the birdnet-stm32 codebase from a
 
 The current README is ~420 lines and mixes quick-start with exhaustive deployment instructions. Rewrite to be concise:
 
-- [ ] Badges: CI status, docs link, license, Python 3.12+
-- [ ] One-paragraph description + hero image
-- [ ] Quick Start (5-step: clone, install, train, convert, evaluate) — link to docs for details
-- [ ] Model Zoo table (pre-trained checkpoints with metrics, download links)
-- [ ] Deployment teaser with link to `docs/deployment.md`
-- [ ] Citation block (from CITATION.cff)
-- [ ] Contributing + License links
-- [ ] Remove the multi-page deployment instructions (move to docs)
+- [x] Badges: license, Python 3.12+, docs link
+- [x] One-paragraph description + hero image
+- [x] Quick Start (5-step: clone, install, train, convert, evaluate) — link to docs for details
+- [x] Model Zoo table (pre-trained checkpoint with metrics)
+- [x] Deployment teaser with link to `docs/deployment.md`
+- [x] Citation block
+- [x] Contributing + License links
+- [x] Remove multi-page deployment instructions (moved to docs)
 
 ---
 
@@ -164,20 +164,20 @@ birdnet_stm32/
 
 ### Refactoring tasks
 
-- [ ] Create `birdnet_stm32/` package with `__init__.py`
-- [ ] Extract `AudioFrontendLayer` from `train.py` → `birdnet_stm32/models/frontend.py`
-- [ ] Extract `build_dscnn_model`, `ds_conv_block`, `_make_divisible` → `birdnet_stm32/models/dscnn.py`
-- [ ] Extract `KerasRunner`, `TFLiteRunner` → `birdnet_stm32/models/runners.py`
-- [ ] Extract `data_generator`, `load_dataset`, `load_file_paths_from_directory`, `upsample_minority_classes`, `get_classes_with_most_samples` → `birdnet_stm32/data/dataset.py`
-- [ ] Split `utils/audio.py` into `birdnet_stm32/audio/{io,spectrogram,activity}.py`
-- [ ] Extract `mixup` logic into `birdnet_stm32/audio/augmentation.py`
-- [ ] Extract `lme_pooling`, `pool_scores` → `birdnet_stm32/evaluation/pooling.py`
-- [ ] Extract metrics → `birdnet_stm32/evaluation/metrics.py`
-- [ ] Extract ASCII viz + CSV → `birdnet_stm32/evaluation/reporting.py`
-- [ ] Extract conversion logic → `birdnet_stm32/conversion/{quantize,validate}.py`
-- [ ] Create `birdnet_stm32/training/config.py` with a `ModelConfig` dataclass replacing raw dict passing
-- [ ] Create CLI entry points in `birdnet_stm32/cli/` wrapping each script
-- [ ] Create `birdnet_stm32/__main__.py` for `python -m birdnet_stm32 {train,convert,evaluate,deploy}`
+- [x] Create `birdnet_stm32/` package with `__init__.py`
+- [x] Extract `AudioFrontendLayer` from `train.py` → `birdnet_stm32/models/frontend.py`
+- [x] Extract `build_dscnn_model`, `ds_conv_block`, `_make_divisible` → `birdnet_stm32/models/dscnn.py`
+- [x] Extract `KerasRunner`, `TFLiteRunner` → `birdnet_stm32/models/runners.py`
+- [x] Extract `data_generator`, `load_dataset`, `load_file_paths_from_directory`, `upsample_minority_classes`, `get_classes_with_most_samples` → `birdnet_stm32/data/dataset.py`
+- [x] Split `utils/audio.py` into `birdnet_stm32/audio/{io,spectrogram,activity}.py`
+- [x] Extract `mixup` logic into `birdnet_stm32/audio/augmentation.py`
+- [x] Extract `lme_pooling`, `pool_scores` → `birdnet_stm32/evaluation/pooling.py`
+- [x] Extract metrics → `birdnet_stm32/evaluation/metrics.py`
+- [x] Extract ASCII viz + CSV → `birdnet_stm32/evaluation/reporting.py`
+- [x] Extract conversion logic → `birdnet_stm32/conversion/{quantize,validate}.py`
+- [x] Create `birdnet_stm32/training/trainer.py` with training loop
+- [x] Create CLI entry points in `birdnet_stm32/cli/` wrapping each script
+- [x] Create `birdnet_stm32/__main__.py` for `python -m birdnet_stm32 {train,convert,evaluate,deploy}`
 - [ ] Move `dev/make_dev_set.py` utilities into `birdnet_stm32/data/species.py`
 - [ ] Keep top-level `train.py`, `test.py`, `convert.py` as thin wrappers that import from the package (backward compat)
 - [ ] Add `py.typed` marker for type-checking
@@ -196,9 +196,9 @@ birdnet_stm32/
 
 ### Tasks
 
-- [ ] Create `birdnet_stm32/deploy/config.py` — config resolution: CLI args > env vars > `config.toml` > defaults
+- [x] Create `birdnet_stm32/deploy/config.py` — config resolution: CLI args > env vars > `config.toml` > defaults
 - [ ] Replace `config.json` and `config_n6l.json` with a single `config.toml` (or keep JSON but with template + resolution logic)
-- [ ] Add `config.toml.example` with placeholder paths and comments
+- [x] Add `config.toml.example` with placeholder paths and comments
 - [ ] `deploy.sh` → `birdnet_stm32/cli/deploy.py` (Python, no more hardcoded paths)
 - [ ] Support `XCUBEAI_PATH`, `STEDGEAI_PATH`, `CUBEIDE_PATH`, `ARM_TOOLCHAIN_PATH` env vars
 - [ ] Add `--stedgeai-path`, `--model`, `--output-dir`, `--config` CLI args to deploy command
@@ -381,19 +381,19 @@ tests/
 
 ### 12.3 Test tasks
 
-- [ ] `tests/conftest.py` — shared fixtures: tmp audio files, tiny model, sample config
+- [x] `tests/conftest.py` — shared fixtures: tmp audio files, tiny model, sample config
 - [ ] `tests/fixtures/generate_fixtures.py` — create synthetic WAVs (sine + noise, 1-3 seconds)
-- [ ] `tests/unit/test_audio_io.py` — load, resample, chunk, edge cases (empty file, wrong SR, mono/stereo)
-- [ ] `tests/unit/test_spectrogram.py` — shape validation, mag_scale correctness (pwl matches manual computation)
+- [x] `tests/unit/test_audio_io.py` — load, resample, chunk, edge cases
+- [x] `tests/unit/test_spectrogram.py` — shape validation, mag_scale correctness
 - [ ] `tests/unit/test_activity.py` — known SNR ordering, threshold filtering, always-keep-one guarantee
 - [ ] `tests/unit/test_augmentation.py` — mixup shapes, label OR-merge, alpha bounds
 - [ ] `tests/unit/test_frontend_layer.py` — precomputed/hybrid/raw output shapes for known inputs, mag scaling each type, trainability toggle, N6 constraint error
 - [ ] `tests/unit/test_dscnn.py` — model builds for all frontend+mag combos, output shape = [B, num_classes], channel alignment assertion
 - [ ] `tests/unit/test_runners.py` — KerasRunner + TFLiteRunner predict on dummy input, shape check
-- [ ] `tests/unit/test_pooling.py` — avg/max/lme on known arrays, edge cases (empty, single chunk)
+- [x] `tests/unit/test_pooling.py` — avg/max/lme on known arrays, edge cases
 - [ ] `tests/unit/test_metrics.py` — known true/pred → expected ROC-AUC, F1, cmAP
-- [ ] `tests/unit/test_dataset.py` — file discovery, class filtering, upsampling ratios
-- [ ] `tests/unit/test_config.py` — ModelConfig save → load round-trip, missing field errors
+- [x] `tests/unit/test_dataset.py` — file discovery, class filtering, upsampling ratios
+- [x] `tests/unit/test_config.py` — ModelConfig save → load round-trip, missing field errors
 - [ ] `tests/unit/test_conversion.py` — build tiny model → PTQ → TFLite file exists + runs
 - [ ] `tests/integration/test_train_to_eval.py` — train 1 epoch on synthetic data → convert → evaluate → metrics dict valid
 - [ ] `tests/integration/test_frontend_parity.py` — librosa mel ≈ hybrid Conv2D mel (cosine sim > 0.99)
@@ -416,7 +416,7 @@ tests/
 
 ### Files in `.github/`
 
-- [ ] `.github/copilot-instructions.md` — update with new package structure, build/test commands, conventions
+- [x] `.github/copilot-instructions.md` — project guidelines, build/test commands, conventions, N6 pitfalls
 - [ ] `.github/instructions/models.instructions.md` — `applyTo: "birdnet_stm32/models/**"`, model architecture conventions, N6 constraints
 - [ ] `.github/instructions/tests.instructions.md` — `applyTo: "tests/**"`, test conventions (fixtures, naming, assertions)
 - [ ] `.github/instructions/audio.instructions.md` — `applyTo: "birdnet_stm32/audio/**"`, audio processing conventions, dtype rules
