@@ -14,6 +14,8 @@ Bird sound classification for edge deployment on the [STM32N6570-DK](https://www
 
 A compact DS-CNN trained on mel spectrograms, quantized to INT8 via post-training quantization, and deployed using ST's X-CUBE-AI toolchain. Inference on a 3-second audio chunk takes ~3.3 ms on the NPU (~900× real-time).
 
+**NOTE: We are currently refining the project scope and roadmap. The current codebase is a work in progress and may not be fully functional. Please check back soon for updates!**
+
 ## Quick start
 
 ```bash
