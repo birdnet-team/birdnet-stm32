@@ -3,6 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE.md)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![Docs](https://img.shields.io/badge/docs-mkdocs-blue.svg)](https://birdnet-team.github.io/birdnet-stm32)
+[![Version](https://img.shields.io/badge/version-0.2.0-orange.svg)](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v0.2.0)
 
 Bird sound classification for edge deployment on the [STM32N6570-DK](https://www.st.com/en/evaluation-tools/stm32n6570-dk.html) development board with neural processing unit (NPU).
 
