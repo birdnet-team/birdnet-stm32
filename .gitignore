@@ -1,22 +1,27 @@
 # Custom
 *.png
 *.wav
-best_model.keras
-best_model_labels.txt
-best_model_model_config.json
-best_model.keras
-best_model_quantized.tflite
+samples/
+checkpoints/*.keras
 checkpoints/*.csv
-*.npz
-test/
-validation/
+checkpoints/*.npz
+checkpoints/*.tflite
+checkpoints/*_labels.txt
+checkpoints/*_model_config.json
 notes.txt
+
+# Machine-local config (ship .example files instead)
 config_n6l.json
 config.json
-test/
-dev/
-report/
-deploy.sh
+config.toml
+
+# STM32 build artifacts
+validation/
+test/st_ai_output/
+test/st_ai_ws/
+
+# MkDocs
+/site
 
 # Latex
 *.aux
@@ -136,9 +141,3 @@ venv.bak/
 
 # mypy
 .mypy_cache/
-deploy-PyPI.sh
-src/birdnet_v2/model_loader.py
-src/birdnet_v2_debug/10min.wav
-src/birdnet_v2_debug/60min.wav
-install.md
-src/birdnet_v2/eagle.txt
