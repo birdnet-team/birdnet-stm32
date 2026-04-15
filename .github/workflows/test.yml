@@ -1,0 +1,41 @@
+name: Tests
+
+on:
+  push:
+    branches: [master, dev]
+    paths:
+      - "birdnet_stm32/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/test.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "birdnet_stm32/**"
+      - "tests/**"
+      - "pyproject.toml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run unit tests
+        run: python -m pytest tests/ -v -m "not integration" --tb=short
+
+      - name: Run integration tests
+        run: python -m pytest tests/ -v -m "integration" --tb=short

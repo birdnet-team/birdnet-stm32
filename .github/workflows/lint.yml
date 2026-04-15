@@ -1,0 +1,36 @@
+name: Lint
+
+on:
+  push:
+    branches: [master, dev]
+    paths:
+      - "birdnet_stm32/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/lint.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "birdnet_stm32/**"
+      - "tests/**"
+      - "pyproject.toml"
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Check linting
+        run: ruff check birdnet_stm32/ tests/
+
+      - name: Check formatting
+        run: ruff format --check birdnet_stm32/ tests/
