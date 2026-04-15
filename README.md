@@ -1,436 +1,53 @@
-# birdnet-stm32
+# BirdNet-STM32
 
-This repository contains code and resources for training a tiny audio classification model for bioacoustics. The model is designed to run on the [STM32N6570-DK development board](https://www.st.com/en/evaluation-tools/stm32n6570-dk.html#overview).
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE.md)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+[![Docs](https://img.shields.io/badge/docs-mkdocs-blue.svg)](https://birdnet-team.github.io/birdnet-stm32)
+
+Bird sound classification for edge deployment on the [STM32N6570-DK](https://www.st.com/en/evaluation-tools/stm32n6570-dk.html) development board with neural processing unit (NPU).
 
 <img src="https://my.avnet.com/wcm/connect/c651fc2f-a5b2-489c-9d63-d3f064753690/STMicroelectronics+STM32N6570-DK.jpg?MOD=AJPERES&CACHEID=ROOTWORKSPACE-c651fc2f-a5b2-489c-9d63-d3f064753690-phBdXih" alt="STM32N6570-DK board" style="width: 100%;" />
 
-(Image source: [EBV Electronik](https://my.avnet.com/ebv/products/new-products/npi/2024/stmicroelectronics-stm32n6570-dk))
+A compact DS-CNN trained on mel spectrograms, quantized to INT8 via post-training quantization, and deployed using ST's X-CUBE-AI toolchain. Inference on a 3-second audio chunk takes ~3.3 ms on the NPU (~900× real-time).
 
-STM32N6570-DK user manual: [DM00570145](https://www.st.com/resource/en/user_manual/dm00570145.pdf)
-
-## Setup (Ubuntu)
-
-Clone this repository and navigate to the project directory:
+## Quick start
 
 ```bash
+# Install
 git clone https://github.com/birdnet-team/birdnet-stm32.git
 cd birdnet-stm32
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Train
+python train.py --data_path_train data/train --audio_frontend hybrid --mag_scale pwl
+
+# Convert to quantized TFLite
+python convert.py --checkpoint_path checkpoints/best_model.keras \
+  --model_config checkpoints/best_model_model_config.json --data_path_train data/train
+
+# Evaluate
+python test.py --model_path checkpoints/best_model_quantized.tflite \
+  --model_config checkpoints/best_model_model_config.json --data_path_test data/test
+
+# Deploy to STM32N6570-DK (see docs for full setup)
+bash deploy.sh
 ```
 
-We assume you have Python 3.12 installed. If not, you can install it using:
+See the [full documentation](https://birdnet-team.github.io/birdnet-stm32) for detailed guides on [dataset preparation](https://birdnet-team.github.io/birdnet-stm32/dataset/), [training](https://birdnet-team.github.io/birdnet-stm32/training/), [conversion](https://birdnet-team.github.io/birdnet-stm32/conversion/), [evaluation](https://birdnet-team.github.io/birdnet-stm32/evaluation/), and [deployment](https://birdnet-team.github.io/birdnet-stm32/deployment/).
 
-```bash
-sudo apt install python3.12 python3.12-venv python3.12-dev
-``` 
-Then, create a virtual environment and activate it:
+## Pre-trained model
 
-```bash
-python3.12 -m venv venv
-source venv/bin/activate
-```
-
-Install the required packages:
-
-```bash
-pip install -r requirements.txt
-```
-
-## Training
-
-Deploying a model to the STM32N6570-DK is quite involved and requires us to:
-
-- download and prepare the dataset
-- train a model
-- convert the model
-- deploy the model to the STM32N6570-DK
-
-### Download and Prepare the Dataset
-
-We'll use a subset of the iNatSounds dataset, which is available here: [iNatSounds on GitHub](https://github.com/visipedia/inat_sounds/tree/main/2024)
-
-After downloading, sort files into folders with folder names as labels (i.e., species names) based on the train and test annotations. Therefore, this repo assumes that your data is structured as follows:
-
-```
-data/
-├── train/
-│   ├── species1/
-|   |  ├── file1.wav
-│   |  ├── file2.wav
-│   |  └── ...
-│   ├── species2/
-│   └── ...
-└── test/
-    ├── species1/
-    ├── species2/
-    └── ... 
-```
-
-Each folder contains `.wav` files of the respective species. Since we're training a tiny model, we won't be able to fit all iNatSounds classes into our model. Thus, we will use a subset of species. However, it's your decision which species to use.
-
-### Train the Model
-
-This repo comes with a pre-trained and already quantized checkpoint (`checkpoints/birdnet_stm32n6_100.tflite`) that you can use to test the model conversion and deployment process. To train a custom model, run `train.py` with the desired arguments. 
-
-The script will:
-- Split your training data into train and validation sets (--val_split).
-- Split audio files into fixed-length chunks (--chunk_duration) up to a max duration (--max_duration).
-- Generate spectrograms using a selectable frontend:
-  - precomputed/librosa: mel spectrograms (magnitude, power=1.0) computed in utils/audio.py (mag_scale applied there).
-  - hybrid: linear magnitude spectrogram (|STFT|) provided to the model; model applies fixed mel and optional magnitude scaling.
-  - raw/tf: raw audio provided to the model; a TF frontend inside the model produces mel features and optional magnitude scaling.
-- Build a compact DS-CNN model with width scaling (--alpha) and depth multiplier (--depth_multiplier).
-- Optionally apply mixup augmentation (--mixup_alpha, --mixup_probability).
-- Train with cosine LR and early stopping; save the best model to .keras (--checkpoint_path).
-- Save a companion <checkpoint>_model_config.json and <checkpoint>_labels.txt.
-
-Example:
-```bash
-python train.py \
-  --data_path_train data/train \
-  --val_split 0.2 \
-  --audio_frontend hybrid \
-  --mag_scale pcen \
-  --checkpoint_path checkpoints/my_stm32_model.keras
-```
-
-Arguments:
-- --data_path_train: Path to your training dataset (required)
-- --max_samples: Max files per class for training (default: None = all)
-- --upsample_ratio: Upsample ratio for minority classes (default: 0.5)
-- --sample_rate: Audio sample rate (default: 22050)
-- --num_mels: Number of mel bins (default: 64)
-- --spec_width: Spectrogram width (frames) (default: 256)
-- --fft_length: FFT length for STFT/linear spec (default: 512)
-- --chunk_duration: Chunk duration in seconds (default: 3)
-- --max_duration: Max seconds to load per file (default: 30)
-- --audio_frontend: precomputed, hybrid, raw, librosa, or tf (default: hybrid)
-- --mag_scale: Magnitude compression: pcen | pwl | db | none (default: pwl)
-- --embeddings_size: Embedding channels before head (default: 256)
-- --alpha: Model width scaling (default: 1.0)
-- --depth_multiplier: Repeats per stage (default: 1)
-- --frontend_trainable: If set, make audio frontend trainable (mel mixer/PCEN/PWL) (default: False)
-- --mixup_alpha: Mixup alpha (0 disables, default: 0.2)
-- --mixup_probability: Fraction of batch to mix (default: 0.25)
-- --batch_size: Batch size (default: 32)
-- --epochs: Number of epochs (default: 50)
-- --learning_rate: Initial LR (default: 0.001)
-- --val_split: Validation split (default: 0.2)
-- --checkpoint_path: Path to save best model (.keras)
-
-Notes:
-- The model saves:
-  - checkpoints/my_stm32_model.keras
-  - checkpoints/my_stm32_model_model_config.json (conversion metadata)
-  - checkpoints/my_stm32_model_labels.txt (class names)
-- Noise classes can be added by placing files under folders named 'noise', 'silence', 'background', or 'other'; these are treated as negatives.
-
-## Model conversion & validation
-
-Run convert.py to convert the trained .keras model to a quantized TFLite model (float32 IO).
-
-The script will:
-- Load the trained .keras model (with AudioFrontendLayer).
-- Read <checkpoint>_model_config.json to reconstruct shapes/modes.
-- Build a representative dataset from training data.
-- Convert to TFLite with PTQ and save <checkpoint>_quantized.tflite.
-- Validate TFLite vs. Keras outputs on representative samples and save a small .npz for on-device validation.
-
-Example:
-```bash
-python convert.py \
-  --checkpoint_path checkpoints/my_stm32_model.keras \
-  --model_config  checkpoints/my_stm32_model_model_config.json \
-  --data_path_train data/train \
-  --validate_samples 50
-```
-
-Arguments:
-- --checkpoint_path: Path to the trained Keras model (.keras, required)
-- --model_config: Path to <checkpoint>_model_config.json (optional; inferred if omitted)
-- --output_path: Path to save the .tflite (optional; inferred as <checkpoint>_quantized.tflite)
-- --data_path_train: Path to training data for representative dataset (optional; random data used if omitted)
-- --num_samples: Number of representative samples (default: 1024)
-- --validate_samples: Max samples to use for validation (default: 256)
-
-Notes:
-- Validation compares float32 Keras outputs to float32 TFLite outputs on the same inputs using cosine similarity, MSE, MAE, and Pearson r.
-- Validation samples are saved as `.npz` and can be used to validate the model on the STM32N6570-DK later with `stedgeai validate --valinput <file>.npz`.
-
-## Model testing
-
-Use test.py to evaluate a trained model on a folder of test audio files. It loads a Keras (.keras) or quantized TFLite (.tflite) model, prepares chunks per file using the saved model_config, runs batched inference, pools chunk scores to file-level, and reports metrics.
-
-Example (TFLite):
-```bash
-python test.py \
-  --model_path checkpoints/my_stm32_model_quantized.tflite \
-  --data_path_test data/test \
-  --pooling avg \
-  --batch_size 16
-```
-
-The script reads <checkpoint>_model_config.json to reconstruct the audio frontend and chunking parameters, runs inference on non-overlapping chunks up to a max duration (default: 60s) per file and predicts score on file-level.
-
-Pooling methods (per-file)
-- avg: arithmetic mean over chunk scores.
-- max: maximum over chunk scores.
-- lme: log-mean-exponential pooling, log(mean(exp(beta*s))) / beta with beta=10 (fixed).
-
-Metrics
-- roc-auc: micro ROC-AUC over all classes.
-- cmAP: class-macro Average Precision (mean AP over classes with positives).
-- mAP: micro Average Precision (AP over all decisions).
-- precision, recall, f1: computed at a 0.5 threshold on file-level scores.
-- The script also prints top-10 and bottom-10 classes by AP and can save per-file predictions to CSV.
-
-Arguments:
-- --model_path: Path to .keras or .tflite (required).
-- --model_config: Path to <checkpoint>_model_config.json (optional; inferred from --model_path).
-- --data_path_test: Test data root with class subfolders (required).
-- --max_files: Optional cap on files per class (default: -1 = all).
-- --batch_size: Chunk inference batch size (default: 16).
-- --pooling: avg | max | lme (default: avg).
-- --overlap: Chunk overlap in seconds (max. chunk_duration - 0.1)
-- --save_csv: Optional CSV path for per-file predictions.
-
-### The STM deployment process
-
-In order to deploy the model to the STM32N6570-DK, we will use STM's X-CUBE-AI framework, which provides tools for converting and deploying machine learning models on STM32 microcontrollers. The workflow involves several steps:
-
-1. **Generate the model files** using the STM32Cube.AI CLI tool.
-2. **Load the model onto the board** using the N6 loader script.
-3. **Validate the model** on the STM32N6570-DK to ensure it works as expected.
- 
-<img width="100%" alt="stm32_model_validation" src="https://github.com/user-attachments/assets/3dddfbd5-4c87-4e3c-ac59-6291545188af" />
-
-(Image source: [STM32ai](https://stm32ai-cs.st.com/assets/embedded-docs/stneuralart_getting_started.html))
-
-### Generate the Model Files
-
-First, we'll use the STM32Cube.AI CLI to convert the trained model to a format suitable for deployment on the STM32N6570-DK. You can download the STM32Cube.AI CLI from the [STMicroelectronics website](https://www.st.com/en/embedded-software/x-cube-ai.html#get-software).
-
-After downloading, you should have `x-cube-ai-linux-v10.2.0.zip`, unzip and locate the CLI tool which is typically found in the `Utilities/linux` directory.
-
-```bash
-unzip x-cube-ai-linux-v10.2.0.zip X-CUBE-AI.10.2.0
-cd X-CUBE-AI.10.2.0
-unzip stedgeai-linux-10.2.0.zip
-```
-
-This should be your directory structure after unzipping both zips:
-
-```
-X-CUBE-AI.10.2.0/
-├── STMicroelectronics.X-CUBE-AI.10.2.0.pack
-├── Utilities/
-│   ├── linux/
-│   │   └── stedgeai  <-- CLI tool
-│   |   └── ...
-│   ├── windows/
-│   └── ...
-└── Middlewares/
-└── ...
-```
-
-Now, we need to run model conversion using the CLI tool. Make sure you have your trained and converted model saved as a `.tflite` file.
-
-Navigate to `/path/to/X-CUBE-AI.10.2.0/Utilities/linux` and run the `stedgeai` command to generate the model files for STM32N6570-DK:
-
-```bash
-cd Utilities/linux
-./stedgeai generate \
-  --model  /path/to/birdnet-stm32/checkpoints/my_stm32_model_quantized.tflite \
-  --target stm32n6 \ 
-  --st-neural-art \
-  --output /path/to/birdnet-stm32/validation/st_ai_output \
-  --workspace /path/to/birdnet-stm32/validation/st_ai_ws \
-  --verbose
-```
-
-If you encounter the error `arm-none-eabi-gcc: error: unrecognized -mcpu target: cortex-m55`, it means you need to install the most recent ARM toolchain. You can do this by downloading the ARM toolchain from [ARM Developer](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads) or using a package manager:
-
-```bash
-wget https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz
-tar xf arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz
-export PATH=$PWD/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi/bin:$PATH
-```
-
-Make sure you have the correct `arm-none-eabi-gcc` compiler installed and available in your PATH. You can check this by running:
-
-```bash
-arm-none-eabi-gcc --version
-```
-
-Note: After conversion, the tool will generate a `network_generate_report.txt` in the output folder which you can consult to get some basic metrics on model computer requirements. If you run the command above with `analyze` instead of `generate`, it will analyze the model and provide more detailed information about its size, memory usage, and performance.
-
-### Load the Model onto the STM32N6570-DK
-
-Connect your STM32N6570-DK board to your computer and ensure it is recognized by running:
-
-```bash
-ls /dev/ttyACM*
-```
-
-If you see a device like `/dev/ttyACM0`, you can proceed with the validation.
-
-**Install STM32CubeProgrammer**
-
-Next, install STM32CubeProgrammer on your computer. You can download it from the [STMicroelectronics website](https://www.st.com/en/development-tools/stm32cubeprog.html). Unzip and run `./SetupSTM32CubeProgrammer-2.20.0.linux` to install it. This will launch a GUI installer. Follow the instructions to complete the installation.
-
-Verify the installation by navigating to the installation directory and running the command:
-
-```bash
-<path-to-install-dir>/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI --version
-```
-
-Now, add the STM32CubeProgrammer CLI to your PATH:
-
-```bash
-export PATH=$PATH:/<path-to-install-dir>/STM32Cube/STM32CubeProgrammer/bin
-```
-
-Add your user to the plugdev and dialout groups:
-
-```bash
-sudo usermod -aG plugdev $USER
-sudo usermod -aG dialout $USER
-```
-
-Install STMicroelectronics udev rules: If you haven't already, copy the rules file:
-
-```bash
-sudo cd <path-to-install-dir>/STM32Cube/STM32CubeProgrammer/Drivers/rules/
-sudo cp *.* /etc/udev/rules.d
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-```
-
-Unplug and replug your STM32N6570-DK board to apply the new rules, reboot your computer, or log out and log back in.
-
-Check if the board is connected and recognized by the STM32CubeProgrammer CLI:
-
-```bash
-STM32_Programmer_CLI --list
-```
-
-If everything is set up correctly, you should see your STM32N6570-DK board listed.
-
-**Install STM32CubeIDE**
-
-If you haven't installed STM32CubeIDE yet, you can download it from the [STMicroelectronics website](https://www.st.com/en/development-tools/stm32cubeide.html). Unzip and run the installer with `./st-stm32cubeide_1.19.0_25607_20250703_0907_amd64.sh`. Follow the installation instructions for your platform.
-
-**Setting paths for N6 loader script**
-
-Create a `config_n6l.json` file and copy the lines below; change the paths to point to your generated `network.c`and the `NPU_Validation` project in the `X-CUBE-AI.10.2.0/Projects/STM32N6570-DK/Applications` directory.
-
-```json
-{	
-  "network.c": "/path/to/birdnet-stm32/validation/st_ai_output/network.c",
-  "project_path": "/path/to/Code/X-CUBE-AI.10.2.0/Projects/STM32N6570-DK/Applications/NPU_Validation",
-  "project_build_conf": "N6-DK",
-  "skip_external_flash_programming": false,
-  "skip_ram_data_programming": false,
-  "objcopy_binary_path": "/usr/bin/arm-none-eabi-objcopy"
-}
-```
-
-Update the `config.json` in the `X-CUBE-AI.10.2.0/scripts/N6_scripts` directory to point to your STM32CubeIDE installation path:
-
-```json
-{
-  "compiler_type": "gcc",
-  "cubeide_path":"/path/to/stm32cubeide"
-}
-```
-
-**Set board to DEV mode**
-
- - disconnect the board from USB
- - set BOOT0 to right
- - set BOOT1 to left
- - set JP2 to position 1-2
- - reconnect the board to USB
-
-See the image below for reference:
-
-![Set STM32N6570-DK to dev mode](https://community.st.com/t5/image/serverpage/image-id/108308iD2AD18EF06920D91/image-size/large/is-moderation-mode/true?v=v2&px=999)
-
-(Image source: [ST Community](https://community.st.com/t5/stm32-mcus/how-to-debug-stm32n6-using-stm32cubeide/ta-p/800547))
-
-**Running n6_loader.py**
-
-Navigate to the `validation` directory in this repo and run the `n6_loader.py` script from the X-CUBE-AI *scipt* directory and pass the `config_n6l.json` file as an argument:
-
-```bash
-python <path-to-install-dir>/X-CUBE-AI.10.2.0/scripts/N6_scripts/n6_loader.py --n6-loader-config /path/to/birdnet-stm32/config_n6l.json
-```
-
-If the build fails, check the `n6_loader.log` and `compile.log` files in the `validation` directory for errors. If you encounter issues, ensure that the paths in `config.json` and `config_n6l.json` are correct and that the necessary tools are installed.
-
-If successful, ouputs should look like this:
-
-```
-XXX  __main__ -- Preparing compiler GCC
-XXX  __main__ -- Setting a breakpoint in main.c at line 137 (before the infinite loop)
-XXX  __main__ -- Copying network.c to project: -> /path/to/X-CUBE-AI.10.2.0/Projects/STM32N6570-DK/Applications/NPU_Validation/X-CUBE-AI/App/network.c
-XXX  __main__ -- Extracting information from the c-file
-XXX  __main__ -- Converting memory files in results/<model>/generation/ to Intel-hex with proper offsets
-XXX  __main__ -- arm-none-eabi-objcopy --change-addresses 0x71000000 -Ibinary -Oihex network_atonbuf.xSPI2.raw network_atonbuf.xSPI2.hex
-XXX  __main__ -- Resetting the board...
-XXX  __main__ -- Flashing memory xSPI2 -- 1 659.665 kB
-XXX  __main__ -- Building project (conf= N6-DK)
-XXX  __main__ -- Loading internal memories & Running the program
-XXX  __main__ -- Start operation achieved successfully
-```
-
-### Validate the Model on STM32N6570-DK
-
-Now, we can finally validate the model on the STM32N6570-DK, you can use the `validate` command after navigating to the `X-CUBE-AI.10.2.0/Utilities/linux` directory:
-
-```bash
-./stedgeai validate \
-  --model  /path/to/birdnet-stm32/checkpoints/my_stm32_model_quantized.tflite \
-  --target stm32n6 \ 
-  --mode target \
-  --desc serial:921600 \
-  --output /path/to/birdnet-stm32/validation/st_ai_output \
-  --workspace /path/to/birdnet-stm32/validation/st_ai_ws \
-  --valinput /path/to/birdnet-stm32/checkpoints/my_stm32_model_quantized_validation_data.npz \
-  --classifier \
-  --verbose
-```
-
-Make sure to pass the quantized tflite file you converted earlier, the validation script will validate on-device outputs vs. the reference model.
-
-You might have to run `sudo chmod a+rw /dev/ttyACM0` to give your user permission to access the serial port.
-
-Note: STM provides a "Getting Started" guide for the STM32N6, which you can find [here](https://stm32ai-cs.st.com/assets/embedded-docs/stneuralart_getting_started.html) in case you need more detailed instructions on setting up the board and running the validation.
-
-If everything is set up correctly, the validate command will run inference on the STM32N6570-DK and print the results to the console. After the validation is complete, you should see a `network_validate_report.txt` file in the `validation/st_ai_output` directory with the validation results.
-
-For more command line options, visit the [ST Edge AI documentation](https://stm32ai-cs.st.com/assets/embedded-docs/command_line_interface.html).
-
-## Build and deploy demo application
-
-This repo comes with a pre-trained model (`birdnet_stm32n6_100.tflite`) that was trained on the 100 most common species of the North-Eastern U.S., Central Europe, and Brazil and achieves a ROC-AUC of 0.84 on iNatSounds data. The model uses a hybrid audio frontend and expects 257x256 pixel power spectrograms with a fft length of 512, hop length of 258 for 3-second audio chunks at 22050 Hz sample rate (more details in the `birdnet_stm32n6_100_model_config.json` file).
-
-The model is already quantized and can be flashed with `./stedgeai` as described above. Inference for a single chunk takes about 3.3 ms on the STM32N6570-DK (which is ~900x real-time).
-
-The demo application is still `TODO`.
-
-Here is a rough outline of the steps you would typically follow to build a demo application:
-
-- record audio using the on-board microphone
-- run the fft on a 512-sample frame and accumulate into a ring buffer
-- run inference every second on the last 3 seconds of audio drawn from the ring buffer
-- map prediction scores to labels using the labels.txt file
-- log the top-5 predictions to the serial console
+| Model | Classes | Frontend | ROC-AUC | Inference (NPU) |
+|---|---|---|---|---|
+| `birdnet_stm32n6_100.tflite` | 100 (NE US + EU + Brazil) | hybrid, 257×256, PWL | 0.84 | 3.3 ms / chunk |
 
 ## License
 
- - **Source Code & models**: The source code and models for this project are licensed under the [MIT License](https://opensource.org/licenses/MIT).
- - **STM tools and scripts**: The STM tools and scripts used in this project are licensed under varying licenses, please refer to the respective documentation for details.
- - **Citation**: Feel free to use the code or models in your research. If you do, please cite as:
+- **Source code and models**: [MIT License](LICENSE.md)
+- **STM tools and scripts**: see respective documentation for license details.
+
+## Citation
 
 ```bibtex
 @article{kahl2025birdnetstm32,
@@ -440,8 +57,13 @@ Here is a rough outline of the steps you would typically follow to build a demo 
 }
 ```
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. AI-assisted contributions are welcome — keep PRs focused and review every line.
+
 ## Terms of Use
-Please refer to the [TERMS OF USE](TERMS_OF_USE.md) file for detailed terms and conditions regarding the use of the code and models.
+
+See [TERMS_OF_USE.md](TERMS_OF_USE.md) for detailed terms and conditions.
 
 ## Funding
 
