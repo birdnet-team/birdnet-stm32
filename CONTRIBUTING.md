@@ -63,6 +63,20 @@ English**.
 3. Reference any related issues (e.g., `Closes #42`).
 4. Keep PRs focused; split large changes into smaller PRs.
 
+### AI-Assisted Contributions
+
+AI-assisted contributions (Copilot, ChatGPT, etc.) are welcome, but follow these
+rules:
+
+- **Keep PRs small and focused.** Each PR should address one specific task.
+  Do not submit large AI-generated dumps spanning many unrelated changes.
+- **Review before submitting.** You are responsible for every line in your PR.
+  Read and understand the generated code before opening a pull request.
+- **Test everything.** AI-generated code must pass the existing test suite and
+  include tests for new functionality.
+- **Attribute honestly.** If a PR is substantially AI-generated, mention it in
+  the PR description.
+
 ## Reporting Issues
 
 - Use GitHub Issues for bugs, feature requests, and questions.
