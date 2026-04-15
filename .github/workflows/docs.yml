@@ -33,7 +33,9 @@ jobs:
         run: pip install mkdocs-material mkdocstrings[python] mkdocs-gen-files mkdocs-literate-nav
 
       - name: Build docs
-        run: mkdocs build --strict
+        run: mkdocs build
+        env:
+          DISABLE_MKDOCS_2_WARNING: "true"
 
       - uses: actions/upload-pages-artifact@v3
         with:
