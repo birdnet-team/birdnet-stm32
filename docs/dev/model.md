@@ -9,12 +9,18 @@ with 4 stages, inspired by MobileNetV1.
 
 Each depthwise-separable block:
 
-1. **Depthwise Conv2D** (3×3, per-channel)
-2. **BatchNormalization**
-3. **ReLU6** activation
-4. **Pointwise Conv2D** (1×1, cross-channel)
-5. **BatchNormalization**
-6. **ReLU6** activation
+```mermaid
+flowchart TD
+    X["Input"] --> DW["Depthwise Conv2D 3×3"]
+    DW --> BN1["BatchNorm"]
+    BN1 --> R1["ReLU6"]
+    R1 --> PW["Pointwise Conv2D 1×1"]
+    PW --> BN2["BatchNorm"]
+    BN2 --> R2["ReLU6"]
+    X -. "residual\n(stride=1, same channels)" .-> ADD["Add"]
+    R2 --> ADD
+    ADD --> Y["Output"]
+```
 
 When `stride=1` and input/output channels match, a **residual skip connection**
 is added.

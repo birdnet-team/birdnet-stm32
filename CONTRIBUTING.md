@@ -1,4 +1,4 @@
-# Contributing to BirdNet-STM32
+# Contributing to BirdNET-STM32
 
 Thank you for your interest in contributing! This document explains how to get
 started and what we expect from contributions.

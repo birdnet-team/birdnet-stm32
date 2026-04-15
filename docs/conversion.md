@@ -20,14 +20,14 @@ This produces:
 
 ## How it works
 
-1. Loads the trained `.keras` model (including `AudioFrontendLayer`).
-2. Reads `_model_config.json` to reconstruct input shapes and frontend mode.
-3. Builds a **representative dataset** from training data (default 1024
-   samples) for calibration.
-4. Runs TFLite post-training quantization: float32 I/O, INT8 weights and
-   activations.
-5. Validates the quantized model against the Keras model on representative
-   samples.
+```mermaid
+flowchart TD
+    A[".keras model"] --> B["Load model\n+ model_config.json"]
+    B --> C["Build representative\ndataset (1024 samples)"]
+    C --> D["TFLite PTQ\nfloat32 I/O, INT8 internals"]
+    D --> E["Validate: Keras vs. TFLite\ncosine sim, MSE, Pearson r"]
+    E --> F[".tflite + .npz\nfor on-device validation"]
+```
 6. Saves a small `.npz` file for later on-device validation with
    `stedgeai validate`.
 

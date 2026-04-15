@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-title: "BirdNet-STM32: Bird Sound Classification for Edge Deployment"
+title: "BirdNET-STM32: Bird Sound Classification for Edge Deployment"
 message: >-
   If you use this software, please cite it using the metadata from this file.
 type: software

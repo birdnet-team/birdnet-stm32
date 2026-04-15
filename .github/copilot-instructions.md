@@ -1,6 +1,6 @@
 # Project Guidelines
 
-BirdNet-STM32: bird sound classification for edge deployment on STM32N6570-DK with NPU. Pipeline: train DS-CNN → quantize to INT8 TFLite → deploy via X-CUBE-AI/stedgeai.
+BirdNET-STM32: bird sound classification for edge deployment on STM32N6570-DK with NPU. Pipeline: train DS-CNN → quantize to INT8 TFLite → deploy via X-CUBE-AI/stedgeai.
 
 ## Build and Test
 

@@ -2,7 +2,7 @@
 
 ## Strategy
 
-BirdNet-STM32 uses **post-training quantization (PTQ)** to convert trained
+BirdNET-STM32 uses **post-training quantization (PTQ)** to convert trained
 Keras models to INT8 TFLite for the STM32N6 NPU.
 
 | Aspect | Choice | Rationale |
@@ -60,8 +60,17 @@ adding new layers or architectures, always maintain this constraint.
 
 ## Validation workflow
 
-After conversion, always:
+After conversion, always follow this sequence:
 
-1. Check cosine similarity in `convert.py` output (target > 0.95).
-2. Run `stedgeai analyze` on the `.tflite` to verify N6 compatibility.
-3. Run `stedgeai validate` on-device to confirm end-to-end correctness.
+```mermaid
+flowchart LR
+    A[".keras model"] --> B["convert.py\nPTQ → .tflite"]
+    B --> C{"Cosine sim\n> 0.95?"}
+    C -->|Yes| D["stedgeai analyze\nN6 compatibility"]
+    C -->|No| E["Adjust rep dataset\nor mag scaling"]
+    E --> B
+    D --> F{"All ops\nsupported?"}
+    F -->|Yes| G["stedgeai validate\non-device"]
+    F -->|No| H["Simplify model\nor remove op"]
+    H --> B
+```

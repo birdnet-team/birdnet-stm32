@@ -2,34 +2,13 @@
 
 ## Pipeline overview
 
-```
-Audio (.wav)
-    │
-    ▼
-┌──────────────────┐
-│  Audio Frontend   │  librosa / hybrid / raw
-│  (spectrogram)    │
-└────────┬─────────┘
-         │  [B, H, W, 1]  (mel spectrogram)
-         ▼
-┌──────────────────┐
-│  Magnitude Scale  │  pwl / pcen / db / none
-└────────┬─────────┘
-         │  [B, H, W, 1]
-         ▼
-┌──────────────────┐
-│    DS-CNN Body    │  4 stages × depth_multiplier blocks
-│  (DW-Sep Conv)    │  channels scaled by alpha
-└────────┬─────────┘
-         │  [B, H', W', C]
-         ▼
-┌──────────────────┐
-│  Global Avg Pool  │
-│  Dropout → Dense  │
-└────────┬─────────┘
-         │  [B, num_classes]
-         ▼
-     Predictions
+```mermaid
+flowchart TD
+    A["Audio (.wav)"] --> B["Audio Frontend\nlibrosa / hybrid / raw"]
+    B -->|"[B, H, W, 1]"| C["Magnitude Scaling\npwl / pcen / db / none"]
+    C -->|"[B, H, W, 1]"| D["DS-CNN Body\n4 stages × depth_multiplier blocks\nchannels scaled by α"]
+    D -->|"[B, H', W', C]"| E["Global Avg Pool\nDropout → Dense"]
+    E -->|"[B, num_classes]"| F["Predictions"]
 ```
 
 ## Component boundaries
@@ -51,25 +30,34 @@ Audio (.wav)
 
 ### Training
 
-1. `dataset.load_file_paths_from_directory()` discovers WAV files and class labels.
-2. `dataset.upsample_minority_classes()` balances class representation.
-3. `data.generator` yields `(spectrogram, label)` or `(waveform, label)` batches.
-4. The `AudioFrontendLayer` (if hybrid/raw) processes inputs inside the model graph.
-5. DS-CNN body produces logits; sigmoid activation gives per-class scores.
-6. Cosine LR decay + early stopping; best model saved to `.keras`.
+```mermaid
+flowchart LR
+    A["WAV files"] --> B["load_file_paths\n+ upsample"]
+    B --> C["data.generator\nbatches"]
+    C --> D["AudioFrontendLayer\nhybrid / raw"]
+    D --> E["DS-CNN\nsigmoid"]
+    E --> F["Cosine LR decay\n+ early stopping"]
+    F --> G[".keras checkpoint"]
+```
 
 ### Inference
 
-1. Audio loaded and chunked into fixed-length segments.
-2. Each chunk passes through the full model (frontend + backbone + head).
-3. Chunk-level scores are pooled to file-level (avg/max/LME).
-4. Metrics computed against ground-truth labels.
+```mermaid
+flowchart LR
+    A["Audio file"] --> B["Chunk into\nfixed-length segments"]
+    B --> C["Model\nfrontend + backbone + head"]
+    C --> D["Pool chunk scores\navg / max / LME"]
+    D --> E["Compute metrics\nvs. ground truth"]
+```
 
 ### Deployment
 
-1. `stedgeai generate` converts TFLite → N6-optimized binary.
-2. `n6_loader.py` flashes the binary to the STM32N6570-DK via serial.
-3. `stedgeai validate` runs on-device inference and compares to reference.
+```mermaid
+flowchart LR
+    A[".tflite model"] --> B["stedgeai generate\nN6-optimized binary"]
+    B --> C["n6_loader.py\nserial flash"]
+    C --> D["stedgeai validate\non-device inference"]
+```
 
 ## Key design decisions
 

@@ -4,6 +4,22 @@ The `AudioFrontendLayer` in `birdnet_stm32.models.frontend` implements three
 audio frontend modes, each providing a different trade-off between flexibility
 and deployment complexity.
 
+```mermaid
+flowchart LR
+    subgraph librosa ["librosa (precomputed)"]
+        direction LR
+        L1["WAV"] --> L2["Offline\nlibrosa mel"] --> L3["Mel spectrogram\n→ model"]
+    end
+    subgraph hybrid ["hybrid (default)"]
+        direction LR
+        H1["WAV"] --> H2["Offline\nSTFT |X|"] --> H3["Learned mel\nConv2D 1×1"] --> H4["Mag scaling\n→ CNN"]
+    end
+    subgraph raw ["raw (tf)"]
+        direction LR
+        R1["WAV"] --> R2["Learned filterbank\nConv2D + BN + ReLU6"] --> R3["Mag scaling\n→ CNN"]
+    end
+```
+
 ## Frontend modes
 
 ### `librosa` (precomputed)

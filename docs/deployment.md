@@ -16,9 +16,13 @@ ST's X-CUBE-AI toolchain.
 
 The deployment pipeline has three stages:
 
-1. **Generate** model files with `stedgeai generate`
-2. **Flash** the board with `n6_loader.py`
-3. **Validate** on-device with `stedgeai validate`
+```mermaid
+flowchart LR
+    A[".tflite\nquantized model"] --> B["stedgeai generate\nN6-optimized binary"]
+    B --> C["n6_loader.py\nserial flash to board"]
+    C --> D["stedgeai validate\non-device inference"]
+    D --> E["Validation report\ncosine sim + latency"]
+```
 
 ![stm32_model_validation](https://github.com/user-attachments/assets/3dddfbd5-4c87-4e3c-ac59-6291545188af)
 

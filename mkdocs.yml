@@ -1,4 +1,4 @@
-site_name: BirdNet-STM32
+site_name: BirdNET-STM32
 site_description: Bird sound classification for edge deployment on STM32N6570-DK with NPU
 site_url: https://birdnet-team.github.io/birdnet-stm32
 repo_url: https://github.com/birdnet-team/birdnet-stm32
@@ -6,6 +6,8 @@ repo_name: birdnet-team/birdnet-stm32
 
 theme:
   name: material
+  logo: assets/logo.png
+  favicon: assets/logo.png
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
@@ -50,7 +52,11 @@ plugins:
 markdown_extensions:
   - admonition
   - pymdownx.details
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite

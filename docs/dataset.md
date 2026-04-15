@@ -2,7 +2,7 @@
 
 ## Folder structure
 
-BirdNet-STM32 expects audio files organized by species:
+BirdNET-STM32 expects audio files organized by species:
 
 ```
 data/

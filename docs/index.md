@@ -1,4 +1,4 @@
-# BirdNet-STM32
+# BirdNET-STM32
 
 Bird sound classification for edge deployment on the
 [STM32N6570-DK](https://www.st.com/en/evaluation-tools/stm32n6570-dk.html)
@@ -6,9 +6,14 @@ development board with neural processing unit (NPU).
 
 ## Overview
 
-BirdNet-STM32 trains a compact depthwise-separable CNN (DS-CNN) on mel
+BirdNET-STM32 trains a compact depthwise-separable CNN (DS-CNN) on mel
 spectrograms, quantizes it to INT8 via post-training quantization, and deploys
 the resulting TFLite model to the STM32N6570-DK using ST's X-CUBE-AI toolchain.
+
+```mermaid
+flowchart LR
+    A["Train\nDS-CNN"] --> B["Quantize\nINT8 TFLite"] --> C["Deploy\nSTM32N6 NPU"]
+```
 
 A single inference on a 3-second audio chunk takes approximately **3.3 ms** on
 the NPU (~900× real-time).
