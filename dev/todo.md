@@ -34,7 +34,7 @@ This document is the master plan for rewriting the birdnet-stm32 codebase from a
 - [x] `CHANGELOG.md` — keep-a-changelog format, start with `[Unreleased]`
 - [x] `.gitignore` — comprehensive Python/TF/IDE/OS ignores
 - [x] `pyproject.toml` — replace bare `requirements.txt` with proper project metadata, `[project.optional-dependencies]` for dev/docs/deploy groups
-- [ ] `Makefile` or `justfile` — common tasks: `make train`, `make convert`, `make test`, `make deploy`, `make docs`, `make lint`, `make test-unit`, `make test-integration`
+- [x] `Makefile` — common tasks: `make train`, `make convert`, `make test`, `make deploy`, `make docs`, `make lint`, `make test-unit`, `make test-integration`
 
 ### 1.2 Licensing cleanup
 
@@ -180,7 +180,7 @@ birdnet_stm32/
 - [x] Create `birdnet_stm32/__main__.py` for `python -m birdnet_stm32 {train,convert,evaluate,deploy}`
 - [ ] Move `dev/make_dev_set.py` utilities into `birdnet_stm32/data/species.py`
 - [ ] Keep top-level `train.py`, `test.py`, `convert.py` as thin wrappers that import from the package (backward compat)
-- [ ] Add `py.typed` marker for type-checking
+- [x] Add `py.typed` marker for type-checking
 
 ---
 
@@ -341,10 +341,10 @@ Replace `deploy.sh` (hardcoded paths) with:
 
 ### 12.1 Test framework setup
 
-- [ ] `tests/` directory with `conftest.py` (fixtures, tmp paths, sample audio generation)
-- [ ] pytest + pytest-cov configuration in `pyproject.toml`
-- [ ] Synthetic test fixtures: generate short WAV files programmatically (sine waves, noise, chirps)
-- [ ] Small test dataset: `tests/fixtures/data/{train,test}/class_a/*.wav` (2-3 classes, 3-5 files each, ~1s)
+- [x] `tests/` directory with `conftest.py` (fixtures, tmp paths, sample audio generation)
+- [x] pytest + pytest-cov configuration in `pyproject.toml`
+- [x] Synthetic test fixtures: generate short WAV files programmatically (sine waves, noise, chirps)
+- [x] Small test dataset: `tests/fixtures/data/{train,test}/class_a/*.wav` (2-3 classes, 3-5 files each, ~1s)
 
 ### 12.2 Unit tests
 
@@ -382,30 +382,30 @@ tests/
 ### 12.3 Test tasks
 
 - [x] `tests/conftest.py` — shared fixtures: tmp audio files, tiny model, sample config
-- [ ] `tests/fixtures/generate_fixtures.py` — create synthetic WAVs (sine + noise, 1-3 seconds)
+- [x] `tests/fixtures/generate_fixtures.py` — create synthetic WAVs (sine + noise, 1-3 seconds)
 - [x] `tests/unit/test_audio_io.py` — load, resample, chunk, edge cases
 - [x] `tests/unit/test_spectrogram.py` — shape validation, mag_scale correctness
-- [ ] `tests/unit/test_activity.py` — known SNR ordering, threshold filtering, always-keep-one guarantee
-- [ ] `tests/unit/test_augmentation.py` — mixup shapes, label OR-merge, alpha bounds
-- [ ] `tests/unit/test_frontend_layer.py` — precomputed/hybrid/raw output shapes for known inputs, mag scaling each type, trainability toggle, N6 constraint error
-- [ ] `tests/unit/test_dscnn.py` — model builds for all frontend+mag combos, output shape = [B, num_classes], channel alignment assertion
-- [ ] `tests/unit/test_runners.py` — KerasRunner + TFLiteRunner predict on dummy input, shape check
+- [x] `tests/unit/test_activity.py` — known SNR ordering, threshold filtering, always-keep-one guarantee
+- [x] `tests/unit/test_augmentation.py` — mixup shapes, label OR-merge, alpha bounds
+- [x] `tests/unit/test_frontend_layer.py` — precomputed/hybrid/raw output shapes for known inputs, mag scaling each type, trainability toggle, N6 constraint error
+- [x] `tests/unit/test_dscnn.py` — model builds for all frontend+mag combos, output shape = [B, num_classes], channel alignment assertion
+- [x] `tests/unit/test_runners.py` — KerasRunner + TFLiteRunner predict on dummy input, shape check
 - [x] `tests/unit/test_pooling.py` — avg/max/lme on known arrays, edge cases
-- [ ] `tests/unit/test_metrics.py` — known true/pred → expected ROC-AUC, F1, cmAP
+- [x] `tests/unit/test_metrics.py` — known true/pred → expected ROC-AUC, F1, cmAP
 - [x] `tests/unit/test_dataset.py` — file discovery, class filtering, upsampling ratios
 - [x] `tests/unit/test_config.py` — ModelConfig save → load round-trip, missing field errors
-- [ ] `tests/unit/test_conversion.py` — build tiny model → PTQ → TFLite file exists + runs
-- [ ] `tests/integration/test_train_to_eval.py` — train 1 epoch on synthetic data → convert → evaluate → metrics dict valid
-- [ ] `tests/integration/test_frontend_parity.py` — librosa mel ≈ hybrid Conv2D mel (cosine sim > 0.99)
-- [ ] `tests/integration/test_quantization_sim.py` — quantized vs float cosine sim > 0.90 on tiny model
+- [x] `tests/unit/test_conversion.py` — build tiny model → PTQ → TFLite file exists + runs
+- [x] `tests/integration/test_train_to_eval.py` — train 1 epoch on synthetic data → convert → evaluate → metrics dict valid
+- [x] `tests/integration/test_frontend_parity.py` — librosa mel ≈ hybrid Conv2D mel (cosine sim > 0.99)
+- [x] `tests/integration/test_quantization_sim.py` — quantized vs float cosine sim > 0.90 on tiny model
 
 ---
 
 ## 13. CI/CD
 
-- [ ] `.github/workflows/test.yml` — run unit tests on push/PR (Python 3.11, 3.12; ubuntu-latest)
-- [ ] `.github/workflows/lint.yml` — ruff check + ruff format --check
-- [ ] `.github/workflows/docs.yml` — build mkdocs, deploy to GitHub Pages on release/main push
+- [x] `.github/workflows/test.yml` — run unit tests on push/PR (Python 3.12; ubuntu-latest)
+- [x] `.github/workflows/lint.yml` — ruff check + ruff format --check
+- [x] `.github/workflows/docs.yml` — build mkdocs, deploy to GitHub Pages on push to master
 - [ ] `.github/workflows/integration.yml` — integration tests (on schedule or manual trigger, needs GPU or larger runner)
 - [ ] `.github/workflows/release.yml` — semantic versioning, changelog generation, checkpoint upload to Releases
 - [ ] Badge integration in README
