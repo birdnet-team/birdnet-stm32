@@ -262,7 +262,8 @@ birdnet_stm32/
 - [ ] **Deterministic training mode**: add `--deterministic` flag that sets all seeds + TF deterministic ops
 - [ ] **Resumable training**: add `--resume` flag that loads optimizer state from checkpoint
 - [ ] **Learning rate finder**: add utility to sweep LR and plot loss (one-cycle policy style)
-- [ ] **WandB / TensorBoard integration**: add optional logging with `--log-to wandb|tensorboard|none`
+- [ ] **Optuna hyperparameter tuning**: add `--tune` flag that uses Optuna to search over LR, alpha, depth_multiplier, dropout, batch size; persist study in SQLite for resumable sweeps
+- ~**WandB / TensorBoard integration**~: decided against — keep logging simple (CSV + stdout). Do not add wandb or tensorboard as dependencies.
 - [ ] **Multi-GPU / mixed precision**: add `--mixed-precision` flag (fp16 compute, fp32 accum) for faster training
 - [ ] **Class weighting**: add `--class-weights` option (inverse frequency, effective number, focal loss)
 - [ ] **Focal loss**: implement as alternative to cross-entropy for imbalanced datasets
@@ -286,7 +287,8 @@ birdnet_stm32/
 - [ ] **Quantization-aware training (QAT)**: add `--qat` flag to train.py that inserts fake-quant nodes (TF Model Optimization Toolkit)
 - [ ] **Per-channel vs per-tensor quantization**: add flag to control granularity
 - [ ] **Dynamic range quantization**: add as alternative (no representative dataset needed)
-- [ ] **INT8-only mode**: option for INT8 I/O (not just internals) for maximum N6 throughput
+- [ ] **Audit INT8 input assumptions**: audio waveform/spectrogram inputs are continuous-valued and lose meaningful precision at INT8; verify that float32 I/O is enforced throughout the pipeline and remove any code paths that attempt INT8 input quantization
+- ~**INT8-only mode**~: rejected — INT8 I/O does not make sense for audio inputs. Keep float32 I/O + INT8 internals.
 - [ ] **ONNX export**: add `--export-onnx` path (stedgeai also accepts ONNX)
 - [ ] **Automatic cosine similarity validation**: fail conversion if cosine sim < threshold (configurable, default 0.95)
 - [ ] **Representative dataset curation**: add SNR filtering + stratified sampling per class (current: random shuffle + center chunk)
