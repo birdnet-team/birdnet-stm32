@@ -433,14 +433,10 @@ Here is a rough outline of the steps you would typically follow to build a demo 
  - **Citation**: Feel free to use the code or models in your research. If you do, please cite as:
 
 ```bibtex
-@article{kahl2021birdnet,
-  title={BirdNET: A deep learning solution for avian diversity monitoring},
-  author={Kahl, Stefan and Wood, Connor M and Eibl, Maximilian and Klinck, Holger},
-  journal={Ecological Informatics},
-  volume={61},
-  pages={101236},
-  year={2021},
-  publisher={Elsevier}
+@article{kahl2025birdnetstm32,
+  title={A quantization-friendly audio classification pipeline for embedded bioacoustics on microcontroller NPUs},
+  author={Kahl, Stefan and Marshall, Isabella and Chaopricha, Patrick T. and Aceto, Jordan and Klinck, Holger},
+  year={2025}
 }
 ```
 
