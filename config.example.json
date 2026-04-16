@@ -1,0 +1,9 @@
+{
+  "compiler_type": "gcc",
+  "cubeide_path": "/path/to/stm32cubeide",
+  "x_cube_ai_path": "/path/to/X-CUBE-AI.10.2.0",
+  "model_path": "checkpoints/best_model_quantized.tflite",
+  "output_dir": "validation/st_ai_output",
+  "workspace_dir": "validation/st_ai_ws",
+  "n6_loader_config": "config_n6l.json"
+}

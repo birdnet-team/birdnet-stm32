@@ -21,8 +21,8 @@ python test.py --model_path checkpoints/best_model_quantized.tflite \
   --model_config checkpoints/best_model_model_config.json \
   --data_path_test data/test --pooling lme
 
-# Deploy to board (requires USB-connected STM32N6570-DK)
-bash deploy.sh
+# Deploy to board (requires USB-connected STM32N6570-DK + config.json)
+python -m birdnet_stm32 deploy
 ```
 
 ## Architecture

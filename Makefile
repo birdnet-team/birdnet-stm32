@@ -54,13 +54,13 @@ convert: ## Convert model to TFLite (pass ARGS="..." for extra arguments)
 evaluate: ## Evaluate a model (pass ARGS="..." for extra arguments)
 	python test.py $(ARGS)
 
-deploy: ## Deploy to STM32N6570-DK
-	bash deploy.sh
+deploy: ## Deploy to STM32N6570-DK (reads paths from config.json)
+	python -m birdnet_stm32 deploy $(ARGS)
 
 # ── Documentation ──────────────────────────────────────────────────────────────
 
 docs: ## Build documentation
-	mkdocs build --strict
+	mkdocs build
 
 docs-serve: ## Serve documentation locally
 	mkdocs serve

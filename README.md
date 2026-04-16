@@ -36,8 +36,8 @@ python convert.py --checkpoint_path checkpoints/best_model.keras \
 python test.py --model_path checkpoints/best_model_quantized.tflite \
   --model_config checkpoints/best_model_model_config.json --data_path_test data/test
 
-# Deploy to STM32N6570-DK (see docs for full setup)
-bash deploy.sh
+# Deploy to STM32N6570-DK (requires config.json; see config.example.json)
+python -m birdnet_stm32 deploy
 ```
 
 See the [full documentation](https://birdnet-team.github.io/birdnet-stm32) for detailed guides on [dataset preparation](https://birdnet-team.github.io/birdnet-stm32/dataset/), [training](https://birdnet-team.github.io/birdnet-stm32/training/), [conversion](https://birdnet-team.github.io/birdnet-stm32/conversion/), [evaluation](https://birdnet-team.github.io/birdnet-stm32/evaluation/), and [deployment](https://birdnet-team.github.io/birdnet-stm32/deployment/).

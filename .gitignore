@@ -8,6 +8,7 @@ checkpoints/*.tflite
 checkpoints/*_labels.txt
 checkpoints/*_model_config.json
 notes.txt
+deploy.sh
 /dev/
 /report/
 

@@ -128,7 +128,27 @@ requirements.
 
 ### Create configuration files
 
-Create `config_n6l.json` in the project root:
+Copy the example config and fill in your local paths:
+
+```bash
+cp config.example.json config.json
+```
+
+Edit `config.json` with your machine-local paths:
+
+```json
+{
+  "compiler_type": "gcc",
+  "cubeide_path": "/path/to/stm32cubeide",
+  "x_cube_ai_path": "/path/to/X-CUBE-AI.10.2.0",
+  "model_path": "checkpoints/best_model_quantized.tflite",
+  "output_dir": "validation/st_ai_output",
+  "workspace_dir": "validation/st_ai_ws",
+  "n6_loader_config": "config_n6l.json"
+}
+```
+
+Create `config_n6l.json` in the project root (required by ST's n6_loader):
 
 ```json
 {
@@ -141,26 +161,33 @@ Create `config_n6l.json` in the project root:
 }
 ```
 
-Create `config.json` in the X-CUBE-AI scripts directory:
-
-```json
-{
-  "compiler_type": "gcc",
-  "cubeide_path": "/path/to/stm32cubeide"
-}
-```
-
 !!! warning
-    These config files contain machine-local paths. They are listed in
-    `.gitignore` — do not commit them. Use `config.toml.example` as a
+    Both config files contain machine-local paths. They are listed in
+    `.gitignore` — do not commit them. Use `config.example.json` as a
     reference template.
 
-### Flash the model
+### Run the full deploy pipeline
+
+The CLI reads all paths from `config.json` and runs generate → flash → validate:
 
 ```bash
-python /path/to/X-CUBE-AI.10.2.0/scripts/N6_scripts/n6_loader.py \
-  --n6-loader-config /path/to/birdnet-stm32/config_n6l.json
+python -m birdnet_stm32 deploy
 ```
+
+You can override any path via CLI arguments:
+
+```bash
+python -m birdnet_stm32 deploy --x_cube_ai_path /path/to/X-CUBE-AI.10.2.0
+```
+
+Or via environment variables:
+
+```bash
+export X_CUBE_AI_PATH=/path/to/X-CUBE-AI.10.2.0
+python -m birdnet_stm32 deploy
+```
+
+Priority order: CLI arguments > environment variables > `config.json` values.
 
 Verify the board is connected:
 
@@ -176,9 +203,12 @@ sudo chmod a+rw /dev/ttyACM0
 
 ## Step 6: Validate on-device
 
+The deploy command runs validation automatically. To run validation separately
+with additional options (e.g., `--valinput` for specific test data):
+
 ```bash
-./stedgeai validate \
-  --model /path/to/checkpoints/my_model_quantized.tflite \
+/path/to/X-CUBE-AI.10.2.0/Utilities/linux/stedgeai validate \
+  --model checkpoints/my_model_quantized.tflite \
   --target stm32n6 \
   --mode target \
   --desc serial:921600 \

@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pre-commit hooks (ruff, yaml, whitespace)
 - `birdnet_stm32/` Python package structure
 - Test framework with pytest fixtures and synthetic audio data
-- `config.toml.example` replacing hardcoded paths
+- `config.example.json` replacing hardcoded paths
 
 ### Changed
 
