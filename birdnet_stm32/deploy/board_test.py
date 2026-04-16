@@ -224,9 +224,15 @@ def patch_project(
     app_labels_dst.write_text(_generate_app_labels_h(labels))
     log.info("Generated app_labels.h with %d labels", len(labels))
 
-    # --- 3. Copy HAL SD driver sources -------------------------------------
+    # --- 3. Copy HAL SD driver sources and headers --------------------------
+    hal_inc = project / "Drivers" / "STM32N6xx_HAL_Driver" / "Inc"
     for name in ("stm32n6xx_hal_sd.c", "stm32n6xx_ll_sdmmc.c"):
         dst = hal_src / name
+        backups.append(_backup(dst))
+        shutil.copy2(fw / "Drivers" / "HAL_SD" / name, dst)
+    for name in ("stm32n6xx_hal_sd.h", "stm32n6xx_hal_sd_ex.h",
+                 "stm32n6xx_ll_sdmmc.h", "stm32n6xx_ll_dlyb.h"):
+        dst = hal_inc / name
         backups.append(_backup(dst))
         shutil.copy2(fw / "Drivers" / "HAL_SD" / name, dst)
 
@@ -240,7 +246,8 @@ def patch_project(
     fatfs_dst.mkdir(exist_ok=True)
     backups.append(fatfs_dst)  # entire dir — removed on cleanup
     for p in (fw / "Drivers" / "FatFs").iterdir():
-        shutil.copy2(p, fatfs_dst / p.name)
+        if p.is_file():
+            shutil.copy2(p, fatfs_dst / p.name)
 
     # --- 6. Patch app_config.h — append our defines to existing file -------
     #  The NPU_Validation app_config.h has USE_OVERDRIVE, USE_UART_BAUDRATE,
@@ -298,14 +305,29 @@ def _patch_app_config(path: Path, model_cfg: dict, num_classes: int) -> None:
     log.info("Patched app_config.h with model parameters")
 
 
-def _patch_makefile(path: Path) -> None:
-    """Append BirdNET sources and FatFs include path to the Makefile."""
-    text = path.read_text()
-    if MAKEFILE_SENTINEL in text:
-        log.info("Makefile already patched — skipping")
-        return
+MAKEFILE_END_SENTINEL = "# --- end BirdNET-STM32 additions ---"
 
-    addition = f"""
+
+def _patch_makefile(path: Path) -> None:
+    """Insert BirdNET sources before the OBJECTS definition in the Makefile."""
+    text = path.read_text()
+    # Strip any leftover patch block (e.g. from a corrupted .bak restore).
+    if MAKEFILE_SENTINEL in text:
+        start = text.find(MAKEFILE_SENTINEL)
+        end = text.find(MAKEFILE_END_SENTINEL)
+        if start != -1 and end != -1:
+            # Remove from the start of the sentinel line to end of end-marker line.
+            line_start = text.rfind("\n", 0, start)
+            line_start = 0 if line_start == -1 else line_start
+            line_end = text.find("\n", end)
+            line_end = len(text) if line_end == -1 else line_end + 1
+            text = text[:line_start] + text[line_end:]
+            log.info("Stripped leftover Makefile patch block")
+        else:
+            log.info("Makefile already patched — skipping")
+            return
+
+    addition = f"""\
 {MAKEFILE_SENTINEL}
 FATFS_PATH = $(PROJECT_PATH)/FatFs
 DRIVER_SOURCES += $(N6_DRIVER_PATH)/Src/stm32n6xx_hal_sd.c
@@ -320,10 +342,23 @@ C_SOURCES += $(FATFS_PATH)/diskio.c
 C_SOURCES += $(FATFS_PATH)/ff_gen_drv.c
 C_SOURCES += $(FATFS_PATH)/sd_diskio.c
 C_INCLUDES += -I$(FATFS_PATH)
-# --- end BirdNET-STM32 additions ---
+{MAKEFILE_END_SENTINEL}
 """
-    # Append before the final dependency include line.
-    text += addition
+    # Insert before OBJECTS definition so pattern substitution picks up our sources.
+    # The OBJECTS line uses $(C_SOURCES:...) pattern substitution.
+    marker = "OBJECTS = $(C_SOURCES:"
+    idx = text.find(marker)
+    if idx == -1:
+        # Fallback: append to end.
+        text += "\n" + addition
+    else:
+        # Insert just before the OBJECTS line.
+        line_start = text.rfind("\n", 0, idx)
+        if line_start == -1:
+            line_start = 0
+        else:
+            line_start += 1
+        text = text[:line_start] + addition + "\n" + text[line_start:]
     path.write_text(text)
     log.info("Patched Makefile with BirdNET sources")
 
