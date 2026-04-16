@@ -4,6 +4,36 @@ import os
 
 import tensorflow as tf
 
+VALID_OPTIMIZERS = ("adam", "sgd", "adamw")
+
+
+def _build_optimizer(
+    name: str,
+    learning_rate: tf.keras.optimizers.schedules.LearningRateSchedule,
+    weight_decay: float = 0.0,
+) -> tf.keras.optimizers.Optimizer:
+    """Build a Keras optimizer by name.
+
+    Args:
+        name: Optimizer name ('adam', 'sgd', or 'adamw').
+        learning_rate: Learning rate schedule.
+        weight_decay: Weight decay factor (only used by adamw).
+
+    Returns:
+        Configured Keras optimizer.
+
+    Raises:
+        ValueError: If name is not a valid optimizer.
+    """
+    name = name.lower()
+    if name == "adam":
+        return tf.keras.optimizers.Adam(learning_rate=learning_rate)
+    if name == "sgd":
+        return tf.keras.optimizers.SGD(learning_rate=learning_rate, momentum=0.9)
+    if name == "adamw":
+        return tf.keras.optimizers.AdamW(learning_rate=learning_rate, weight_decay=weight_decay)
+    raise ValueError(f"Invalid optimizer: '{name}'. Valid options: {VALID_OPTIMIZERS}")
+
 
 def train_model(
     model: tf.keras.Model,
@@ -17,6 +47,9 @@ def train_model(
     steps_per_epoch: int | None = None,
     val_steps: int | None = None,
     is_multilabel: bool = False,
+    optimizer: str = "adam",
+    weight_decay: float = 0.0,
+    loss_fn: str | tf.keras.losses.Loss | None = None,
 ) -> tf.keras.callbacks.History:
     """Train a model with cosine LR schedule, early stopping, and checkpointing.
 
@@ -34,6 +67,9 @@ def train_model(
         steps_per_epoch: Training steps per epoch (> 0 required).
         val_steps: Validation steps per epoch (defaults to 1 if <= 0).
         is_multilabel: If True, uses binary_crossentropy; else categorical_crossentropy.
+        optimizer: Optimizer name ('adam', 'sgd', or 'adamw').
+        weight_decay: Weight decay factor (only used by 'adamw').
+        loss_fn: Optional custom loss function. Overrides is_multilabel default.
 
     Returns:
         Keras training history.
@@ -50,9 +86,15 @@ def train_model(
         decay_steps=epochs * steps_per_epoch,
         alpha=0.0,
     )
+
+    opt = _build_optimizer(optimizer, lr_schedule, weight_decay)
+
+    if loss_fn is None:
+        loss_fn = "binary_crossentropy" if is_multilabel else "categorical_crossentropy"
+
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
-        loss="binary_crossentropy" if is_multilabel else "categorical_crossentropy",
+        optimizer=opt,
+        loss=loss_fn,
         metrics=[tf.keras.metrics.AUC(curve="ROC", multi_label=True, name="roc_auc")],
     )
     callbacks = [

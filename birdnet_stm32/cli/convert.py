@@ -13,7 +13,8 @@ from birdnet_stm32.audio.activity import pick_random_samples
 from birdnet_stm32.conversion.quantize import convert_to_tflite, representative_data_gen
 from birdnet_stm32.conversion.validate import validate_models
 from birdnet_stm32.data.dataset import load_file_paths_from_directory
-from birdnet_stm32.models.frontend import AudioFrontendLayer
+from birdnet_stm32.models.frontend import AudioFrontendLayer, normalize_frontend_name
+from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
 
 random.seed(42)
 np.random.seed(42)
@@ -30,6 +31,12 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--data_path_train", type=str, default="", help="Training data directory for rep. dataset")
     parser.add_argument("--num_samples", type=int, default=1024, help="Representative dataset samples")
     parser.add_argument("--validate_samples", type=int, default=256, help="Validation samples")
+    parser.add_argument(
+        "--min_cosine_sim",
+        type=float,
+        default=0.95,
+        help="Minimum mean cosine similarity threshold. Conversion fails if below (0 to disable).",
+    )
     return parser.parse_args()
 
 
@@ -47,7 +54,9 @@ def main():
 
     # Load model
     model = tf.keras.models.load_model(
-        args.checkpoint_path, compile=False, custom_objects={"AudioFrontendLayer": AudioFrontendLayer}
+        args.checkpoint_path,
+        compile=False,
+        custom_objects={"AudioFrontendLayer": AudioFrontendLayer, "MagnitudeScalingLayer": MagnitudeScalingLayer},
     )
     print(f"Loaded model from {args.checkpoint_path}")
 
@@ -69,11 +78,11 @@ def main():
             T = int(sr * cd)
             spec_width = int(cfg["spec_width"])
             n_fft = int(cfg["fft_length"])
-            frontend = cfg["audio_frontend"]
+            frontend = normalize_frontend_name(cfg["audio_frontend"])
             num_mels = int(cfg["num_mels"])
             fft_bins = n_fft // 2 + 1
             for _ in tqdm(range(num_samples), desc="Random samples", unit="sample"):
-                if frontend in ("precomputed", "librosa"):
+                if frontend == "librosa":
                     yield [np.random.rand(1, num_mels, spec_width, 1).astype(np.float32)]
                 elif frontend == "hybrid":
                     yield [np.random.rand(1, fft_bins, spec_width, 1).astype(np.float32)]
@@ -93,7 +102,18 @@ def main():
 
     # Validate
     print("Validating TFLite vs. Keras outputs...")
-    validate_models(model, args.output_path, rep_data_gen_val)
+    val_metrics = validate_models(model, args.output_path, rep_data_gen_val)
+
+    # Check cosine similarity threshold
+    if args.min_cosine_sim > 0:
+        cos_mean = val_metrics["cosine_mean"]
+        if cos_mean < args.min_cosine_sim:
+            raise RuntimeError(
+                f"Quantization quality check failed: mean cosine similarity {cos_mean:.6f} "
+                f"< threshold {args.min_cosine_sim:.4f}. "
+                f"Consider using a more representative calibration dataset or a simpler model."
+            )
+        print(f"Cosine similarity check passed: {cos_mean:.6f} >= {args.min_cosine_sim:.4f}")
 
     # Save validation data
     validation_data = []

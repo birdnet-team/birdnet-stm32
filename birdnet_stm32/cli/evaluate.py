@@ -6,8 +6,14 @@ import math
 import os
 
 from birdnet_stm32.data.dataset import SUPPORTED_AUDIO_EXTS, load_file_paths_from_directory
-from birdnet_stm32.evaluation.metrics import evaluate
-from birdnet_stm32.evaluation.reporting import print_ascii_histogram, print_ascii_pr_curve, save_predictions_csv
+from birdnet_stm32.evaluation.metrics import evaluate, optimize_thresholds
+from birdnet_stm32.evaluation.reporting import (
+    print_ascii_histogram,
+    print_ascii_pr_curve,
+    print_confusion_matrix,
+    save_confusion_matrix_plot,
+    save_predictions_csv,
+)
 from birdnet_stm32.models.runners import load_model_runner
 
 
@@ -22,6 +28,9 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--overlap", type=float, default=0.0, help="Chunk overlap (seconds)")
     parser.add_argument("--pooling", type=str, default="avg", choices=["avg", "max", "lme"])
     parser.add_argument("--save_csv", type=str, default="", help="Optional path to save predictions CSV")
+    parser.add_argument("--confusion_matrix", action="store_true", default=False, help="Print confusion matrix")
+    parser.add_argument("--save_cm_plot", type=str, default="", help="Save confusion matrix plot to file")
+    parser.add_argument("--optimize_thresholds", action="store_true", default=False, help="Find per-class optimal F1 thresholds")
     return parser.parse_args()
 
 
@@ -94,6 +103,19 @@ def main():
     if args.save_csv:
         save_predictions_csv(per_file, classes, args.save_csv)
         print(f"Predictions saved to {args.save_csv}")
+
+    # Confusion matrix
+    if args.confusion_matrix:
+        print_confusion_matrix(y_true, y_scores, classes)
+    if args.save_cm_plot:
+        save_confusion_matrix_plot(y_true, y_scores, classes, args.save_cm_plot)
+
+    # Threshold optimization
+    if args.optimize_thresholds:
+        thresholds = optimize_thresholds(y_true, y_scores, classes)
+        print("\nOptimal per-class thresholds (max F1):")
+        for cls_name, thr in sorted(thresholds.items(), key=lambda x: x[1], reverse=True):
+            print(f"  {cls_name}: {thr:.4f}")
 
 
 if __name__ == "__main__":

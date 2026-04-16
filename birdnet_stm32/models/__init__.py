@@ -1,1 +1,1 @@
-"""Model architectures, audio frontend layer, and inference runners."""
+"""Model architectures, audio frontend layer, magnitude scaling, and inference runners."""

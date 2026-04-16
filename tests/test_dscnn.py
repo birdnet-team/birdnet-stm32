@@ -64,7 +64,7 @@ class TestBuildDscnnModel:
             chunk_duration=3,
             embeddings_size=128,
             num_classes=10,
-            audio_frontend="precomputed",
+            audio_frontend="librosa",
             alpha=0.25,
             depth_multiplier=1,
             mag_scale="none",
@@ -125,7 +125,7 @@ class TestBuildDscnnModel:
             chunk_duration=3,
             embeddings_size=256,
             num_classes=10,
-            audio_frontend="precomputed",
+            audio_frontend="librosa",
             alpha=1.0,
             depth_multiplier=1,
         )
@@ -142,7 +142,7 @@ class TestBuildDscnnModel:
             chunk_duration=3,
             embeddings_size=128,
             num_classes=10,
-            audio_frontend="precomputed",
+            audio_frontend="librosa",
             alpha=0.25,
             depth_multiplier=1,
         )
@@ -153,7 +153,7 @@ class TestBuildDscnnModel:
             chunk_duration=3,
             embeddings_size=128,
             num_classes=10,
-            audio_frontend="precomputed",
+            audio_frontend="librosa",
             alpha=1.0,
             depth_multiplier=1,
         )
@@ -168,7 +168,7 @@ class TestBuildDscnnModel:
             chunk_duration=3,
             embeddings_size=128,
             num_classes=10,
-            audio_frontend="precomputed",
+            audio_frontend="librosa",
             alpha=0.25,
             depth_multiplier=1,
         )
@@ -179,7 +179,7 @@ class TestBuildDscnnModel:
             chunk_duration=3,
             embeddings_size=128,
             num_classes=10,
-            audio_frontend="precomputed",
+            audio_frontend="librosa",
             alpha=0.25,
             depth_multiplier=2,
         )
@@ -194,7 +194,7 @@ class TestBuildDscnnModel:
             chunk_duration=3,
             embeddings_size=128,
             num_classes=10,
-            audio_frontend="precomputed",
+            audio_frontend="librosa",
             alpha=0.25,
             depth_multiplier=1,
             class_activation="sigmoid",
@@ -203,7 +203,7 @@ class TestBuildDscnnModel:
 
     def test_invalid_frontend(self):
         """Invalid frontend name should raise ValueError."""
-        with pytest.raises(ValueError, match="Invalid audio_frontend"):
+        with pytest.raises(ValueError, match="Invalid audio frontend"):
             build_dscnn_model(
                 num_mels=64,
                 spec_width=256,

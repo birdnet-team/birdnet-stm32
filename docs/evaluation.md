@@ -59,6 +59,9 @@ precision.
 | `--pooling` | avg | `avg`, `max`, or `lme` |
 | `--overlap` | 0 | Chunk overlap in seconds |
 | `--save_csv` | None | Path to save per-file predictions as CSV |
+| `--confusion_matrix` | False | Print ASCII confusion matrix |
+| `--save_cm_plot` | None | Save confusion matrix plot to image file |
+| `--optimize_thresholds` | False | Find per-class optimal F1 thresholds |
 
 ## Saving results
 
@@ -68,3 +71,14 @@ in `report/eval_runs/` with the naming convention:
 ```
 {run_number}_{frontend}_{mag}_{alpha}_{depth}_{embed}_{batch}_{maxsamples}.csv
 ```
+
+## Confusion matrix
+
+Use `--confusion_matrix` to print an ASCII confusion matrix to stdout. Use
+`--save_cm_plot path/to/plot.png` to save a matplotlib figure.
+
+## Threshold optimization
+
+By default, evaluation uses a fixed threshold of 0.5. Use `--optimize_thresholds`
+to find the per-class threshold that maximizes F1 via the precision-recall curve.
+Optimal thresholds are printed sorted by value.

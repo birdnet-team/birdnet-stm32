@@ -21,8 +21,12 @@ The script saves three files alongside the checkpoint:
 | Frontend | Input to model | Description |
 |---|---|---|
 | `hybrid` (default) | Linear magnitude STFT | Model applies a learned mel mixer and magnitude scaling. Best for deployment. |
-| `librosa` / `precomputed` | Mel spectrogram | Spectrogram computed offline with librosa. Simplest, but frontend is not in the graph. |
-| `raw` / `tf` | Raw waveform | Model learns the filterbank from scratch via Conv2D. Most flexible, highest memory. |
+| `librosa` | Mel spectrogram | Spectrogram computed offline with librosa. Simplest, but frontend is not in the graph. |
+| `raw` | Raw waveform | Model learns the filterbank from scratch via Conv2D. Most flexible, highest memory. |
+
+!!! note "Deprecated aliases"
+    `precomputed` (now `librosa`) and `tf` (now `raw`) still work but emit
+    deprecation warnings and will be removed in a future release.
 
 !!! warning "Raw frontend memory limit"
     At 22 kHz × 3 s the raw input exceeds 65,536 samples (the 16-bit activation
@@ -58,6 +62,33 @@ The DS-CNN is scaled with two knobs:
 - **Mixup**: controlled by `--mixup_alpha` (default 0.2, 0 disables) and
   `--mixup_probability` (default 0.25). Blends pairs of training examples
   and their labels.
+- **SpecAugment**: enable with `--spec_augment`. Applies random frequency
+  and time masking to spectrograms during training. Control mask widths with
+  `--freq_mask_max` (default 8 bins) and `--time_mask_max` (default 25 frames).
+
+### Loss function
+
+- **Binary crossentropy** (default): standard multi-label loss.
+- **Focal loss**: `--loss focal` down-weights well-classified examples,
+  focusing on hard negatives. Tune with `--focal_gamma` (default 2.0).
+  Useful for imbalanced class distributions.
+
+### Optimizer
+
+Select with `--optimizer` (default `adam`):
+
+| Optimizer | Description |
+|---|---|
+| `adam` | Adaptive moment estimation (default) |
+| `sgd` | SGD with momentum 0.9 |
+| `adamw` | AdamW with decoupled weight decay |
+
+Set weight decay with `--weight_decay` (default 0, only used by `adamw`).
+
+### Deterministic mode
+
+Use `--deterministic` to set all random seeds (Python, NumPy, TensorFlow)
+and enable `TF_DETERMINISTIC_OPS`. Optionally specify `--seed` (default 42).
 
 ### Learning rate
 
@@ -86,6 +117,16 @@ of 10 epochs.
 | `--frontend_trainable` | False | Make frontend weights trainable |
 | `--mixup_alpha` | 0.2 | Mixup alpha (0 disables) |
 | `--mixup_probability` | 0.25 | Fraction of batch to mix |
+| `--spec_augment` | False | Enable SpecAugment masking |
+| `--freq_mask_max` | 8 | Max frequency mask width (bins) |
+| `--time_mask_max` | 25 | Max time mask width (frames) |
+| `--dropout` | 0.5 | Dropout rate before classifier head |
+| `--optimizer` | adam | `adam`, `sgd`, or `adamw` |
+| `--weight_decay` | 0.0 | Weight decay (adamw only) |
+| `--loss` | auto | `auto` (BCE) or `focal` |
+| `--focal_gamma` | 2.0 | Focal loss focusing parameter |
+| `--deterministic` | False | Enable deterministic training |
+| `--seed` | 42 | Random seed (with `--deterministic`) |
 | `--batch_size` | 32 | Batch size |
 | `--epochs` | 50 | Number of epochs |
 | `--learning_rate` | 0.001 | Initial learning rate |

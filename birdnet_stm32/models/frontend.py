@@ -13,11 +13,47 @@ NPU-friendly depthwise convolution branches.
 """
 
 import math
+import warnings
 
 import librosa
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import constraints, layers
+
+# Canonical frontend names and deprecated aliases
+VALID_FRONTENDS = ("librosa", "hybrid", "raw")
+_FRONTEND_ALIASES = {"precomputed": "librosa", "tf": "raw"}
+
+
+def normalize_frontend_name(name: str) -> str:
+    """Normalize a frontend name, emitting deprecation warnings for aliases.
+
+    Canonical names: 'librosa', 'hybrid', 'raw'.
+    Deprecated aliases: 'precomputed' -> 'librosa', 'tf' -> 'raw'.
+
+    Args:
+        name: Frontend name (may be an alias).
+
+    Returns:
+        Canonical frontend name.
+
+    Raises:
+        ValueError: If name is not a valid frontend or alias.
+    """
+    if name in VALID_FRONTENDS:
+        return name
+    canonical = _FRONTEND_ALIASES.get(name)
+    if canonical is not None:
+        warnings.warn(
+            f"Frontend name '{name}' is deprecated, use '{canonical}' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return canonical
+    raise ValueError(f"Invalid audio frontend: '{name}'. Valid options: {VALID_FRONTENDS}")
+
+
+from birdnet_stm32.models.magnitude import MagnitudeScalingLayer  # noqa: E402
 
 
 class AudioFrontendLayer(layers.Layer):
@@ -77,10 +113,6 @@ class AudioFrontendLayer(layers.Layer):
         self.is_trainable = bool(is_trainable)
         self.train_mel_scale = False
 
-        # DB params
-        self.db_eps = 1e-6
-        self.db_ref = 1.0
-
         # Fixed input samples for one chunk
         self._T = int(self.sample_rate * self.chunk_duration)
         self._pad_ch_in = 0
@@ -138,83 +170,14 @@ class AudioFrontendLayer(layers.Layer):
             self.fb_bn = None
             self.fb_relu = None
 
-        # PCEN sublayers
-        if self.mag_scale == "pcen":
-            self._pcen_pools = [
-                layers.AveragePooling2D(pool_size=(1, 1), strides=(1, 1), padding="same", name=f"{name}_pcen_ema{k}")
-                for k in range(self.pcen_K)
-            ]
-            self._pcen_agc_dw = layers.DepthwiseConv2D(
-                (1, 1),
-                use_bias=False,
-                depthwise_initializer=tf.keras.initializers.Constant(0.6),
-                padding="same",
-                name=f"{name}_pcen_agc_dw",
-                trainable=self.is_trainable,
-            )
-            self._pcen_k1_dw = layers.DepthwiseConv2D(
-                (1, 1),
-                use_bias=False,
-                depthwise_initializer=tf.keras.initializers.Constant(0.15),
-                padding="same",
-                name=f"{name}_pcen_k1_dw",
-                trainable=self.is_trainable,
-            )
-            self._pcen_shift_dw = layers.DepthwiseConv2D(
-                (1, 1),
-                use_bias=True,
-                depthwise_initializer=tf.keras.initializers.Ones(),
-                bias_initializer=tf.keras.initializers.Constant(-0.2),
-                padding="same",
-                name=f"{name}_pcen_shift_dw",
-                trainable=self.is_trainable,
-            )
-            self._pcen_k2mk1_dw = layers.DepthwiseConv2D(
-                (1, 1),
-                use_bias=False,
-                depthwise_initializer=tf.keras.initializers.Constant(0.45),
-                padding="same",
-                name=f"{name}_pcen_k2mk1_dw",
-                trainable=self.is_trainable,
-            )
-
-        # PWL sublayers
-        if self.mag_scale == "pwl":
-            self._pwl_k0_dw = layers.DepthwiseConv2D(
-                (1, 1),
-                use_bias=False,
-                depthwise_initializer=tf.keras.initializers.Constant(0.40),
-                padding="same",
-                name=f"{name}_pwl_k0_dw",
-                trainable=self.is_trainable,
-            )
-            self._pwl_shift_dws = [
-                layers.DepthwiseConv2D(
-                    (1, 1),
-                    use_bias=True,
-                    depthwise_initializer=tf.keras.initializers.Ones(),
-                    bias_initializer=tf.keras.initializers.Constant(-t),
-                    padding="same",
-                    name=f"{name}_pwl_shift{i + 1}_dw",
-                    trainable=self.is_trainable,
-                )
-                for i, t in enumerate((0.10, 0.35, 0.65))
-            ]
-            self._pwl_k_dws = [
-                layers.DepthwiseConv2D(
-                    (1, 1),
-                    use_bias=False,
-                    depthwise_initializer=tf.keras.initializers.Constant(k),
-                    padding="same",
-                    name=f"{name}_pwl_k{i + 1}_dw",
-                    trainable=self.is_trainable,
-                )
-                for i, k in enumerate((0.25, 0.15, 0.08))
-            ]
-        else:
-            self._pwl_k0_dw = None
-            self._pwl_shift_dws = []
-            self._pwl_k_dws = []
+        # Magnitude scaling (composable layer)
+        self.mag_layer = MagnitudeScalingLayer(
+            method=self.mag_scale,
+            channels=self.mel_bins,
+            pcen_K=self.pcen_K,
+            is_trainable=self.is_trainable,
+            name=f"{name}_mag",
+        )
 
     def build(self, input_shape):
         """Build the frontend layer based on the selected mode."""
@@ -247,7 +210,7 @@ class AudioFrontendLayer(layers.Layer):
             if self.fb_bn is not None:
                 self.fb_bn.build(tf.TensorShape([None, 1, static_w, int(self.mel_bins)]))
 
-        self._build_mag_layers()
+        self._build_mag_layer()
         super().build(input_shape)
 
     def _compute_tri_matrix(self) -> tf.Tensor:
@@ -312,75 +275,15 @@ class AudioFrontendLayer(layers.Layer):
         self.mel_mixer.set_weights([mel_kernel])
         self._pad_ch_in = pad
 
-    def _build_mag_layers(self):
-        """Ensure magnitude scaling sub-layers are built."""
+    def _build_mag_layer(self):
+        """Ensure the magnitude scaling layer is built."""
         post_mel_shape = tf.TensorShape([None, 1, None, int(self.mel_bins)])
-        if self.mag_scale == "pcen":
-            for pool in self._pcen_pools:
-                if not pool.built:
-                    pool.build(post_mel_shape)
-            for dw in (self._pcen_agc_dw, self._pcen_k1_dw, self._pcen_shift_dw, self._pcen_k2mk1_dw):
-                if dw is not None and not dw.built:
-                    dw.build(post_mel_shape)
-        if self.mag_scale == "pwl":
-            if self._pwl_k0_dw is not None and not self._pwl_k0_dw.built:
-                self._pwl_k0_dw.build(post_mel_shape)
-            for s in self._pwl_shift_dws:
-                if not s.built:
-                    s.build(post_mel_shape)
-            for k in self._pwl_k_dws:
-                if not k.built:
-                    k.build(post_mel_shape)
-
-    def _apply_pcen(self, x):
-        """PCEN-like compression using only pool/conv/ReLU/Add ops."""
-        if not self._pcen_pools:
-            return x
-        m = x
-        for pool in self._pcen_pools:
-            m = pool(m)
-        agc = self._pcen_agc_dw(m) if self._pcen_agc_dw is not None else m
-        y0 = tf.nn.relu(x - agc)
-        b1 = self._pcen_k1_dw(y0) if self._pcen_k1_dw is not None else y0
-        y_shift = self._pcen_shift_dw(y0) if self._pcen_shift_dw is not None else y0
-        relu = tf.nn.relu(y_shift)
-        b2 = self._pcen_k2mk1_dw(relu) if self._pcen_k2mk1_dw is not None else relu
-        y = b1 + b2
-        return tf.nn.relu(y)
-
-    def _apply_pwl(self, x):
-        """Piecewise-linear compression via 1x1 depthwise branches."""
-        branches = []
-        if self._pwl_k0_dw is not None:
-            branches.append(self._pwl_k0_dw(x))
-        for _i, (shift_dw, k_dw) in enumerate(zip(self._pwl_shift_dws, self._pwl_k_dws, strict=True), start=1):
-            relu = tf.nn.relu(shift_dw(x))
-            branches.append(k_dw(relu))
-        if not branches:
-            return x
-        y = branches[0]
-        for j, b in enumerate(branches[1:], start=1):
-            y = tf.add(y, b, name=f"{self.name}_pwl_add_{j}")
-        return y
-
-    def _apply_db(self, x: tf.Tensor) -> tf.Tensor:
-        """Apply dB log compression (10 * log10)."""
-        eps = tf.cast(self.db_eps, x.dtype)
-        ref = tf.cast(self.db_ref, x.dtype)
-        log10 = tf.math.log(tf.cast(10.0, x.dtype))
-        safe = tf.maximum(x, eps)
-        y = tf.math.log(safe / ref) / log10
-        return tf.cast(10.0, x.dtype) * y
+        if not self.mag_layer.built:
+            self.mag_layer.build(post_mel_shape)
 
     def _apply_mag(self, x):
-        """Dispatch to the selected magnitude scaling."""
-        if self.mag_scale == "pcen":
-            return self._apply_pcen(x)
-        if self.mag_scale == "pwl":
-            return self._apply_pwl(x)
-        if self.mag_scale == "db":
-            return self._apply_db(x)
-        return x
+        """Dispatch to the magnitude scaling layer."""
+        return self.mag_layer(x)
 
     def call(self, inputs, training=None):
         """Run the selected frontend path and return a fixed-size spectrogram.

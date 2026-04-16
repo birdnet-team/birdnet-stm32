@@ -4,12 +4,13 @@ import math
 import os
 
 import numpy as np
-from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score
 from tqdm import tqdm
 
 from birdnet_stm32.audio.io import load_audio_file
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
 from birdnet_stm32.evaluation.pooling import pool_scores
+from birdnet_stm32.models.frontend import normalize_frontend_name
 
 
 def make_chunks_for_file(
@@ -25,7 +26,7 @@ def make_chunks_for_file(
     Args:
         path: Audio file path.
         cfg: Training config dict (sample_rate, chunk_duration, num_mels, spec_width).
-        frontend: 'precomputed'|'librosa'|'hybrid'|'raw'|'tf'.
+        frontend: 'librosa'|'hybrid'|'raw'.
         mag_scale: Magnitude scaling for precomputed paths.
         n_fft: FFT length.
         chunk_overlap: Overlap fraction (seconds) between consecutive chunks.
@@ -43,7 +44,7 @@ def make_chunks_for_file(
     )
 
     out: list[np.ndarray] = []
-    if frontend in ("precomputed", "librosa"):
+    if frontend == "librosa":
         for ch in chunks:
             S = get_spectrogram_from_audio(
                 ch, sample_rate=sr, n_fft=n_fft, mel_bins=num_mels, spec_width=spec_width, mag_scale=mag_scale
@@ -56,7 +57,7 @@ def make_chunks_for_file(
             if S.shape[0] != fft_bins:
                 S = S[:fft_bins, :spec_width]
             out.append(S[:, :, None].astype(np.float32))
-    elif frontend in ("tf", "raw"):
+    elif frontend == "raw":
         chunk_len = int(cfg["chunk_duration"] * cfg["sample_rate"])
         for ch in chunks:
             x = ch[:chunk_len]
@@ -94,7 +95,7 @@ def evaluate(
     Returns:
         Tuple of (metrics dict, per_file list, y_true array, y_scores array).
     """
-    frontend = cfg["audio_frontend"]
+    frontend = normalize_frontend_name(cfg["audio_frontend"])
     mag_scale = cfg.get("mag_scale", "none")
     n_fft = int(cfg["fft_length"])
     num_classes = len(classes)
@@ -171,3 +172,33 @@ def evaluate(
         metrics["mAP"] = float("nan")
 
     return metrics, per_file, y_true_arr, y_scores_arr
+
+
+def optimize_thresholds(
+    y_true: np.ndarray,
+    y_scores: np.ndarray,
+    classes: list[str],
+) -> dict[str, float]:
+    """Find per-class thresholds that maximize F1 using the precision-recall curve.
+
+    Args:
+        y_true: Binary ground-truth array of shape ``(n_samples, n_classes)``.
+        y_scores: Predicted scores of shape ``(n_samples, n_classes)``.
+        classes: Class name list matching the column order.
+
+    Returns:
+        Dictionary mapping each class name to its optimal threshold.
+    """
+    optimal: dict[str, float] = {}
+    for ci, cls_name in enumerate(classes):
+        col_true = y_true[:, ci]
+        col_scores = y_scores[:, ci]
+        if col_true.sum() == 0:
+            optimal[cls_name] = 0.5
+            continue
+        prec, rec, thresholds = precision_recall_curve(col_true, col_scores)
+        # precision_recall_curve returns len(thresholds) == len(prec) - 1
+        f1_scores = 2 * prec[:-1] * rec[:-1] / (prec[:-1] + rec[:-1] + 1e-12)
+        best_idx = int(np.argmax(f1_scores))
+        optimal[cls_name] = float(thresholds[best_idx])
+    return optimal

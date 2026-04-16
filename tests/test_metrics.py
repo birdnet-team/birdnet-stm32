@@ -49,7 +49,7 @@ class TestEvaluateMetrics:
             "num_mels": 64,
             "spec_width": 256,
             "fft_length": 512,
-            "audio_frontend": "precomputed",
+            "audio_frontend": "librosa",
             "mag_scale": "none",
         }
         return files, classes, cfg
@@ -93,7 +93,7 @@ class TestEvaluateMetrics:
             "num_mels": 64,
             "spec_width": 256,
             "fft_length": 512,
-            "audio_frontend": "precomputed",
+            "audio_frontend": "librosa",
             "mag_scale": "none",
         }
         runner = FakeRunner(np.array([[0.5, 0.5]]))

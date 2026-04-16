@@ -58,7 +58,7 @@ class TestTrainToEval:
             chunk_duration=cd,
             embeddings_size=64,
             num_classes=len(classes),
-            audio_frontend="precomputed",
+            audio_frontend="librosa",
             alpha=0.25,
             depth_multiplier=1,
             mag_scale="none",
@@ -114,7 +114,7 @@ class TestTrainToEval:
             "num_mels": num_mels,
             "spec_width": spec_width,
             "fft_length": 256,
-            "audio_frontend": "precomputed",
+            "audio_frontend": "librosa",
             "mag_scale": "none",
         }
         runner = TFLiteRunner(tflite_path)

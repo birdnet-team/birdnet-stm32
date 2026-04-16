@@ -8,8 +8,10 @@ import numpy as np
 import tensorflow as tf
 
 from birdnet_stm32.audio.activity import pick_random_samples, sort_by_activity
+from birdnet_stm32.audio.augmentation import apply_spec_augment
 from birdnet_stm32.audio.io import load_audio_file
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
+from birdnet_stm32.models.frontend import normalize_frontend_name
 
 
 def data_generator(
@@ -28,6 +30,9 @@ def data_generator(
     mag_scale: str = "none",
     random_offset: bool = False,
     snr_threshold: float = 0.5,
+    spec_augment: bool = False,
+    freq_mask_max: int = 8,
+    time_mask_max: int = 25,
 ):
     """Yield batches of (inputs, one_hot_labels) for training/validation.
 
@@ -40,7 +45,7 @@ def data_generator(
         file_paths: Audio file paths.
         classes: Ordered class names for one-hot encoding.
         batch_size: Batch size.
-        audio_frontend: 'precomputed' | 'librosa' | 'hybrid' | 'raw' | 'tf'.
+        audio_frontend: 'librosa' | 'hybrid' | 'raw' (deprecated: 'precomputed', 'tf').
         sample_rate: Sampling rate (Hz).
         max_duration: Max duration to read per file (seconds).
         chunk_duration: Chunk duration (seconds).
@@ -52,10 +57,14 @@ def data_generator(
         mag_scale: 'pcen' | 'pwl' | 'db' | 'none'.
         random_offset: Randomly offset chunk start within file.
         snr_threshold: Minimum activity threshold for chunk selection.
+        spec_augment: Apply SpecAugment (freq/time masking) to spectrograms.
+        freq_mask_max: Maximum frequency mask width (bins) for SpecAugment.
+        time_mask_max: Maximum time mask width (frames) for SpecAugment.
 
     Yields:
         Tuple of (inputs, labels) for a batch. Infinite generator.
     """
+    audio_frontend = normalize_frontend_name(audio_frontend)
     T = int(sample_rate * chunk_duration)
     while True:
         idxs = np.random.permutation(len(file_paths))
@@ -70,7 +79,7 @@ def data_generator(
                     audio_chunks = [np.random.uniform(-1.0, 1.0, size=(T,)).astype(np.float32)]
                     label_str = "noise"
 
-                if audio_frontend in ("librosa", "precomputed"):
+                if audio_frontend == "librosa":
                     specs = [
                         get_spectrogram_from_audio(
                             chunk,
@@ -101,7 +110,7 @@ def data_generator(
                     sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
                     sample = sample[0] if isinstance(sample, list) else sample
 
-                elif audio_frontend in ("tf", "raw"):
+                elif audio_frontend == "raw":
                     pool = sort_by_activity(audio_chunks, threshold=snr_threshold) or audio_chunks
                     if len(pool) == 0:
                         continue
@@ -122,6 +131,14 @@ def data_generator(
                     if label_str not in classes:
                         continue
                     one_hot_label = tf.one_hot(classes.index(label_str), depth=len(classes)).numpy()
+
+                # SpecAugment (only for spectrogram-based frontends)
+                if spec_augment and audio_frontend in ("librosa", "hybrid"):
+                    sample = apply_spec_augment(
+                        sample,
+                        freq_mask_max=freq_mask_max,
+                        time_mask_max=time_mask_max,
+                    )
 
                 sample = np.expand_dims(sample, axis=-1)
                 batch_samples.append(sample.astype(np.float32))
@@ -165,7 +182,7 @@ def load_dataset(
     Args:
         file_paths: Audio file paths.
         classes: Ordered class names.
-        audio_frontend: 'precomputed' | 'librosa' | 'hybrid' | 'raw' | 'tf'.
+        audio_frontend: 'librosa' | 'hybrid' | 'raw' (deprecated: 'precomputed', 'tf').
         batch_size: Batch size.
         spec_width: Target spectrogram width.
         mel_bins: Number of mel bins.
@@ -174,17 +191,18 @@ def load_dataset(
     Returns:
         Infinite tf.data.Dataset of (inputs, labels) with prefetching.
     """
+    audio_frontend = normalize_frontend_name(audio_frontend)
     sr = kwargs.get("sample_rate", 16000)
     cd = kwargs.get("chunk_duration", 3)
     fft_length = kwargs.get("fft_length", 512)
     chunk_len = int(sr * cd)
 
-    if audio_frontend in ("librosa", "precomputed"):
+    if audio_frontend == "librosa":
         input_spec = tf.TensorSpec(shape=(None, mel_bins, spec_width, 1), dtype=tf.float32)
     elif audio_frontend == "hybrid":
         fft_bins = fft_length // 2 + 1
         input_spec = tf.TensorSpec(shape=(None, fft_bins, spec_width, 1), dtype=tf.float32)
-    elif audio_frontend in ("tf", "raw"):
+    elif audio_frontend == "raw":
         input_spec = tf.TensorSpec(shape=(None, chunk_len, 1), dtype=tf.float32)
     else:
         raise ValueError(f"Invalid audio frontend: {audio_frontend}")
@@ -207,6 +225,9 @@ def load_dataset(
             fft_length=fft_length,
             mag_scale=kwargs.get("mag_scale", "none"),
             random_offset=kwargs.get("random_offset", False),
+            spec_augment=kwargs.get("spec_augment", False),
+            freq_mask_max=kwargs.get("freq_mask_max", 8),
+            time_mask_max=kwargs.get("time_mask_max", 25),
         ),
         output_signature=output_signature,
     )
