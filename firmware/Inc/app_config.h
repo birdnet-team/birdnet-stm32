@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: Apache-2.0
  * BirdNET-STM32 — SD card batch inference application
  *
- * Reads WAV files from SD:/audio/, computes STFT, runs NPU inference,
- * writes results to SD:/results.txt and echoes over UART.
+ * Audio and inference parameters, must match model_config.json.
+ * These values are patched by the Python board_test.py orchestrator
+ * at deploy time based on the model configuration.
  *
  * Target: STM32N6570-DK  (Cortex-M55 + NPU)
- * Dependencies: STM32CubeN6 HAL, BSP, FatFs, CMSIS-DSP, LL_ATON runtime
  */
 
 #ifndef APP_CONFIG_H
@@ -19,7 +19,7 @@
 #define APP_FFT_BINS          (APP_FFT_LENGTH / 2 + 1)               /* 257   */
 #define APP_HOP_LENGTH        258
 #define APP_SPEC_WIDTH        256
-#define APP_NUM_CLASSES       10         /* update to match your model         */
+#define APP_NUM_CLASSES       1000       /* patched at deploy time             */
 
 /* --- SD card paths -------------------------------------------------------- */
 #define APP_AUDIO_DIR         "audio"

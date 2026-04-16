@@ -1,27 +1,41 @@
 /* SPDX-License-Identifier: Apache-2.0
- * SD card handler — FatFs mount, directory scan, results writer.
+ * SD card handler — BSP SD init, FatFs mount, directory scan, results writer.
  *
- * Uses FatFs with the STM32 SDMMC BSP driver.
+ * Uses BSP_SD_Init() + HAL_SD + FatFs with the ST sd_diskio driver.
  */
 
 #include "sd_handler.h"
+#include "ff_gen_drv.h"
+#include "sd_diskio.h"
+#include "stm32n6570_discovery_sd.h"
 #include <string.h>
 #include <stdio.h>
 
 /* FatFs objects */
 static FATFS sd_fs;
+static char sd_path[4];  /* "0:/" — filled by FATFS_LinkDriver */
 
 /* ---- Public API ---------------------------------------------------------- */
 
 bool sd_mount(void)
 {
-    FRESULT res = f_mount(&sd_fs, "", 1 /* mount now */);
+    /* Initialize the BSP SD driver (SDMMC2, GPIO, clocks) */
+    if (BSP_SD_Init(0) != BSP_ERROR_NONE)
+        return false;
+
+    /* Link the SD diskio driver to FatFs */
+    if (FATFS_LinkDriver(&SD_Driver, sd_path) != 0)
+        return false;
+
+    /* Mount the filesystem */
+    FRESULT res = f_mount(&sd_fs, sd_path, 1 /* mount now */);
     return (res == FR_OK);
 }
 
 void sd_unmount(void)
 {
-    f_mount(NULL, "", 0);
+    f_mount(NULL, sd_path, 0);
+    FATFS_UnLinkDriver(sd_path);
 }
 
 uint32_t sd_scan_audio_dir(const char *dir_path, SdFileList *list)

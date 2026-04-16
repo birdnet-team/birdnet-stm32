@@ -1,4 +1,4 @@
-"""CLI entry point for on-board inference tests."""
+"""CLI entry point for standalone on-board inference tests."""
 
 import argparse
 import os
@@ -10,7 +10,11 @@ from birdnet_stm32.deploy.config import resolve_deploy_config
 def get_args() -> argparse.Namespace:
     """Parse command-line arguments for board test."""
     parser = argparse.ArgumentParser(
-        description="Run inference on real audio data using the STM32N6570-DK NPU."
+        description=(
+            "Run standalone inference on the STM32N6570-DK: firmware reads WAV "
+            "from SD card, computes STFT on Cortex-M55, runs NPU inference, "
+            "and streams results over UART."
+        ),
     )
     parser.add_argument(
         "--model_path",
@@ -26,10 +30,10 @@ def get_args() -> argparse.Namespace:
     )
     parser.add_argument("--labels", type=str, default="", help="Path to _labels.txt")
     parser.add_argument(
-        "--audio_dir",
+        "--serial_port",
         type=str,
-        default="data/test",
-        help="Directory tree of .wav files to test",
+        default="/dev/ttyACM0",
+        help="Serial port for UART capture (default: /dev/ttyACM0)",
     )
     parser.add_argument("--top_k", type=int, default=5, help="Top-K predictions per file")
     parser.add_argument(
@@ -40,6 +44,12 @@ def get_args() -> argparse.Namespace:
     )
     parser.add_argument("--config", type=str, default="config.json", help="Deploy config JSON")
     parser.add_argument(
+        "--timeout",
+        type=int,
+        default=300,
+        help="Max seconds to wait for firmware (default: 300)",
+    )
+    parser.add_argument(
         "--save_results",
         type=str,
         default="",
@@ -49,7 +59,7 @@ def get_args() -> argparse.Namespace:
 
 
 def main():
-    """Run on-board inference test."""
+    """Run standalone on-board inference test."""
     args = get_args()
 
     # Resolve deploy config
@@ -83,9 +93,10 @@ def main():
         deploy_cfg=deploy_cfg,
         model_config_path=model_config,
         labels_path=labels_path,
-        audio_dir=args.audio_dir,
+        serial_port=args.serial_port,
         top_k=args.top_k,
         score_threshold=args.score_threshold,
+        timeout=args.timeout,
     )
 
     result = run_board_test(board_cfg)
@@ -100,6 +111,10 @@ def main():
                 top = r["detections"][0] if r["detections"] else {"label": "", "score": 0.0}
                 writer.writerow([r["file"], top["label"], f"{top['score']:.4f}"])
         print(f"\nResults saved to {args.save_results}")
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":

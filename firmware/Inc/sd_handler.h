@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: Apache-2.0
- * SD card handler — FatFs mount/unmount, directory scan, results writer.
+ * SD card handler — BSP SD init, FatFs mount, directory scan, results writer.
  */
 
 #ifndef SD_HANDLER_H
