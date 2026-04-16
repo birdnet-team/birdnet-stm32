@@ -37,7 +37,7 @@
 #define FF_CODE_PAGE  437
 /* U.S. code page — species names are ASCII/Latin. */
 
-#define FF_USE_LFN    1
+#define FF_USE_LFN    0
 #define FF_MAX_LFN    255
 /* LFN on stack (mode 1). Species folder names can be long. */
 
