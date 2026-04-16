@@ -38,7 +38,26 @@ python test.py --model_path checkpoints/best_model_quantized.tflite \
 
 # Deploy to STM32N6570-DK (requires config.json; see config.example.json)
 python -m birdnet_stm32 deploy
+
+# On-board integration test (requires SD card with test audio)
+python -m birdnet_stm32 board-test
 ```
+
+### SD card preparation for board-test
+
+The `board-test` command runs inference entirely on the STM32N6570-DK: it reads WAV
+files from the SD card, computes the STFT on the Cortex-M55, and runs the model on the
+NPU. **WAV files on the SD card must match the model's sample rate** (printed in the
+`_model_config.json` file, e.g. 24000 Hz). Files with a mismatched sample rate are
+skipped as errors.
+
+Prepare the SD card as follows:
+
+1. Format as FAT32.
+2. Create an `audio/` directory at the root.
+3. Copy `.wav` files (mono or stereo, 16-bit PCM) into `audio/`.
+   Each file should be at least as long as the model's chunk duration (default 3 s).
+4. Insert the SD card into the STM32N6570-DK board slot.
 
 See the [full documentation](https://birdnet-team.github.io/birdnet-stm32) for detailed guides on [dataset preparation](https://birdnet-team.github.io/birdnet-stm32/dataset/), [training](https://birdnet-team.github.io/birdnet-stm32/training/), [conversion](https://birdnet-team.github.io/birdnet-stm32/conversion/), [evaluation](https://birdnet-team.github.io/birdnet-stm32/evaluation/), and [deployment](https://birdnet-team.github.io/birdnet-stm32/deployment/).
 

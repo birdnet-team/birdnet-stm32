@@ -143,3 +143,7 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+# Firmware build artifacts
+firmware/build/
+firmware/network.c
+firmware/network.h
