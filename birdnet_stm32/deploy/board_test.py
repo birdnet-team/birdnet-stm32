@@ -1,220 +1,280 @@
-"""Host-side orchestrator for on-board SD card inference tests.
+"""On-board inference test for the STM32N6570-DK.
 
-Workflow:
-1. Generate NPU artifacts from the quantized TFLite model (stedgeai generate).
-2. Patch the firmware to include the generated network and labels.
-3. Build the firmware (CMake / GCC for Cortex-M55).
-4. Flash the firmware to the STM32N6570-DK board.
-5. Monitor serial output for results and completion.
-6. (Optional) Parse results and compare against expected labels.
+Full end-to-end pipeline:
+1. Pre-compute STFT spectrograms from real audio files (host).
+2. Deploy the model: stedgeai generate → n6_loader compile+flash (automated).
+3. Run stedgeai validate with real spectrograms → NPU inference on the board.
+4. Read back on-device predictions, map to class labels, and report.
+
+The NPU inference runs on real hardware with real audio data. The STFT is
+deterministic fixed math (identical on host and target), so it is computed
+on the host to avoid needing the STM32CubeN6 FatFs/SDMMC/CMSIS-DSP sources
+that are not part of X-CUBE-AI.
 """
 
+import json
 import os
-import re
+import subprocess
 import sys
-import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
-import serial
+import numpy as np
 
 from birdnet_stm32.deploy.config import DeployConfig
 
 
 @dataclass
 class BoardTestConfig:
-    """Configuration for on-board SD card inference tests.
+    """Configuration for on-board inference tests.
 
     Attributes:
         deploy_cfg: Base deployment configuration.
-        firmware_dir: Path to the firmware source directory.
+        model_config_path: Path to the _model_config.json file.
         labels_path: Path to the _labels.txt file.
-        serial_port: Serial port for UART output.
-        serial_baud: Baud rate for UART.
-        timeout: Maximum seconds to wait for board completion.
+        audio_dir: Directory of WAV files to test.
+        top_k: Number of top predictions to show per file.
+        score_threshold: Minimum score to display.
     """
 
     deploy_cfg: DeployConfig = field(default_factory=DeployConfig)
-    firmware_dir: str = "firmware"
+    model_config_path: str = ""
     labels_path: str = ""
-    serial_port: str = "/dev/ttyACM0"
-    serial_baud: int = 115200
-    timeout: int = 300
+    audio_dir: str = "data/test"
+    top_k: int = 5
+    score_threshold: float = 0.01
 
 
-def generate_labels_header(labels_path: str, output_path: str, num_classes: int):
-    """Generate a C header with class labels from a labels.txt file.
+def load_model_config(config_path: str) -> dict:
+    """Load model configuration from JSON.
+
+    Args:
+        config_path: Path to _model_config.json.
+
+    Returns:
+        Dict with model configuration.
+    """
+    with open(config_path) as f:
+        return json.load(f)
+
+
+def load_labels(labels_path: str) -> list[str]:
+    """Load class labels from a labels.txt file.
 
     Args:
         labels_path: Path to _labels.txt (one label per line).
-        output_path: Output .h file path.
-        num_classes: Expected number of classes.
+
+    Returns:
+        List of label strings.
     """
     with open(labels_path) as f:
-        labels = [line.strip() for line in f if line.strip()]
-
-    if len(labels) != num_classes:
-        print(f"[WARN] labels.txt has {len(labels)} entries, expected {num_classes}")
-
-    with open(output_path, "w") as f:
-        f.write("/* Auto-generated — do not edit. */\n")
-        f.write("#ifndef APP_LABELS_H\n#define APP_LABELS_H\n\n")
-        f.write(f"#define APP_NUM_CLASSES_ACTUAL {len(labels)}\n\n")
-        f.write("static const char * const APP_LABELS[] = {\n")
-        for label in labels:
-            escaped = label.replace('"', '\\"')
-            f.write(f'    "{escaped}",\n')
-        f.write("};\n\n#endif /* APP_LABELS_H */\n")
-    print(f"[OK] Generated labels header: {output_path} ({len(labels)} classes)")
+        return [line.strip() for line in f if line.strip()]
 
 
-def monitor_serial(port: str, baud: int, timeout: int) -> str:
-    """Monitor serial output from the board until completion or timeout.
+def prepare_spectrograms(
+    audio_dir: str,
+    model_cfg: dict,
+    max_files: int = 0,
+) -> tuple[np.ndarray, list[str]]:
+    """Compute STFT spectrograms from WAV files for on-board inference.
 
-    Looks for the '=== DONE ===' marker in the output.
+    Matches the hybrid frontend: linear magnitude STFT, normalized to [0, 1],
+    shape [N, fft_bins, spec_width, 1].
 
     Args:
-        port: Serial port path.
-        baud: Baud rate.
-        timeout: Maximum seconds to wait.
+        audio_dir: Directory tree containing WAV files.
+        model_cfg: Model config dict (sample_rate, fft_length, etc.).
+        max_files: Maximum number of files to process (0 = all).
 
     Returns:
-        Complete serial output as a string.
+        Tuple of (spectrograms array, list of file paths).
     """
-    output_lines: list[str] = []
-    print(f"[serial] Monitoring {port} @ {baud} baud (timeout: {timeout}s)")
+    from utils.audio import get_spectrogram_from_audio, load_audio_file
 
-    try:
-        with serial.Serial(port, baud, timeout=1) as ser:
-            start = time.monotonic()
-            while (time.monotonic() - start) < timeout:
-                line = ser.readline().decode("utf-8", errors="replace").rstrip()
-                if not line:
-                    continue
-                print(f"  > {line}")
-                output_lines.append(line)
-                if "=== DONE ===" in line:
-                    # Read a few more lines for the summary
-                    for _ in range(5):
-                        extra = ser.readline().decode("utf-8", errors="replace").rstrip()
-                        if extra:
-                            print(f"  > {extra}")
-                            output_lines.append(extra)
-                    break
-            else:
-                print(f"[WARN] Timeout after {timeout}s — board may still be processing")
-    except serial.SerialException as e:
-        print(f"[ERROR] Serial: {e}")
+    sr = model_cfg["sample_rate"]
+    n_fft = model_cfg["fft_length"]
+    spec_width = model_cfg["spec_width"]
+    chunk_duration = model_cfg["chunk_duration"]
+    fft_bins = n_fft // 2 + 1
 
-    return "\n".join(output_lines)
+    # Collect WAV files
+    wav_files = sorted(
+        str(p) for p in Path(audio_dir).rglob("*.wav")
+    )
+    if not wav_files:
+        print(f"[ERROR] No .wav files found in {audio_dir}")
+        sys.exit(1)
+    if max_files > 0:
+        wav_files = wav_files[:max_files]
 
+    print(f"[OK] Found {len(wav_files)} audio files in {audio_dir}")
 
-def parse_serial_results(output: str) -> list[dict]:
-    """Parse detection results from serial output.
+    spectrograms = []
+    file_paths = []
 
-    Expects lines like:
-        [1/5] filename.wav:
-            [1] Species Name: 95.3%
-
-    Args:
-        output: Raw serial output string.
-
-    Returns:
-        List of dicts with 'filename' and 'detections' keys.
-    """
-    results: list[dict] = []
-    current_file = None
-
-    for line in output.split("\n"):
-        # Match file header: [N/M] filename.wav
-        file_match = re.match(r"\s*\[\d+/\d+\]\s+(.+\.wav)", line, re.IGNORECASE)
-        if file_match:
-            current_file = {"filename": file_match.group(1).strip(), "detections": []}
-            results.append(current_file)
+    for i, wav_path in enumerate(wav_files):
+        chunks = load_audio_file(
+            wav_path,
+            sample_rate=sr,
+            chunk_duration=chunk_duration,
+            random_offset=False,
+        )
+        if len(chunks) == 0:
+            print(f"  [{i + 1}] SKIP {wav_path} (could not load)")
             continue
 
-        # Match detection: [K] Label: XX.X%
-        det_match = re.match(r"\s*\[\d+\]\s+(.+):\s+(\d+\.\d+)%", line)
-        if det_match and current_file is not None:
-            current_file["detections"].append(
-                {"label": det_match.group(1).strip(), "score_pct": float(det_match.group(2))}
-            )
+        # For each file, compute spectrogram of the first chunk
+        # (matching how the model sees a single 3s window)
+        chunk = chunks[0]
+        spec = get_spectrogram_from_audio(
+            chunk,
+            sample_rate=sr,
+            n_fft=n_fft,
+            mel_bins=-1,  # linear STFT for hybrid frontend
+            spec_width=spec_width,
+        )
+        if spec is None or spec.size == 0:
+            print(f"  [{i + 1}] SKIP {wav_path} (empty spectrogram)")
+            continue
 
-    return results
+        assert spec.shape == (fft_bins, spec_width), (
+            f"Expected ({fft_bins}, {spec_width}), got {spec.shape}"
+        )
+        spectrograms.append(spec.astype(np.float32))
+        file_paths.append(wav_path)
+        rel = os.path.relpath(wav_path, audio_dir)
+        print(f"  [{i + 1}/{len(wav_files)}] {rel}")
+
+    if not spectrograms:
+        print("[ERROR] No valid spectrograms produced")
+        sys.exit(1)
+
+    # Stack into [N, fft_bins, spec_width, 1]
+    arr = np.stack(spectrograms)[:, :, :, np.newaxis]
+    print(f"[OK] Prepared {arr.shape[0]} spectrograms, shape {arr.shape}")
+    return arr, file_paths
 
 
-def run_board_test(cfg: BoardTestConfig) -> str:
+def run_board_test(cfg: BoardTestConfig) -> dict:
     """Execute the full on-board inference test.
 
     Steps:
-    1. Run stedgeai generate (compile model for NPU).
-    2. Copy labels.txt to SD card root (if accessible) or firmware build dir.
-    3. Build and flash firmware.
-    4. Monitor serial output until completion.
+    1. Pre-compute STFT spectrograms from audio files.
+    2. Deploy model to board (generate + compile + flash).
+    3. Run on-target validation with real spectrograms.
+    4. Read back NPU predictions and report.
 
     Args:
         cfg: Board test configuration.
 
     Returns:
-        Raw serial output from the board.
+        Dict with 'files', 'predictions', and 'labels' keys.
     """
     deploy = cfg.deploy_cfg
 
-    # Step 1: Validate prerequisites
+    # Validate prerequisites
     if not os.path.isfile(deploy.model_path):
         print(f"[ERROR] Model not found: {deploy.model_path}")
         sys.exit(1)
-    if cfg.labels_path and not os.path.isfile(cfg.labels_path):
-        print(f"[ERROR] Labels file not found: {cfg.labels_path}")
+    if not os.path.isfile(deploy.stedgeai_path):
+        print(f"[ERROR] stedgeai not found: {deploy.stedgeai_path}")
+        sys.exit(1)
+    if not os.path.isfile(cfg.model_config_path):
+        print(f"[ERROR] Model config not found: {cfg.model_config_path}")
         sys.exit(1)
 
+    model_cfg = load_model_config(cfg.model_config_path)
+    labels = load_labels(cfg.labels_path) if cfg.labels_path else []
+
     print("\n=== BirdNET-STM32 Board Test ===\n")
-    print(f"Model:   {deploy.model_path}")
-    print(f"Labels:  {cfg.labels_path or '(default)'}")
-    print(f"Serial:  {cfg.serial_port} @ {cfg.serial_baud}")
-    print(f"Timeout: {cfg.timeout}s\n")
+    print(f"Model:      {deploy.model_path}")
+    print(f"Config:     {cfg.model_config_path}")
+    print(f"Labels:     {cfg.labels_path or '(none)'} ({len(labels)} classes)")
+    print(f"Audio dir:  {cfg.audio_dir}")
+    print(f"Top-K:      {cfg.top_k}")
+    print()
 
-    # Step 2: Generate labels header (for firmware that embeds labels)
-    if cfg.labels_path:
-        labels_h = os.path.join(cfg.firmware_dir, "Inc", "app_labels.h")
-        with open(cfg.labels_path) as f:
-            num_labels = sum(1 for line in f if line.strip())
-        generate_labels_header(cfg.labels_path, labels_h, num_labels)
+    # Step 1: Prepare spectrograms from real audio
+    print("--- Step 1: Prepare spectrograms from audio files ---")
+    specs, file_paths = prepare_spectrograms(cfg.audio_dir, model_cfg)
 
-    # Step 3: Generate NPU artifacts
-    print("\n--- Step 1: Generate NPU artifacts ---")
-    from birdnet_stm32.deploy.stedgeai import generate
+    # Save as .npy for stedgeai --valinput
+    valinput_path = os.path.join(deploy.output_dir, "board_test_inputs.npy")
+    os.makedirs(deploy.output_dir, exist_ok=True)
+    np.save(valinput_path, specs)
+    print(f"[OK] Saved validation inputs to {valinput_path}")
+
+    # Step 2: Deploy model to board (generate + compile + flash)
+    print("\n--- Step 2: Deploy model to board ---")
+    from birdnet_stm32.deploy.stedgeai import generate, load_to_target
 
     generate(deploy)
+    load_to_target(deploy)
 
-    # Step 4: Build and flash firmware
-    # This step depends on the user's toolchain setup.
-    # The n6_loader.py approach is used for the NPU_Validation project;
-    # for the custom firmware, the user needs to integrate our source files
-    # into their build system.
-    print("\n--- Step 2: Build and flash firmware ---")
-    print("[INFO] Automatic build/flash for custom firmware is not yet implemented.")
-    print("[INFO] Please build and flash the firmware manually, then press Enter")
-    print("[INFO] to start serial monitoring.")
-    print("[INFO]")
-    print("[INFO] Quick guide:")
-    print("[INFO]   1. Copy firmware/Src/*.c and firmware/Inc/*.h into your project")
-    print(f"[INFO]   2. Copy {deploy.output_dir}/network.c into X-CUBE-AI/App/")
-    print("[INFO]   3. Build and flash via STM32CubeIDE or make")
-    print("[INFO]   4. Ensure the SD card with audio/ folder is inserted")
-    input("\nPress Enter to start monitoring serial output...")
+    # Step 3: Run on-target validation with real spectrograms
+    print("\n--- Step 3: Run on-target inference ---")
+    validate_cmd = [
+        deploy.stedgeai_path,
+        "validate",
+        "--model", deploy.model_path,
+        "--target", "stm32n6",
+        "--mode", "target",
+        "--desc", "serial:921600",
+        "--valinput", valinput_path,
+        "--output", deploy.output_dir,
+        "--workspace", deploy.workspace_dir,
+        "--save-csv",
+        "--no-exec-model",
+    ]
+    print(f"  $ {' '.join(validate_cmd)}")
+    result = subprocess.run(validate_cmd, check=False)
+    if result.returncode != 0:
+        print(f"[ERROR] On-target validation failed (exit code {result.returncode})")
+        sys.exit(result.returncode)
 
-    # Step 5: Monitor serial output
-    print("\n--- Step 3: Monitor board output ---")
-    output = monitor_serial(cfg.serial_port, cfg.serial_baud, cfg.timeout)
+    # Step 4: Read back on-device predictions
+    print("\n--- Step 4: Results ---")
+    c_outputs_path = os.path.join(deploy.output_dir, "network_val_c_outputs_1.npy")
+    if not os.path.isfile(c_outputs_path):
+        print(f"[ERROR] On-device outputs not found: {c_outputs_path}")
+        sys.exit(1)
 
-    # Step 6: Parse and report
-    results = parse_serial_results(output)
-    if results:
-        print(f"\n--- Summary: {len(results)} files processed ---")
-        for r in results:
-            dets = ", ".join(f"{d['label']} ({d['score_pct']}%)" for d in r["detections"])
-            print(f"  {r['filename']}: {dets or 'no detections'}")
-    else:
-        print("\n[WARN] No results parsed from serial output")
+    predictions = np.load(c_outputs_path)
+    # stedgeai may add extra batch dims — squeeze to [N, num_classes]
+    while predictions.ndim > 2:
+        predictions = predictions.squeeze(axis=1)
+    print(f"[OK] Read {predictions.shape[0]} predictions from board, shape {predictions.shape}")
 
-    return output
+    num_classes = predictions.shape[1]
+    if len(labels) != num_classes:
+        labels = [f"class_{i}" for i in range(num_classes)]
+
+    # Print per-file results
+    results = []
+    for idx, fpath in enumerate(file_paths):
+        if idx >= predictions.shape[0]:
+            break
+        scores = predictions[idx]
+        top_indices = np.argsort(scores)[::-1][: cfg.top_k]
+        rel_path = os.path.relpath(fpath, cfg.audio_dir)
+
+        detections = []
+        for _rank, ci in enumerate(top_indices):
+            score = float(scores[ci])
+            if score < cfg.score_threshold:
+                continue
+            detections.append({"label": labels[ci], "score": score})
+
+        results.append({"file": rel_path, "detections": detections})
+
+        det_str = ", ".join(
+            f"{d['label']} ({d['score']:.1%})" for d in detections
+        )
+        print(f"\n  [{idx + 1}/{len(file_paths)}] {rel_path}")
+        if det_str:
+            print(f"    {det_str}")
+        else:
+            print("    (no detections above threshold)")
+
+    print(f"\n=== DONE: {len(results)} files tested on board NPU ===")
+    return {"files": file_paths, "predictions": predictions, "labels": labels, "results": results}
