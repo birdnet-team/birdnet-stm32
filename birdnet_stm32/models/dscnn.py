@@ -135,7 +135,7 @@ def build_dscnn_model(
 
     # Enforce STM32N6 constraint for raw frontend
     if audio_frontend == "raw":
-        T = int(sample_rate) * int(chunk_duration)
+        T = int(sample_rate * chunk_duration)
         if T >= (1 << 16):
             raise ValueError(
                 f"STM32N6 constraint: raw input length (sample_rate*chunk_duration={T}) must be < 65536.\n"

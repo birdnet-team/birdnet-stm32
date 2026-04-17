@@ -39,7 +39,7 @@ specs:
 
 | Feature | Detail |
 |---|---|
-| **MCU** | STM32N657X0H3QU — Arm Cortex-M55 @ 800 MHz |
+| **MCU** | STM32N657X0H3QU — Arm Cortex-M55 @ 600 MHz (800 MHz with overdrive) |
 | **NPU** | ST Neural-ART accelerator, 1.2 TOPS (INT8) |
 | **Internal SRAM** | 4.2 MB total (cpuRAM1/2/3, npuRAM1–6, flexRAM) |
 | **External RAM** | 256 Mbit octal HyperRAM (XSPI port 1) |
@@ -130,7 +130,7 @@ SD card → SDMMC2 → FatFs → f_read() → PCM16 buffer → float32 conversio
 
 - Parses the RIFF/WAVE header to extract sample rate, bit depth, channels.
 - Validates sample rate matches `APP_SAMPLE_RATE` (model training rate).
-- Reads the first `APP_CHUNK_SAMPLES` samples (e.g., 72,000 for 24 kHz × 3 s).
+- Reads the first `APP_CHUNK_SAMPLES` samples (e.g., 63,945 for 22050 Hz × 2.9 s).
 - Converts 16-bit signed integers to float32 in `[-1.0, 1.0]` range.
 - Mono extraction: for stereo files, takes channel 0 only.
 - Zero-pads if the file is shorter than one chunk.
@@ -160,7 +160,7 @@ float32 audio → Hann window → 512-pt FFT → magnitude → [257 × 256] spec
 **Why a custom FFT instead of CMSIS-DSP?** The CMSIS-DSP `arm_rfft_fast_f32`
 requires linking `libarm_cortexM55l_math.a`, which adds ~200 KB to the binary
 and complicates the Makefile. Our custom 512-point FFT is ~230 lines of C, has
-zero dependencies, and runs in ~0.1 ms per frame at 800 MHz. For a 256-frame
+zero dependencies, and runs in ~0.1 ms per frame at 600 MHz. For a 256-frame
 spectrogram, the entire STFT takes ~25–35 ms — negligible compared to the 3 s
 audio chunk.
 
@@ -211,18 +211,20 @@ spec_buf → memcpy to NPU input → SCB_CleanDCache → LL_ATON_RT_Main()
    state before reconfiguring.
 4. `system_init_post()` — post-reset cleanup (clear pending interrupts, etc.).
 5. `SCB_EnableICache()` / `SCB_EnableDCache()` — enable CPU caches.
-6. `upscale_vddcore_level()` — raise VDD core voltage to allow 800 MHz.
-7. `SystemClock_Config_HSI_overdrive()` — switch to HSI @ 800 MHz. This is the
-   "overdrive" mode — the CPU runs at maximum clock for best NPU throughput.
-8. `fuse_vddio()` — configure IO voltage rails for external memory interfaces.
-9. `UART_Config()` — USART1 at 921,600 baud (ST-LINK VCP).
-10. `BSP_XSPI_RAM_Init()` + `BSP_XSPI_NOR_Init()` — initialize and
+6. **Clock configuration** — selected at compile time by `USE_OVERDRIVE`:
+   - `USE_OVERDRIVE=0` (default): `SystemClock_Config_HSI_no_overdrive()` —
+     CPU @ 600 MHz, NPU @ 800 MHz. No VDD core upscaling needed.
+   - `USE_OVERDRIVE=1`: `upscale_vddcore_level()` + `SystemClock_Config_HSI_overdrive()`
+     — CPU @ 800 MHz, NPU @ 1 GHz. Requires higher VDD core voltage.
+7. `fuse_vddio()` — configure IO voltage rails for external memory interfaces.
+8. `UART_Config()` — USART1 at 921,600 baud (ST-LINK VCP).
+9. `BSP_XSPI_RAM_Init()` + `BSP_XSPI_NOR_Init()` — initialize and
     memory-map external HyperRAM and NOR flash. The NOR flash contains the NPU
     model weights; memory-mapping makes them accessible as regular read-only
     memory at `0x7200_0000`.
-11. `NPU_Config()` — enable NPU clocks and configure the Neural-ART register
+10. `NPU_Config()` — enable NPU clocks and configure the Neural-ART register
     interface (RISAF, security attributes).
-12. `aiValidationInit()` — empty stub used by `n6_loader.py` as a GDB
+11. `aiValidationInit()` — empty stub used by `n6_loader.py` as a GDB
     breakpoint during the flash process. The script sets a hardware breakpoint
     here, resumes execution, then detaches GDB once the board reaches this
     point. **Do not remove this function.**
@@ -284,7 +286,7 @@ modified** by the board-test workflow:
 | `misc_toolbox.c/h` | UART, NPU, RISAF configuration; `UartHandle` global |
 | `mcu_cache.c/h` | CPU cache enable/clean/invalidate helpers |
 | `npu_cache.c/h` | NPU-specific cache management |
-| `system_clock_config.c` | Clock tree setup (HSI overdrive, PLL) |
+| `system_clock_config.c` | Clock tree setup (overdrive and non-overdrive PLL configs) |
 | `stm32n6xx_it.c` | Interrupt handlers (SysTick, HardFault, etc.) |
 | `syscalls.c` | Newlib stubs (`_write`, `_read`, `_sbrk`) for printf/malloc |
 | `sysmem.c` | Heap region definition |
@@ -303,11 +305,11 @@ modified** by the board-test workflow:
 | `scores` | `APP_NUM_CLASSES` × 4 bytes | float32 | stack |
 | `file_list` | `SD_MAX_FILES × SD_MAX_PATH` bytes | char | .bss |
 
-**Example sizes** (24 kHz, 3 s, 512-FFT, 256 frames, 10 classes):
-- `audio_buf`: 72,000 × 4 = 288 KB
-- `spec_buf`: 257 × 256 × 4 = 263 KB
+**Example sizes** (22050 Hz, 2.9 s, raw frontend, 10 classes):
+- `audio_buf`: 63,945 × 4 = 250 KB
+- `spec_buf`: 257 × 256 × 4 = 263 KB (allocated but unused with raw frontend)
 - `file_list`: 512 × 256 = 128 KB
-- Total application static RAM: ~680 KB
+- Total application static RAM: ~640 KB
 
 ### NPU Memory (Managed by LL_ATON)
 
@@ -332,6 +334,24 @@ overlaid onto ST's NPU_Validation project, which provides:
 - LL_ATON NPU runtime libraries.
 - Linker script, startup code, and Makefile.
 - GDB-based flash loader (`n6_loader.py`).
+
+The firmware also has a **standalone Makefile** for compilation checks and
+configuration. Use `make configure` to generate `app_config.h` and
+`app_labels.h` from a model config:
+
+```bash
+# Generate firmware headers from model config (default: ../checkpoints/best_model_*)
+make configure
+
+# Or specify a different model:
+make configure MODEL_CONFIG=../checkpoints/raw_model_model_config.json \
+               LABELS_FILE=../checkpoints/raw_model_labels.txt
+```
+
+This runs `gen_app_config.py`, which reads `*_model_config.json` and
+`*_labels.txt` to produce `Inc/app_config.h` and `Inc/app_labels.h` with the
+correct sample rate, chunk duration, chunk samples, frontend mode, and class
+labels.
 
 ### How `board-test` Builds the Firmware
 
@@ -367,25 +387,90 @@ to maintain across X-CUBE-AI versions. The overlay approach:
 
 ---
 
+### `gen_app_config.py` — Header Generator
+
+Single source of truth for generating firmware headers from model configuration.
+Used by both `make configure` (standalone) and `board_test.py` (automated).
+
+**Generated files:**
+
+- `Inc/app_config.h` — all audio parameters, frontend mode, board support
+  defines (`USE_OVERDRIVE`, `USE_UART_BAUDRATE`, `USE_USB_PACKET_SIZE`, etc.)
+- `Inc/app_labels.h` — class name string array
+
+**Usage:**
+
+```bash
+# Auto-detect labels file from model config path:
+python gen_app_config.py ../checkpoints/best_model_model_config.json
+
+# Explicit labels file:
+python gen_app_config.py ../checkpoints/best_model_model_config.json \
+                         ../checkpoints/best_model_labels.txt
+
+# Custom output directory:
+python gen_app_config.py model_config.json -o /path/to/output/
+```
+
+The script:
+
+- Reads `sample_rate`, `chunk_duration`, `fft_length`, `spec_width`,
+  `num_mels`, and `audio_frontend` from the model config JSON.
+- Computes `APP_CHUNK_SAMPLES = int(sample_rate × chunk_duration)` as a literal
+  integer, avoiding truncation issues with fractional chunk durations (e.g.,
+  2.9 s → 63945 samples at 22050 Hz, not `22050 * 3 = 66150`).
+- Includes all NPU_Validation board support defines wrapped in `#ifndef` guards
+  so they can be overridden from the compiler command line.
+- Auto-detects the labels file from the model config path
+  (`best_model_model_config.json` → `best_model_labels.txt`).
+
+### `Makefile` — Standalone Build & Configuration
+
+The firmware Makefile provides:
+
+- **`make configure`** — runs `gen_app_config.py` to generate headers:
+  ```bash
+  make configure
+  make configure MODEL_CONFIG=../checkpoints/raw_model_model_config.json
+  ```
+- **`make all`** — standalone compilation check (links against BSP stubs; the
+  full build happens inside the NPU_Validation tree via `n6_loader.py`).
+- **`make clean`** — remove build artifacts.
+
 ## Configuration
 
 ### `app_config.h` — Firmware Parameters
 
-All audio and inference parameters are `#define` constants patched at deploy
-time by `board_test.py`. They **must match** the values in `model_config.json`:
+Auto-generated by `gen_app_config.py` (or `make configure`) from
+`model_config.json`. All audio and inference parameters are `#define`
+constants that **must match** the values in the model config:
 
-| Define | Default | Description |
+| Define | Example | Description |
 |---|---|---|
 | `APP_SAMPLE_RATE` | 22050 | Audio sample rate in Hz. Set to the model's training rate. |
-| `APP_CHUNK_DURATION` | 3 | Chunk length in seconds. |
-| `APP_CHUNK_SAMPLES` | `SR × DUR` | Total samples per chunk (computed). |
+| `APP_CHUNK_DURATION` | 2.9 | Chunk length in seconds (can be fractional). |
+| `APP_CHUNK_SAMPLES` | 63945 | Total samples per chunk (`int(sr * duration)`). Computed as a literal integer to avoid truncation from integer-only C macro arithmetic. |
 | `APP_FFT_LENGTH` | 512 | FFT window size. Must be 512 (hardcoded in `fft.c`). |
 | `APP_FFT_BINS` | 257 | Frequency bins = FFT_LENGTH / 2 + 1 (computed). |
-| `APP_HOP_LENGTH` | varies | STFT hop in samples. Controls spec_width. |
+| `APP_HOP_LENGTH` | 172 | STFT hop in samples. Controls spec_width. |
 | `APP_SPEC_WIDTH` | 256 | Number of STFT time frames (must match model). |
-| `APP_NUM_CLASSES` | varies | Number of output classes in the model. |
+| `APP_NUM_CLASSES` | 10 | Number of output classes in the model. |
 | `APP_TOP_K` | 5 | Top-K predictions to print per file. |
 | `APP_SCORE_THRESHOLD` | 0.01 | Minimum score to include in output. |
+
+### `USE_OVERDRIVE` — Clock Speed Selection
+
+Set in the Makefile via `-DUSE_OVERDRIVE=0` (default) or `-DUSE_OVERDRIVE=1`.
+Controls which clock configuration is used at startup:
+
+| `USE_OVERDRIVE` | CPU Clock | NPU Clock | NPU RAM Clock | VDD Core |
+|---|---|---|---|---|
+| `0` (default) | 600 MHz | 800 MHz | 800 MHz | Nominal |
+| `1` | 800 MHz | 1 GHz | 900 MHz | Upscaled via SMPS/I2C |
+
+Overdrive mode provides maximum throughput but draws more power and requires
+VDD core upscaling (`upscale_vddcore_level()`). The default non-overdrive
+configuration is sufficient for real-time inference and is more conservative.
 
 ### `app_labels.h` — Class Label Array
 
@@ -473,7 +558,7 @@ Each stage is timed using `HAL_GetTick()` (1 ms resolution from SysTick):
 | Stage | Typical Time | Notes |
 |---|---|---|
 | **SD read** | 10–20 ms | Depends on SD card speed and file size. 3 s @ 24 kHz = 144 KB. |
-| **STFT** | 25–35 ms | 256 frames × 512-pt FFT. Runs on Cortex-M55 @ 800 MHz. |
+| **STFT** | 25–35 ms | 256 frames × 512-pt FFT. CPU @ 600 MHz (default). |
 | **NPU inference** | 3–5 ms | Full DS-CNN including mel filter, PWL, and classifier. |
 | **Total per file** | ~40–60 ms | Approximately 50–75× faster than real-time for 3 s chunks. |
 

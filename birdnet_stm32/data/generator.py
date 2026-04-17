@@ -21,7 +21,7 @@ def data_generator(
     audio_frontend: str = "librosa",
     sample_rate: int = 22050,
     max_duration: int = 30,
-    chunk_duration: int = 3,
+    chunk_duration: float = 3,
     spec_width: int = 128,
     mixup_alpha: float = 0.2,
     mixup_probability: float = 0.25,

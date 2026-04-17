@@ -224,7 +224,7 @@ def make_chunks_for_file(path: str, cfg: dict, frontend: str, mag_scale: str, n_
         list[np.ndarray]: List of per-chunk inputs ready for model.predict.
     """
     sr = int(cfg["sample_rate"])
-    cd = int(cfg["chunk_duration"])
+    cd = float(cfg["chunk_duration"])
     num_mels = int(cfg["num_mels"])
     spec_width = int(cfg["spec_width"])
 

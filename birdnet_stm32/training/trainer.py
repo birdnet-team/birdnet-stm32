@@ -124,5 +124,5 @@ def compute_hop_length(sample_rate: int, chunk_duration: int, spec_width: int) -
     Returns:
         Hop length in samples (floor(T / spec_width), at least 1).
     """
-    T = int(sample_rate) * int(chunk_duration)
+    T = int(sample_rate * chunk_duration)
     return max(1, T // int(spec_width))

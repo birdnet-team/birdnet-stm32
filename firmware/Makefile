@@ -3,6 +3,10 @@ TARGET = Project
 BUILD_CONF ?= N6-DK
 OPT = -Os -g3
 
+# Model config — set to generate app_config.h / app_labels.h from JSON.
+MODEL_CONFIG ?= ../checkpoints/best_model_model_config.json
+LABELS_FILE  ?=
+
 # --- Paths
 XCUBE_AI_DIR ?= /home/mi/Code/X-CUBE-AI.10.2.0
 MIDDLEWARES_PATH = $(XCUBE_AI_DIR)/Middlewares/ST
@@ -140,6 +144,10 @@ $(BUILD_DIR)/%.bin: $(BUILD_DIR)/%.elf | $(BUILD_DIR)
 
 $(BUILD_DIR):
 	mkdir $@
+
+# --- Generate app_config.h and app_labels.h from model_config.json ----------
+configure:
+	python3 gen_app_config.py $(MODEL_CONFIG) $(LABELS_FILE)
 
 clean:
 	-rm -fR $(BUILD_DIR)
