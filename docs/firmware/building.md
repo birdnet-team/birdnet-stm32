@@ -83,8 +83,11 @@ tree:
 
 It also:
 
-- **Auto-generates `app_config.h`** from `model_config.json` (sample rate, FFT
-  size, hop length, spectrogram width, number of classes).
+- **Auto-generates `app_config.h`** from `model_config.json` via
+  `gen_app_config.py` — sample rate, chunk duration (supports fractional
+  values like 2.9 s), chunk samples, FFT size, hop length, spectrogram width,
+  number of classes, frontend mode, and all NPU_Validation board support
+  defines (`USE_OVERDRIVE`, `USE_UART_BAUDRATE`, etc.).
 - **Auto-generates `app_labels.h`** from the labels file (class name string
   array).
 - **Patches the Makefile** to compile the new `.c` files and add include paths.

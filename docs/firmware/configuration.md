@@ -1,16 +1,36 @@
 # Configuration
 
 All firmware parameters are `#define` constants in two auto-generated headers.
-The `board-test` Python command writes these from your `model_config.json` and
-labels file. If you're building manually, you must set them yourself.
+The `board-test` Python command generates these from your `model_config.json`
+and labels file. You can also generate them manually with `gen_app_config.py`
+or `make configure`.
+
+## Generating Headers
+
+The recommended way to produce `app_config.h` and `app_labels.h` is through
+the shared generator script:
+
+```bash
+# From the firmware/ directory:
+make configure
+
+# Or specify a different model:
+make configure MODEL_CONFIG=../checkpoints/raw_model_model_config.json \
+               LABELS_FILE=../checkpoints/raw_model_labels.txt
+
+# Or call the script directly:
+python gen_app_config.py ../checkpoints/best_model_model_config.json
+```
+
+The `board-test` command calls the same generator automatically.
 
 ## `app_config.h` — Audio & Inference Parameters
 
 | Define | Example | Description |
 |---|---|---|
-| `APP_SAMPLE_RATE` | `24000` | Audio sample rate in Hz. **Must match** the model's training rate. WAV files with a different rate are skipped. |
-| `APP_CHUNK_DURATION` | `3` | Chunk length in seconds. |
-| `APP_CHUNK_SAMPLES` | `72000` | Total samples per chunk (`SR × duration`). Determines `audio_buf` size. |
+| `APP_SAMPLE_RATE` | `22050` | Audio sample rate in Hz. **Must match** the model's training rate. WAV files with a different rate are skipped. |
+| `APP_CHUNK_DURATION` | `2.9` | Chunk length in seconds. Can be fractional. |
+| `APP_CHUNK_SAMPLES` | `63945` | Total samples per chunk (`int(SR × duration)`). Computed as an integer literal — avoids truncation from integer-only C macros. |
 | `APP_FFT_LENGTH` | `512` | FFT window size. **Must be 512** — the FFT implementation is hardcoded for this size. |
 | `APP_FFT_BINS` | `257` | Frequency bins (`FFT_LENGTH / 2 + 1`). Derived, do not set independently. |
 | `APP_HOP_LENGTH` | `281` | STFT hop in samples. Controls how many time frames fit in one chunk. |
@@ -22,32 +42,62 @@ labels file. If you're building manually, you must set them yourself.
 | `APP_SCORE_THRESHOLD` | `0.01` | Minimum score (0–1) to include in output. Below this, predictions are suppressed. |
 | `APP_AUDIO_DIR` | `"audio"` | SD card subdirectory to scan for WAV files. |
 
+### Board Support Defines
+
+The generated header also includes defines required by the NPU_Validation
+project's board support code (`misc_toolbox.c`, `system_clock_config.c`,
+`aiPbIO.c`). These are wrapped in `#ifndef` guards so they can be overridden
+from the compiler command line:
+
+| Define | Default | Description |
+|---|---|---|
+| `NUCLEO_N6_CONFIG` | `0` | Board variant (0 = DK, not Nucleo). |
+| `USE_MCU_DCACHE` | `1` | Enable CPU data cache. |
+| `USE_MCU_ICACHE` | `1` | Enable CPU instruction cache. |
+| `USE_EXTERNAL_MEMORY_DEVICES` | `1` | Enable XSPI RAM + NOR flash init. |
+| `USE_UART_BAUDRATE` | `921600` | USART1 baud rate for UART output. |
+| `USE_USB_PACKET_SIZE` | `512` | USB packet size (used by `aiPbIO.c`). |
+| `USE_OVERDRIVE` | `0` | Clock speed selection (see below). |
+
+### `USE_OVERDRIVE` — Clock Speed Selection
+
+Controls which clock configuration is used at startup:
+
+| `USE_OVERDRIVE` | CPU Clock | NPU Clock | VDD Core |
+|---|---|---|---|
+| `0` (default) | 600 MHz | 800 MHz | Nominal |
+| `1` | 800 MHz | 1 GHz | Upscaled via SMPS/I2C |
+
+Overdrive provides maximum throughput but draws more power and requires VDD
+core upscaling. The default non-overdrive configuration is sufficient for
+real-time inference (the NPU finishes a 3 s chunk in ~4 ms at 800 MHz).
+
 !!! tip "Consistency is critical"
     If `app_config.h` values don't match the TFLite model's expectations, the
     spectrogram dimensions will be wrong and NPU inference will produce garbage
-    or crash. The automated `board-test` command ensures consistency by reading
-    `model_config.json`.
+    or crash. Always use `gen_app_config.py` or `board-test` to ensure
+    consistency.
 
 ### How Values Are Derived
 
-The `board-test` orchestrator reads these fields from `model_config.json`:
+`gen_app_config.py` reads these fields from `model_config.json`:
 
 ```json
 {
-    "sample_rate": 24000,
-    "chunk_duration": 3,
+    "sample_rate": 22050,
+    "chunk_duration": 2.9,
     "fft_length": 512,
     "spec_width": 256,
     "num_mels": 64,
-    "audio_frontend": "hybrid"
+    "audio_frontend": "raw"
 }
 ```
 
 And computes:
 ```
-APP_CHUNK_SAMPLES = sample_rate × chunk_duration
+APP_CHUNK_SAMPLES = int(sample_rate × chunk_duration)   # 63945
 APP_FFT_BINS      = fft_length / 2 + 1
-APP_HOP_LENGTH    = (sample_rate × chunk_duration - 1) / (spec_width - 1)
+APP_HOP_LENGTH    = from model config (or fft_length // 2 + 2)
 ```
 
 ## `app_labels.h` — Class Names
@@ -95,10 +145,9 @@ SD card (FAT32) root/
 | **Maximum count** | 512 files (`SD_MAX_FILES` constant in `sd_handler.h`) |
 
 !!! note "Sample rate mismatch"
-    The firmware does **not** resample. If your model was trained at 24 kHz, all
-    test WAV files must also be 24 kHz. The `board-test` command resamples files
-    automatically when copying them to the SD card — if you prepare the card
-    manually, ensure the rates match.
+    The firmware does **not** resample. If your model was trained at 22050 Hz,
+    all test WAV files must also be 22050 Hz. Prepare matching files before
+    copying them to the SD card.
 
 ### SD Card Hardware Notes
 

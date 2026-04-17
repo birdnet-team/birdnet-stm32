@@ -46,6 +46,7 @@ LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(Default);
 /* Clock config (from NPU_Validation) */
 extern void SystemClock_Config_ResetClocks(void);
 extern void SystemClock_Config_HSI_overdrive(void);
+extern void SystemClock_Config_HSI_no_overdrive(void);
 
 /* Stub used as GDB breakpoint marker by n6_loader. */
 static void aiValidationInit(void) { __asm volatile("nop"); }
@@ -148,9 +149,14 @@ int main(void)
     SCB_EnableICache();
     SCB_EnableDCache();
 
-    printf("[INIT] Switching to overdrive...\n");
+#if USE_OVERDRIVE
+    printf("[INIT] Switching to overdrive (CPU @ 800 MHz, NPU @ 1 GHz)...\n");
     upscale_vddcore_level();
     SystemClock_Config_HSI_overdrive();
+#else
+    printf("[INIT] No overdrive (CPU @ 600 MHz, NPU @ 800 MHz)...\n");
+    SystemClock_Config_HSI_no_overdrive();
+#endif
     fuse_vddio();
 
     CLEAR_BIT(SCB->SCR, SCB_SCR_SLEEPDEEP_Msk);

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-04-17
+
+### Added
+
+- `gen_app_config.py` — single source of truth for generating `app_config.h` and `app_labels.h` from `model_config.json` + labels file. Used by both `make configure` and `board_test.py`.
+- `make configure` target in firmware Makefile — generates firmware headers from model config without running the full board-test pipeline.
+- `USE_OVERDRIVE` compile-time flag — selects between non-overdrive (CPU @ 600 MHz, NPU @ 800 MHz, default) and overdrive (CPU @ 800 MHz, NPU @ 1 GHz) clock configurations.
+- Fractional chunk duration support — `APP_CHUNK_SAMPLES` is now computed as `int(sample_rate × chunk_duration)` and emitted as a literal integer, avoiding truncation from integer-only C macro arithmetic (e.g., 2.9 s × 22050 Hz = 63945 samples).
+- NPU_Validation board support defines (`USE_UART_BAUDRATE`, `USE_USB_PACKET_SIZE`, `USE_OVERDRIVE`, `NUCLEO_N6_CONFIG`, etc.) included in generated `app_config.h` with `#ifndef` guards.
+- Raw UART output printed during board-test for easier debugging of firmware errors.
+- Serial capture reads all summary lines after `=== DONE ===` marker (Processed + Benchmark).
+
+### Changed
+
+- `board_test.py` delegates header generation to `gen_app_config.py` (via `importlib`) instead of duplicating the logic.
+- `_patch_app_config()` now fully replaces `app_config.h` instead of appending to the NPU_Validation original — eliminates dependency on the original file's `#endif` guard format.
+- `main.c` clock init is now conditional on `#if USE_OVERDRIVE` with a non-overdrive fallback calling `SystemClock_Config_HSI_no_overdrive()`.
+
+### Fixed
+
+- Board-test compilation failures when building inside NPU_Validation tree due to missing `USE_UART_BAUDRATE` and `USE_USB_PACKET_SIZE` defines.
+- Integer truncation of fractional chunk durations (e.g., 2.9 → 3) causing wrong `APP_CHUNK_SAMPLES` and model input shape mismatches.
+
 ## [0.3.0] — 2026-04-16
 
 ### Added
