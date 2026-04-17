@@ -26,9 +26,11 @@ theme:
   features:
     - content.code.copy
     - content.code.annotate
+    - navigation.tabs
+    - navigation.tabs.sticky
     - navigation.sections
-    - navigation.expand
     - navigation.top
+    - navigation.indexes
     - search.highlight
     - toc.follow
   icon:
@@ -68,15 +70,24 @@ markdown_extensions:
   - md_in_html
 
 nav:
-  - Home: index.md
-  - User Guide:
+  - Home:
+      - index.md
       - Getting Started: getting-started.md
+  - Pipeline:
       - Dataset Preparation: dataset.md
       - Training: training.md
       - Model Conversion: conversion.md
       - Evaluation: evaluation.md
       - Deployment: deployment.md
-  - Developer Guide:
+  - Firmware:
+      - firmware/index.md
+      - Hardware: firmware/hardware.md
+      - Building & Flashing: firmware/building.md
+      - Configuration: firmware/configuration.md
+      - Source Modules: firmware/modules.md
+      - UART Protocol: firmware/protocol.md
+      - Troubleshooting: firmware/troubleshooting.md
+  - Development:
       - Architecture: dev/architecture.md
       - Audio Frontends: dev/audio-frontends.md
       - Model: dev/model.md
