@@ -445,6 +445,8 @@ def _serial_capture(
 _RE_FILE = re.compile(r"^\[(\d+)/(\d+)\]\s+(.+)$")
 _RE_DET = re.compile(r"^\s+\[(\d+)\]\s+(.+?):\s+([\d.]+)%$")
 _RE_SUMMARY = re.compile(r"^Processed:\s+(\d+)\s*/\s*(\d+)\s+files\s+\((\d+)\s+errors\)")
+_RE_BENCH = re.compile(r"^\s+\[BENCH\]\s+read=(\d+)ms\s+stft=(\d+)ms\s+npu=(\d+)ms\s+total=(\d+)ms$")
+_RE_BENCH_SUMMARY = re.compile(r"^Benchmark:.*avg read=(\d+)ms\s+stft=(\d+)ms\s+npu=(\d+)ms\s+total=(\d+)ms\)$")
 
 
 def parse_serial_output(
@@ -470,6 +472,7 @@ def parse_serial_output(
     processed = 0
     total = 0
     errors = 0
+    benchmark_avg: dict | None = None
 
     for line in lines:
         m = _RE_FILE.match(line)
@@ -479,6 +482,7 @@ def parse_serial_output(
             current_file = {
                 "file": m.group(3),
                 "detections": [],
+                "bench": None,
             }
             continue
 
@@ -490,6 +494,26 @@ def parse_serial_output(
                     "label": m.group(2),
                     "score": score,
                 })
+            continue
+
+        m = _RE_BENCH.match(line)
+        if m and current_file is not None:
+            current_file["bench"] = {
+                "read_ms": int(m.group(1)),
+                "stft_ms": int(m.group(2)),
+                "npu_ms": int(m.group(3)),
+                "total_ms": int(m.group(4)),
+            }
+            continue
+
+        m = _RE_BENCH_SUMMARY.match(line)
+        if m:
+            benchmark_avg = {
+                "avg_read_ms": int(m.group(1)),
+                "avg_stft_ms": int(m.group(2)),
+                "avg_npu_ms": int(m.group(3)),
+                "avg_total_ms": int(m.group(4)),
+            }
             continue
 
         m = _RE_SUMMARY.match(line)
@@ -506,6 +530,7 @@ def parse_serial_output(
         "processed": processed,
         "total": total,
         "errors": errors,
+        "benchmark": benchmark_avg,
         "raw_lines": lines,
     }
 
@@ -624,9 +649,26 @@ def run_board_test(cfg: BoardTestConfig) -> dict:
             print(f"    {det_str}")
         else:
             print("    (no detections above threshold)")
+        if r.get("bench"):
+            b = r["bench"]
+            print(f"    [{b['read_ms']}ms read, {b['stft_ms']}ms STFT, "
+                  f"{b['npu_ms']}ms NPU, {b['total_ms']}ms total]")
 
     print(f"\n=== DONE: {parsed['processed']}/{parsed['total']} files "
           f"({parsed['errors']} errors) ===")
+
+    bench = parsed.get("benchmark")
+    if bench:
+        chunk_sec = model_cfg.get("chunk_duration", 3)
+        avg_total = bench["avg_total_ms"]
+        rtf = avg_total / (chunk_sec * 1000) if chunk_sec else 0
+        speedup = (chunk_sec * 1000) / avg_total if avg_total else 0
+        print(f"\n--- Benchmark (per file, averaged over {parsed['processed']} files) ---")
+        print(f"  SD read:        {bench['avg_read_ms']} ms")
+        print(f"  STFT (M55):     {bench['avg_stft_ms']} ms")
+        print(f"  NPU inference:  {bench['avg_npu_ms']} ms")
+        print(f"  Total:          {avg_total} ms")
+        print(f"  Real-time factor: {rtf:.4f}x  ({speedup:.0f}x faster than real-time)")
 
     parsed["labels"] = labels
     return parsed

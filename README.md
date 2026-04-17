@@ -5,25 +5,23 @@
   <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.12%2B-blue.svg" alt="Python 3.12+"></a>
   <a href="https://birdnet-team.github.io/birdnet-stm32"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Docs"></a>
-  <a href="https://github.com/birdnet-team/birdnet-stm32/releases/tag/v0.2.0"><img src="https://img.shields.io/badge/version-0.2.0-orange.svg" alt="Version"></a>
+  <a href="https://github.com/birdnet-team/birdnet-stm32/releases/tag/v0.4.0"><img src="https://img.shields.io/badge/version-0.4.0-orange.svg" alt="Version"></a>
 </p>
 
 Bird sound classification for edge deployment on the [STM32N6570-DK](https://www.st.com/en/evaluation-tools/stm32n6570-dk.html) development board with neural processing unit (NPU).
 
 <img src="https://my.avnet.com/wcm/connect/c651fc2f-a5b2-489c-9d63-d3f064753690/STMicroelectronics+STM32N6570-DK.jpg?MOD=AJPERES&CACHEID=ROOTWORKSPACE-c651fc2f-a5b2-489c-9d63-d3f064753690-phBdXih" alt="STM32N6570-DK board" style="width: 100%;" />
 
-A compact DS-CNN trained on mel spectrograms, quantized to INT8 via post-training quantization, and deployed using ST's X-CUBE-AI toolchain. Inference on a 3-second audio chunk takes ~3.3 ms on the NPU (~900× real-time).
-
-**NOTE: We are currently refining the project scope and roadmap. The current codebase is a work in progress and may not be fully functional. Please check back soon for updates!**
+A compact DS-CNN trained on mel spectrograms, quantized to INT8 via post-training quantization, and deployed using ST's X-CUBE-AI toolchain. Inference on a 3-second audio chunk takes ~3–5 ms on the NPU (~50–75× faster than real-time).
 
 ## Quick start
 
 ```bash
-# Install
+# One-liner setup (creates venv, installs deps, generates config files)
 git clone https://github.com/birdnet-team/birdnet-stm32.git
 cd birdnet-stm32
-python3.12 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+bash setup.sh
+source .venv/bin/activate
 
 # Train
 python train.py --data_path_train data/train --audio_frontend hybrid --mag_scale pwl

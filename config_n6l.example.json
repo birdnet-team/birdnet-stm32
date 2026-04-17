@@ -1,0 +1,8 @@
+{
+  "network.c": "validation/st_ai_output/network.c",
+  "project_path": "/path/to/X-CUBE-AI.10.2.0/Projects/STM32N6570-DK/Applications/NPU_Validation",
+  "project_build_conf": "N6-DK",
+  "skip_external_flash_programming": false,
+  "skip_ram_data_programming": false,
+  "objcopy_binary_path": "/usr/bin/arm-none-eabi-objcopy"
+}

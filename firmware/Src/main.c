@@ -226,6 +226,9 @@ int main(void)
     float scores[APP_NUM_CLASSES];
     uint32_t processed = 0;
     uint32_t errors = 0;
+    uint32_t total_read_ms   = 0;
+    uint32_t total_stft_ms   = 0;
+    uint32_t total_npu_ms    = 0;
 
     for (uint32_t i = 0; i < num_files; i++) {
         const char *filepath = file_list.paths[i];
@@ -263,26 +266,34 @@ int main(void)
         }
 
         /* Read first chunk */
-        printf("  [READ] Loading %d samples (%ds)...\n",
-               APP_CHUNK_SAMPLES, APP_CHUNK_DURATION);
+        uint32_t t0 = HAL_GetTick();
         wav_read_chunk_f32(&fp, &wav, 0, APP_CHUNK_SAMPLES, audio_buf);
         f_close(&fp);
+        uint32_t read_ms = HAL_GetTick() - t0;
+        total_read_ms += read_ms;
 
         /* Compute STFT on Cortex-M55 */
-        printf("  [STFT] Computing %dx%d spectrogram...\n",
-               APP_FFT_BINS, APP_SPEC_WIDTH);
+        t0 = HAL_GetTick();
         stft_magnitude(audio_buf, APP_CHUNK_SAMPLES,
                        APP_FFT_LENGTH, APP_HOP_LENGTH,
                        APP_SPEC_WIDTH, spec_buf);
+        uint32_t stft_ms = HAL_GetTick() - t0;
+        total_stft_ms += stft_ms;
 
         /* Run NPU inference */
-        printf("  [NPU] Running inference...\n");
+        t0 = HAL_GetTick();
         if (!run_inference(spec_buf, scores)) {
             printf("  [ERROR] Inference failed\n");
             errors++;
             continue;
         }
-        printf("  [OK] Inference complete\n");
+        uint32_t npu_ms = HAL_GetTick() - t0;
+        total_npu_ms += npu_ms;
+
+        printf("  [BENCH] read=%lums stft=%lums npu=%lums total=%lums\n",
+               (unsigned long)read_ms, (unsigned long)stft_ms,
+               (unsigned long)npu_ms,
+               (unsigned long)(read_ms + stft_ms + npu_ms));
 
         /* Print top-K results over UART */
         print_top_k(basename, scores, APP_TOP_K);
@@ -294,6 +305,17 @@ int main(void)
     printf("Processed: %lu / %lu files (%lu errors)\n",
            (unsigned long)processed, (unsigned long)num_files,
            (unsigned long)errors);
+    if (processed > 0) {
+        printf("Benchmark: read=%lums stft=%lums npu=%lums total=%lums "
+               "(avg read=%lums stft=%lums npu=%lums total=%lums)\n",
+               (unsigned long)total_read_ms, (unsigned long)total_stft_ms,
+               (unsigned long)total_npu_ms,
+               (unsigned long)(total_read_ms + total_stft_ms + total_npu_ms),
+               (unsigned long)(total_read_ms / processed),
+               (unsigned long)(total_stft_ms / processed),
+               (unsigned long)(total_npu_ms / processed),
+               (unsigned long)((total_read_ms + total_stft_ms + total_npu_ms) / processed));
+    }
 
     sd_unmount();
     printf("[OK] SD card unmounted. Halting.\n");
