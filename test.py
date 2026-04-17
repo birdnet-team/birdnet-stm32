@@ -21,18 +21,18 @@ Notes:
 - TFLite interpreter runs without delegates here to reduce numeric variation across platforms.
 """
 
-import os
 import argparse
 import json
 import math
-from tqdm import tqdm
+import os
+
 import numpy as np
 import tensorflow as tf
-from sklearn.metrics import roc_auc_score, average_precision_score, precision_recall_curve
-import warnings
+from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score
+from tqdm import tqdm
 
-from train import SUPPORTED_AUDIO_EXTS, load_file_paths_from_directory, AudioFrontendLayer, dataset_sanity_check
-from utils.audio import load_audio_file, get_spectrogram_from_audio
+from train import SUPPORTED_AUDIO_EXTS, AudioFrontendLayer, dataset_sanity_check, load_file_paths_from_directory
+from utils.audio import get_spectrogram_from_audio, load_audio_file
 
 np.random.seed(42)
 tf.random.set_seed(42)
@@ -227,10 +227,9 @@ def make_chunks_for_file(path: str, cfg: dict, frontend: str, mag_scale: str, n_
     cd = int(cfg["chunk_duration"])
     num_mels = int(cfg["num_mels"])
     spec_width = int(cfg["spec_width"])
-    T = int(sr * cd)
 
     chunks = load_audio_file(path, sample_rate=sr, max_duration=60, chunk_duration=cd, random_offset=False, chunk_overlap=chunk_overlap)
-    
+
     out = []
     if frontend in ("precomputed", "librosa"):
         for ch in chunks:
@@ -322,7 +321,7 @@ def evaluate(model_runner, files, classes, cfg, pooling="average", batch_size=64
                 "scores": pooled.tolist(),
             }
         )
-        
+
         # DEBUG: Show label and top predicted class
         #top_pred_idx = np.argmax(pooled)
         #top_pred_class = classes[top_pred_idx]
@@ -336,13 +335,13 @@ def evaluate(model_runner, files, classes, cfg, pooling="average", batch_size=64
     y_scores = np.asarray(y_scores, dtype=np.float32)
 
     metrics = {}
-    
+
     # ROC-AUC
     try:
         metrics["roc-auc"] = float(roc_auc_score(y_true, y_scores, average="micro"))
     except Exception:
         metrics["roc-auc"] = float("nan")
-        
+
     # F1 at 0.5 threshold
     y_pred = (y_scores >= 0.5).astype(np.float32)
     tp = np.sum(y_true * y_pred)
@@ -353,7 +352,7 @@ def evaluate(model_runner, files, classes, cfg, pooling="average", batch_size=64
     if precision + recall > 0:
         metrics["f1"] = 2 * (precision * recall) / (precision + recall)
     else:
-        metrics["f1"] = 0.0 
+        metrics["f1"] = 0.0
     metrics["precision"] = precision
     metrics["recall"] = recall
 
@@ -400,7 +399,7 @@ def print_ascii_histogram(scores, bins=10, width=40):
 def print_ascii_pr_curve(y_true, y_scores, bins=10, width=40):
     """
     Print an ASCII PR curve with fixed precision bins (1.0, 0.9, ..., 0.0).
-    
+
     Args:
         y_true (np.ndarray): One-hot ground-truth labels [N_files, C].
         y_scores (np.ndarray): Pooled scores [N_files, C].
@@ -423,13 +422,10 @@ def print_ascii_pr_curve(y_true, y_scores, bins=10, width=40):
         p_hi = bin_edges[i]
         # Find recall for all points with precision in this bin
         mask = (precisions >= p_lo) & (precisions <= p_hi)
-        if np.any(mask):
-            max_recall = np.max(recalls[mask])
-        else:
-            max_recall = 0.0
+        max_recall = np.max(recalls[mask]) if np.any(mask) else 0.0
         bar = "#" * int(width * max_recall)
         print(f"{p_hi:4.1f} | {bar} ({max_recall:4.2f})")
-        
+
 
 def save_predictions_csv(per_file, classes, out_path):
     """
@@ -486,7 +482,7 @@ def main():
         model_cfg_path = root + "_model_config.json"
     if not os.path.isfile(model_cfg_path):
         raise FileNotFoundError(f"Model config JSON not found: {model_cfg_path}")
-    with open(model_cfg_path, "r") as f:
+    with open(model_cfg_path) as f:
         cfg = json.load(f)
 
     # Class list from training
@@ -495,9 +491,9 @@ def main():
         raise ValueError("class_names missing in model_config; cannot evaluate.")
 
     # Collect test files restricted to known classes
-    files, _ = load_file_paths_from_directory(args.data_path_test, 
-                                              classes=classes, 
-                                              exts=SUPPORTED_AUDIO_EXTS, 
+    files, _ = load_file_paths_from_directory(args.data_path_test,
+                                              classes=classes,
+                                              exts=SUPPORTED_AUDIO_EXTS,
                                               max_samples=args.max_files)
     if len(files) == 0:
         raise RuntimeError(f"No test audio found in {args.data_path_test} with exts {SUPPORTED_AUDIO_EXTS}")
@@ -565,7 +561,7 @@ def main():
     print("\nHistogram of top-1 predicted scores per file:")
     print_ascii_histogram(top1_scores, bins=10, width=40)
 
-    # Print ASCII PR curve    
+    # Print ASCII PR curve
     print_ascii_pr_curve(y_true, y_scores, bins=20, width=40)
 
     # Optional CSV

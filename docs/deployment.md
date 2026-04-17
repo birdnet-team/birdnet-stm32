@@ -233,6 +233,12 @@ The demo application is under development. The planned pipeline:
 4. Map prediction scores to labels using `labels.txt`.
 5. Log top-5 predictions to the serial console.
 
+## Firmware documentation
+
+For detailed documentation on the board firmware — hardware specs, build
+system, configuration, source module reference, UART protocol, and
+troubleshooting — see the [Firmware section](firmware/index.md).
+
 ## Further reading
 
 - [ST Edge AI CLI reference](https://stm32ai-cs.st.com/assets/embedded-docs/command_line_interface.html)

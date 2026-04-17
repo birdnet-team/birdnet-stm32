@@ -1,9 +1,10 @@
+from math import gcd
+
 import librosa
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 import soundfile as sf
 from scipy.signal import resample_poly
-from math import gcd
 
 # random seed for reproducibility
 np.random.seed(42)
@@ -55,15 +56,12 @@ def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3, 
         y = y.mean(axis=1)  # mono float32
 
         # Resample if needed
-        if sr0 != sample_rate:
-            y = fast_resample(y, sr0, sample_rate)
-        else:
-            y = y.astype(np.float32, copy=False)
+        y = fast_resample(y, sr0, sample_rate) if sr0 != sample_rate else y.astype(np.float32, copy=False)
 
         chunk_size = int(sample_rate * chunk_duration)
         if chunk_size <= 0:
             return []
-        
+
         # Normalize to -1.0 to 1.0
         y = y / (np.max(np.abs(y)) + 1e-10)
 
@@ -82,14 +80,14 @@ def load_audio_file(path, sample_rate=22050, max_duration=30, chunk_duration=3, 
         starts = starts.astype(int)
 
         chunks = np.stack([y[s:s + chunk_size] for s in starts])
-        
+
         # pad last chunk if it is shorter tha chunk_duration / 2
         if chunks.shape[0] > 0 and chunks[-1].shape[0] < chunk_size // 2:
             pad_width = chunk_size - chunks[-1].shape[0]
-            chunks[-1] = np.pad(chunks[-1], (0, pad_width), mode='constant', constant_values=0)        
-        
+            chunks[-1] = np.pad(chunks[-1], (0, pad_width), mode='constant', constant_values=0)
+
         return chunks.astype(np.float32, copy=False)
-    except Exception as e:
+    except Exception:
         #print(f"Error loading {path}: {e}")
         return []
 
@@ -116,10 +114,10 @@ def get_spectrogram_from_audio(audio, sample_rate=22050, n_fft=512, mel_bins=64,
     """
     hop_length = (len(audio) // spec_width) if spec_width > 0 else n_fft // 2
     if mel_bins <= 0:
-        S = np.abs(librosa.stft(y=audio, 
-                                n_fft=n_fft, 
-                                hop_length=hop_length, 
-                                win_length=n_fft, 
+        S = np.abs(librosa.stft(y=audio,
+                                n_fft=n_fft,
+                                hop_length=hop_length,
+                                win_length=n_fft,
                                 window="hann"))
     else:
         S = librosa.feature.melspectrogram(
@@ -136,9 +134,9 @@ def get_spectrogram_from_audio(audio, sample_rate=22050, n_fft=512, mel_bins=64,
             htk=False,
             norm="slaney",
         )
-        
+
     # Ensure fixed width
-    S = S[:, :spec_width]    
+    S = S[:, :spec_width]
 
     if mag_scale == "pcen":
         S = librosa.pcen(S * (2.0**31), sr=sample_rate, hop_length=hop_length, axis=1)
@@ -148,7 +146,9 @@ def get_spectrogram_from_audio(audio, sample_rate=22050, n_fft=512, mel_bins=64,
         Snorm = (S - Smin) / (Smax - Smin + 1e-10)
         t1, t2, t3 = 0.10, 0.35, 0.65
         k0, k1, k2, k3 = 0.40, 0.25, 0.15, 0.08
-        relu = lambda z: np.maximum(z, 0.0)
+        def relu(z):
+            return np.maximum(z, 0.0)
+
         S = k0 * Snorm + k1 * relu(Snorm - t1) + k2 * relu(Snorm - t2) + k3 * relu(Snorm - t3)
 
     elif mag_scale == "db":
@@ -156,7 +156,7 @@ def get_spectrogram_from_audio(audio, sample_rate=22050, n_fft=512, mel_bins=64,
 
     # Normalize
     S = normalize(S)
-    
+
     return S
 
 def fast_resample(y, sr_in, sr_out):
@@ -165,13 +165,13 @@ def fast_resample(y, sr_in, sr_out):
     """
     if sr_in == sr_out:
         return y.astype(np.float32, copy=False)
-    
+
     g = gcd(sr_in, sr_out)
     up = sr_out // g
     down = sr_in // g
-    
+
     return resample_poly(y, up, down).astype(np.float32, copy=False)
-    
+
 
 def normalize(S):
     """
@@ -247,7 +247,7 @@ def sort_by_s2n(samples, threshold=0.1):
     sorted_samples = [samples[i] for i in sorted_indices]
 
     # Filter out samples with SNR below the threshold but keep at least one chunk
-    filtered_samples = [sample for sample, s2n in zip(sorted_samples, s2n_values[sorted_indices]) if s2n >= threshold]
+    filtered_samples = [sample for sample, s2n in zip(sorted_samples, s2n_values[sorted_indices], strict=False) if s2n >= threshold]
     if len(filtered_samples) == 0:
         filtered_samples = [sorted_samples[0]]
     return filtered_samples
@@ -297,7 +297,7 @@ def sort_by_activity(samples, threshold=0.25):
     activity = np.array([get_activity_ratio(s) for s in samples])
     sorted_idx = np.argsort(activity)[::-1]
     sorted_samples = [samples[i] for i in sorted_idx]
-    filtered = [s for s, a in zip(sorted_samples, activity[sorted_idx]) if a >= threshold]
+    filtered = [s for s, a in zip(sorted_samples, activity[sorted_idx], strict=False) if a >= threshold]
     if not filtered:
         filtered = [sorted_samples[0]]
     return filtered
@@ -333,7 +333,7 @@ def plot_spectrogram(spectrogram, title='Spectrogram'):
 
     Returns:
         None
-    """    
+    """
     plt.figure(figsize=(10, 4))
     plt.imshow(spectrogram, aspect='auto', origin='lower', cmap='viridis')
     plt.title(title)
