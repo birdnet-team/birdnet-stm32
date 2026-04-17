@@ -30,7 +30,9 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--save_csv", type=str, default="", help="Optional path to save predictions CSV")
     parser.add_argument("--confusion_matrix", action="store_true", default=False, help="Print confusion matrix")
     parser.add_argument("--save_cm_plot", type=str, default="", help="Save confusion matrix plot to file")
-    parser.add_argument("--optimize_thresholds", action="store_true", default=False, help="Find per-class optimal F1 thresholds")
+    parser.add_argument(
+        "--optimize_thresholds", action="store_true", default=False, help="Find per-class optimal F1 thresholds"
+    )
     return parser.parse_args()
 
 

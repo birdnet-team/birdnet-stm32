@@ -52,9 +52,7 @@ class MagnitudeScalingLayer(layers.Layer):
         # PCEN sublayers
         if self.method == "pcen":
             self._pcen_pools = [
-                layers.AveragePooling2D(
-                    pool_size=(1, 1), strides=(1, 1), padding="same", name=f"{name}_pcen_ema{k}"
-                )
+                layers.AveragePooling2D(pool_size=(1, 1), strides=(1, 1), padding="same", name=f"{name}_pcen_ema{k}")
                 for k in range(self.pcen_K)
             ]
             self._pcen_agc_dw = layers.DepthwiseConv2D(

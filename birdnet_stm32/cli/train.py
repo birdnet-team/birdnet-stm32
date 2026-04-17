@@ -45,9 +45,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
     parser.add_argument("--learning_rate", type=float, default=0.001, help="Initial learning rate")
     parser.add_argument("--dropout", type=float, default=0.5, help="Dropout rate before classifier head")
-    parser.add_argument(
-        "--optimizer", type=str, default="adam", choices=["adam", "sgd", "adamw"], help="Optimizer"
-    )
+    parser.add_argument("--optimizer", type=str, default="adam", choices=["adam", "sgd", "adamw"], help="Optimizer")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay (adamw only)")
     parser.add_argument(
         "--loss",
