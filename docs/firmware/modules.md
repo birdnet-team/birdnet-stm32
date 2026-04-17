@@ -152,6 +152,25 @@ Working buffers are stack-allocated:
 
 ---
 
+## `audio_mel.c` — Mel Filterbank
+
+**Location:** `firmware/Src/audio_mel.c` (~80 lines)
+
+Computes a triangular Mel-frequency filterbank. Only compiled and used if `APP_AUDIO_FRONTEND == APP_FRONTEND_PRECOMPUTED`.
+
+### `mel_filterbank()`
+```c
+void mel_filterbank(const float *spect, uint32_t spec_width, float *out);
+```
+**Algorithm:**
+1. A 1D array of pre-calculated `APP_NUM_MELS` triangular weights is generated once during startup by `mel_init()`.
+2. The `mel_filterbank()` applies that matrix over the frequency-major `[APP_FFT_BINS, spec_width]` spectrogram.
+3. Produces a compacted `[APP_NUM_MELS, spec_width]` output array.
+
+This reproduces librosa's Slaney-normalized mel weight matrices natively on the Cortex-M55 CPU.
+
+---
+
 ## `fft.c` — 512-Point Real FFT
 
 **Location:** `firmware/Src/fft.c` (~230 lines)
