@@ -31,7 +31,10 @@ int __io_putchar(int ch)
 **NPU inference** — `run_inference()` handles the CPU ↔ NPU data transfer:
 
 1. Query input/output buffer addresses from LL_ATON.
-2. `memcpy` spectrogram into the NPU input buffer.
+2. `memcpy` data into the NPU input buffer. Depending on `APP_AUDIO_FRONTEND`:
+   - **Hybrid:** `spec_buf` (STFT spectrogram)
+   - **Raw:** `audio_buf` (raw waveform directly)
+   - **Precomputed:** `mel_buf` (STFT + Mel filterbank)
 3. `SCB_CleanDCache_by_Addr()` — flush CPU cache so the NPU sees fresh data.
 4. `LL_ATON_RT_Main()` — run inference (blocking).
 5. `SCB_InvalidateDCache_by_Addr()` — invalidate cache so the CPU sees NPU
@@ -131,12 +134,12 @@ void stft_magnitude(const float *audio, uint32_t num_samples,
      (frequency-major).
 3. Zero-fill if the audio is shorter than expected.
 
-**Output layout:** `[fft_bins, spec_width]` — frequency-major (each row is one
-frequency bin across all time frames). This matches the hybrid frontend's
-expected input tensor layout `[B, fft_bins, spec_width, 1]`.
+**Output layout:** `[filters, spec_width]` — frequency-major (each row is one
+frequency bin across all time frames). This matches the expected layout layout 
+`[B, filters, spec_width, 1]` for both the hybrid and precomputed frontends.
 
 !!! note "Why frequency-major?"
-    The TFLite model's first layer expects input shaped `[B, fft_bins, T, 1]`.
+    The TFLite model's first layer expects input shaped `[B, filters, T, 1]`.
     By storing frequency-major on the firmware side, the `memcpy` to the NPU
     input buffer preserves the correct layout without a transpose.
 
@@ -146,6 +149,25 @@ Working buffers are stack-allocated:
 - Hann window: 512 × 4 = 2,048 bytes
 - FFT work buffer: 512 × 4 = 2,048 bytes
 - **Total: ~4 KB stack** per call
+
+---
+
+## `audio_mel.c` — Mel Filterbank
+
+**Location:** `firmware/Src/audio_mel.c` (~80 lines)
+
+Computes a triangular Mel-frequency filterbank. Only compiled and used if `APP_AUDIO_FRONTEND == APP_FRONTEND_PRECOMPUTED`.
+
+### `mel_filterbank()`
+```c
+void mel_filterbank(const float *spect, uint32_t spec_width, float *out);
+```
+**Algorithm:**
+1. A 1D array of pre-calculated `APP_NUM_MELS` triangular weights is generated once during startup by `mel_init()`.
+2. The `mel_filterbank()` applies that matrix over the frequency-major `[APP_FFT_BINS, spec_width]` spectrogram.
+3. Produces a compacted `[APP_NUM_MELS, spec_width]` output array.
+
+This reproduces librosa's Slaney-normalized mel weight matrices natively on the Cortex-M55 CPU.
 
 ---
 

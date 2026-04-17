@@ -15,8 +15,10 @@ flowchart LR
     A["Train\nDS-CNN"] --> B["Quantize\nINT8 TFLite"] --> C["Deploy\nSTM32N6 NPU"]
 ```
 
-A single inference on a 3-second audio chunk takes approximately **3.3 ms** on
-the NPU (~900× real-time).
+Depending on the chosen audio frontend, a single inference on a 2-3 second 
+audio chunk takes approximately **10-14 ms** end-to-end on the board:
+- **Hybrid (STFT on CPU):** ~45ms STFT + ~12ms NPU
+- **Raw (Waveform to NPU):** 0ms STFT + ~10ms NPU
 
 ## Quick start
 

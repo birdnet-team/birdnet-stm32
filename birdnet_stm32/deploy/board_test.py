@@ -50,6 +50,7 @@ HAL_SD_UNCOMMENTED = "#define HAL_SD_MODULE_ENABLED"
 # Config
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class BoardTestConfig:
     """Configuration for standalone on-board inference tests.
@@ -76,6 +77,7 @@ class BoardTestConfig:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def load_model_config(config_path: str) -> dict:
     """Load model configuration from JSON.
@@ -143,6 +145,7 @@ def _generate_app_labels_h(labels: list[str]) -> str:
 # Project patching — copies firmware sources into NPU_Validation tree
 # ---------------------------------------------------------------------------
 
+
 def _resolve_project_path(cfg: DeployConfig) -> Path:
     """Read the NPU_Validation project path from the n6_loader config."""
     with open(cfg.n6_loader_config) as f:
@@ -198,14 +201,14 @@ def patch_project(
     backups: list[Path] = []
 
     # --- 1. Copy firmware C sources into Core/Src --------------------------
-    for name in ("main.c", "wav_reader.c", "audio_stft.c", "sd_handler.c", "fft.c"):
+    for name in ("main.c", "wav_reader.c", "audio_stft.c", "audio_mel.c", "sd_handler.c", "fft.c"):
         dst = core_src / name
         backups.append(_backup(dst))
         shutil.copy2(fw / "Src" / name, dst)
 
     # --- 2. Copy firmware headers into Core/Inc ----------------------------
     #  Skip app_config.h — we patch the NPU_Validation original in step 6.
-    for name in ("wav_reader.h", "audio_stft.h", "sd_handler.h", "fft.h"):
+    for name in ("wav_reader.h", "audio_stft.h", "audio_mel.h", "sd_handler.h", "fft.h"):
         dst = core_inc / name
         backups.append(_backup(dst))
         shutil.copy2(fw / "Inc" / name, dst)
@@ -230,8 +233,7 @@ def patch_project(
         dst = hal_src / name
         backups.append(_backup(dst))
         shutil.copy2(fw / "Drivers" / "HAL_SD" / name, dst)
-    for name in ("stm32n6xx_hal_sd.h", "stm32n6xx_hal_sd_ex.h",
-                 "stm32n6xx_ll_sdmmc.h", "stm32n6xx_ll_dlyb.h"):
+    for name in ("stm32n6xx_hal_sd.h", "stm32n6xx_hal_sd_ex.h", "stm32n6xx_ll_sdmmc.h", "stm32n6xx_ll_dlyb.h"):
         dst = hal_inc / name
         backups.append(_backup(dst))
         shutil.copy2(fw / "Drivers" / "HAL_SD" / name, dst)
@@ -278,21 +280,39 @@ def _patch_app_config(path: Path, model_cfg: dict, num_classes: int) -> None:
     fft_len = model_cfg["fft_length"]
     hop = model_cfg.get("hop_length", fft_len // 2 + 2)
     sw = model_cfg["spec_width"]
+    num_mels = model_cfg.get("num_mels", 64)
 
+    # Map audio_frontend string to firmware define
+    frontend_str = model_cfg.get("audio_frontend", "hybrid")
+    frontend_map = {
+        "hybrid": "APP_FRONTEND_HYBRID",
+        "raw": "APP_FRONTEND_RAW",
+        "tf": "APP_FRONTEND_RAW",
+        "precomputed": "APP_FRONTEND_PRECOMPUTED",
+        "librosa": "APP_FRONTEND_PRECOMPUTED",
+    }
+    frontend_define = frontend_map.get(frontend_str, "APP_FRONTEND_HYBRID")
+
+    chunk_samples = int(sr * chunk)
     block = f"""
 /* --- BirdNET-STM32 board test parameters (auto-generated) --- */
-#define APP_SAMPLE_RATE       {sr}
-#define APP_CHUNK_DURATION    {chunk}
-#define APP_CHUNK_SAMPLES     (APP_SAMPLE_RATE * APP_CHUNK_DURATION)
+#define APP_SAMPLE_RATE       {int(sr)}
+#define APP_CHUNK_DURATION    {int(chunk) if chunk == int(chunk) else chunk}
+#define APP_CHUNK_SAMPLES     {chunk_samples}
 #define APP_FFT_LENGTH        {fft_len}
 #define APP_FFT_BINS          (APP_FFT_LENGTH / 2 + 1)
 #define APP_HOP_LENGTH        {hop}
 #define APP_SPEC_WIDTH        {sw}
+#define APP_NUM_MELS          {num_mels}
 #define APP_NUM_CLASSES       {num_classes}
 #define APP_AUDIO_DIR         "audio"
 #define APP_RESULTS_FILE      "results.txt"
 #define APP_TOP_K             5
 #define APP_SCORE_THRESHOLD   0.01f
+#define APP_FRONTEND_HYBRID       0
+#define APP_FRONTEND_RAW          1
+#define APP_FRONTEND_PRECOMPUTED  2
+#define APP_AUDIO_FRONTEND        {frontend_define}
 /* --- end BirdNET parameters --- */
 """
     text = path.read_text()
@@ -335,6 +355,7 @@ DRIVER_SOURCES += $(N6_DRIVER_PATH)/Src/stm32n6xx_ll_sdmmc.c
 DRIVER_SOURCES += $(DK_DRIVER_PATH)/stm32n6570_discovery_sd.c
 C_SOURCES += $(CORE_PATH)/Src/wav_reader.c
 C_SOURCES += $(CORE_PATH)/Src/audio_stft.c
+C_SOURCES += $(CORE_PATH)/Src/audio_mel.c
 C_SOURCES += $(CORE_PATH)/Src/sd_handler.c
 C_SOURCES += $(CORE_PATH)/Src/fft.c
 C_SOURCES += $(FATFS_PATH)/ff.c
@@ -383,6 +404,7 @@ def restore_project(backups: list[Path]) -> None:
 # ---------------------------------------------------------------------------
 # Serial capture
 # ---------------------------------------------------------------------------
+
 
 def _serial_capture(
     port: str,
@@ -490,10 +512,12 @@ def parse_serial_output(
         if m and current_file is not None:
             score = float(m.group(3)) / 100.0
             if score >= threshold and len(current_file["detections"]) < top_k:
-                current_file["detections"].append({
-                    "label": m.group(2),
-                    "score": score,
-                })
+                current_file["detections"].append(
+                    {
+                        "label": m.group(2),
+                        "score": score,
+                    }
+                )
             continue
 
         m = _RE_BENCH.match(line)
@@ -538,6 +562,7 @@ def parse_serial_output(
 # ---------------------------------------------------------------------------
 # Main entry
 # ---------------------------------------------------------------------------
+
 
 def run_board_test(cfg: BoardTestConfig) -> dict:
     """Execute the full on-board inference test.
@@ -613,7 +638,8 @@ def run_board_test(cfg: BoardTestConfig) -> dict:
         n6_cmd = [
             sys.executable,
             deploy.n6_loader_script,
-            "--n6-loader-config", deploy.n6_loader_config,
+            "--n6-loader-config",
+            deploy.n6_loader_config,
             "--clean",
         ]
         print(f"  $ {' '.join(n6_cmd)}")
@@ -641,9 +667,7 @@ def run_board_test(cfg: BoardTestConfig) -> dict:
     parsed = parse_serial_output(serial_lines, labels, cfg.top_k, cfg.score_threshold)
 
     for r in parsed["results"]:
-        det_str = ", ".join(
-            f"{d['label']} ({d['score']:.1%})" for d in r["detections"]
-        )
+        det_str = ", ".join(f"{d['label']} ({d['score']:.1%})" for d in r["detections"])
         print(f"\n  {r['file']}")
         if det_str:
             print(f"    {det_str}")
@@ -651,11 +675,9 @@ def run_board_test(cfg: BoardTestConfig) -> dict:
             print("    (no detections above threshold)")
         if r.get("bench"):
             b = r["bench"]
-            print(f"    [{b['read_ms']}ms read, {b['stft_ms']}ms STFT, "
-                  f"{b['npu_ms']}ms NPU, {b['total_ms']}ms total]")
+            print(f"    [{b['read_ms']}ms read, {b['stft_ms']}ms STFT, {b['npu_ms']}ms NPU, {b['total_ms']}ms total]")
 
-    print(f"\n=== DONE: {parsed['processed']}/{parsed['total']} files "
-          f"({parsed['errors']} errors) ===")
+    print(f"\n=== DONE: {parsed['processed']}/{parsed['total']} files ({parsed['errors']} errors) ===")
 
     bench = parsed.get("benchmark")
     if bench:

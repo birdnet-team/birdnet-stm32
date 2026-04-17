@@ -464,6 +464,64 @@ def load_dataset(file_paths, classes, audio_frontend='precomputed', batch_size=3
     )
     return dataset.repeat().prefetch(tf.data.AUTOTUNE)
 
+
+def _mel_sinc_kernel(num_filters, kernel_size, sample_rate, fmin=150.0, fmax=None):
+    """Build a mel-spaced windowed-sinc bandpass filterbank kernel.
+
+    Creates a [1, kernel_size, 1, num_filters] kernel for Conv2D, where each
+    filter is a Hamming-windowed sinc bandpass at mel-spaced center frequencies.
+    This gives the raw frontend a strong initialization equivalent to an
+    analytical mel filterbank.
+
+    Args:
+        num_filters: Number of mel filters.
+        kernel_size: Temporal kernel length (number of taps).
+        sample_rate: Audio sample rate in Hz.
+        fmin: Lowest filter frequency (Hz).
+        fmax: Highest filter frequency (Hz, default sr/2).
+
+    Returns:
+        np.ndarray of shape [1, kernel_size, 1, num_filters], float32.
+    """
+    if fmax is None:
+        fmax = sample_rate / 2.0
+
+    # Mel-spaced edge frequencies (num_filters + 2 points for left/right edges)
+    mel_min = 2595.0 * np.log10(1.0 + fmin / 700.0)
+    mel_max = 2595.0 * np.log10(1.0 + fmax / 700.0)
+    mel_pts = np.linspace(mel_min, mel_max, num_filters + 2)
+    hz_pts = 700.0 * (10.0 ** (mel_pts / 2595.0) - 1.0)
+
+    # Normalized frequencies (0 to 0.5 = Nyquist)
+    f_norm = hz_pts / sample_rate
+
+    n = np.arange(kernel_size, dtype=np.float64)
+    center = (kernel_size - 1) / 2.0
+    t = n - center
+
+    # Hamming window
+    window = 0.54 - 0.46 * np.cos(2.0 * np.pi * n / (kernel_size - 1))
+
+    kernel = np.zeros((kernel_size, num_filters), dtype=np.float64)
+    for m in range(num_filters):
+        f_low = f_norm[m]
+        f_high = f_norm[m + 2]
+
+        # Bandpass = lowpass(f_high) - lowpass(f_low)
+        with np.errstate(invalid='ignore'):
+            lp_high = np.where(t == 0, 2.0 * f_high,
+                               np.sin(2.0 * np.pi * f_high * t) / (np.pi * t))
+            lp_low = np.where(t == 0, 2.0 * f_low,
+                              np.sin(2.0 * np.pi * f_low * t) / (np.pi * t))
+
+        bp = (lp_high - lp_low) * window
+        # Normalize to unit energy
+        energy = np.sqrt(np.sum(bp ** 2) + 1e-10)
+        kernel[:, m] = bp / energy
+
+    return kernel.astype(np.float32).reshape(1, kernel_size, 1, num_filters)
+
+
 class AudioFrontendLayer(layers.Layer):
     """
     Audio frontend with interchangeable input modes and optional magnitude scaling.
@@ -471,8 +529,8 @@ class AudioFrontendLayer(layers.Layer):
     Modes:
       - precomputed: Input mel spectrogram [B, mel_bins, spec_width, 1] -> slice to spec_width.
       - hybrid:      Linear STFT bins [B, fft_bins, spec_width, 1] -> 1x1 mel mixer (optionally train mel spacing).
-      - raw:         Waveform [B, T, 1] -> explicit symmetric pad -> VALID Conv2D(1,k) stride s -> BN -> ReLU6
-                     -> magnitude scaling -> transpose -> [B, mel_bins, spec_width, 1].
+      - raw:         Waveform [B, T, 1] -> pad -> frozen sinc Conv2D(1,k,M) stride s -> BN -> ReLU6
+                     -> PWL magnitude scaling -> transpose -> [B, M, W, 1].
 
     Magnitude scaling:
       - 'none': Pass-through.
@@ -551,37 +609,61 @@ class AudioFrontendLayer(layers.Layer):
         self._mel_range = None
         self._mel_seg_logits = None  # [mel_bins + 1], intervals between breakpoints
 
-        # RAW: single Conv2D with explicit VALID padding to guarantee TF/TFLite parity
+        # RAW: analytic sinc filterbank → BN → ReLU6 → PWL, with explicit VALID padding.
+        # Filterbank is frozen (sinc init is analytically correct).
+        # BN normalizes per-channel power distribution; ReLU6 half-wave rectifies.
+        # No explicit magnitude computation — avoids squaring (quantization-unfriendly).
+        # The backbone's temporal convolutions learn energy estimation from the
+        # rectified bandpass output, analogous to classic envelope detection.
         if self.mode == "raw":
             T = int(self.sample_rate * self.chunk_duration)   # input samples
             W = int(self.spec_width)                          # target frames
-            self._k_t = 16                                    # temporal kernel
-            self._stride_t = int(math.ceil(T / float(W)))     # stride s = ceil(T/W)
 
-            # For VALID conv: out = floor((L_in + pad_total - k)/s) + 1  == W
+            # Wide filterbank (≈25ms window at typical sample rates)
+            self._k_t = min(401, T // 4) | 1   # ensure odd, at most T/4
+            self._stride_t = int(math.ceil(T / float(W)))
+
+            # Compute padding for VALID conv to yield exactly W frames
             pad_total = max(0, self._stride_t * (W - 1) + self._k_t - T)
             self._pad_left = pad_total // 2
             self._pad_right = pad_total - self._pad_left
+
+            # Verify output width
+            in_w = T + self._pad_left + self._pad_right
+            out_w1 = (in_w - self._k_t) // self._stride_t + 1
+            assert out_w1 == W, f"Raw stage 1: expected {W} frames, got {out_w1}"
+
+            # Mel-spaced bandpass filters (frozen, analytically correct)
+            sinc_init = _mel_sinc_kernel(
+                int(self.mel_bins), self._k_t, int(self.sample_rate),
+                fmin=self.mel_fmin,
+                fmax=self.mel_fmax if self.mel_fmax else self.sample_rate / 2.0,
+            )
 
             self.fb2d = layers.Conv2D(
                 filters=int(self.mel_bins),
                 kernel_size=(1, self._k_t),
                 strides=(1, self._stride_t),
-                padding='valid',                 # we pad ourselves to make width static
+                padding='valid',
                 use_bias=False,
+                kernel_initializer=tf.keras.initializers.Constant(sinc_init),
                 name=f"{name}_raw_fb2d",
-                trainable=self.is_trainable,
+                trainable=False,  # frozen: sinc init is analytically correct
             )
-            # Quantization-friendly normalization + bounded activation
+
+            self.fb2d_refine = None
+
+            # BN + ReLU6: quantization-friendly normalization + bounded activation
             self.fb_bn = layers.BatchNormalization(momentum=0.99, epsilon=1e-3,
                                                    name=f"{name}_raw_fb2d_bn",
-                                                   trainable=self.is_trainable)
+                                                   trainable=True)
             self.fb_relu = layers.ReLU(max_value=6, name=f"{name}_raw_fb2d_relu")
         else:
             self._pad_left = 0
             self._pad_right = 0
             self._stride_t = 1
             self.fb2d = None
+            self.fb2d_refine = None
             self.fb_bn = None
             self.fb_relu = None
 
@@ -651,13 +733,15 @@ class AudioFrontendLayer(layers.Layer):
                 )
 
         elif self.mode in ("raw",):
-            # Build Conv2D and BN on static shapes to eliminate dynamic width
+            # Build Conv2D layers and BN on static shapes to eliminate dynamic width
             T = int(self.sample_rate * self.chunk_duration)
             static_w = int(self.spec_width)  # guaranteed by VALID + our padding
             in_w = T + int(self._pad_left) + int(self._pad_right)
             self.fb2d.build(tf.TensorShape([None, 1, in_w, 1]))
+            if self.fb2d_refine is not None:
+                self.fb2d_refine.build(tf.TensorShape([None, 1, static_w, int(self.mel_bins)]))
             if self.fb_bn is not None:
-                # fb2d output: [B, 1, static_w, mel_bins]
+                # After refine: [B, 1, static_w, mel_bins]
                 self.fb_bn.build(tf.TensorShape([None, 1, static_w, int(self.mel_bins)]))
 
         self._build_mag_layers()
@@ -941,12 +1025,15 @@ class AudioFrontendLayer(layers.Layer):
             y = tf.transpose(y, [0, 3, 2, 1])       # [B,mel,T,1]
             return y[:, :, :self.spec_width, :]
 
-        # raw: explicit symmetric pad -> VALID Conv2D -> BN -> ReLU6 -> mag -> transpose
+        # raw: pad → sinc bandpass Conv2D → BN → ReLU6 → PWL → transpose
+        # No explicit magnitude — BN normalizes per-channel, ReLU6 half-wave
+        # rectifies.  Backbone temporal convolutions estimate band energy from
+        # the rectified signal (classic envelope detection).
         x = inputs[:, :int(self.sample_rate * self.chunk_duration), :]
         if self._pad_left or self._pad_right:
             x = tf.pad(x, [[0, 0], [int(self._pad_left), int(self._pad_right)], [0, 0]])
         y = tf.expand_dims(x, axis=1)
-        y = self.fb2d(y)
+        y = self.fb2d(y)                   # [B, 1, spec_width, mel_bins]
         if self.fb_bn is not None:
             y = self.fb_bn(y, training=training)
         y = self.fb_relu(y)
