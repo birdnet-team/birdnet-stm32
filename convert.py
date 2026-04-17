@@ -16,17 +16,17 @@ Notes
   reduce cosine similarity after PTQ. Prefer a calibrated but not overly permissive set.
 """
 
-import os
-
 import argparse
-import tensorflow as tf
-import numpy as np
-import random
 import json
+import os
+import random
+
+import numpy as np
+import tensorflow as tf
 from tqdm import tqdm
 
-from train import load_file_paths_from_directory, AudioFrontendLayer
-from utils.audio import load_audio_file, get_spectrogram_from_audio, sort_by_s2n, pick_random_samples
+from train import AudioFrontendLayer, load_file_paths_from_directory
+from utils.audio import get_spectrogram_from_audio, load_audio_file, pick_random_samples
 
 # Random seed for reproducibility
 random.seed(42)
@@ -76,7 +76,7 @@ def representative_data_gen(file_paths, cfg, num_samples=100):
     frontend = cfg["audio_frontend"]
     mag_scale = cfg.get("mag_scale", "none")
     T = int(sr * cd)
-    
+
     # Shuffle paths and limit to num_samples
     if len(file_paths) == 0:
         raise ValueError("No audio files found for representative dataset generation.")
@@ -85,7 +85,7 @@ def representative_data_gen(file_paths, cfg, num_samples=100):
     for path in tqdm(file_paths, desc="Generating rep. dataset", unit="file", dynamic_ncols=True):
 
         audio_chunks = load_audio_file(path, sample_rate=sr, max_duration=30, chunk_duration=cd)
-        
+
         # Pick center chunk if multiple (simple heuristic to avoid very quiet heads/tails)
         if isinstance(audio_chunks, list) and len(audio_chunks) > 1:
             audio_chunks = [audio_chunks[len(audio_chunks) // 2]]
@@ -127,7 +127,7 @@ def representative_data_gen(file_paths, cfg, num_samples=100):
             else:
                 x = sample.astype(np.float32)[None, :, :, None]
             yield [x]
-            
+
 def _cosine(a, b, eps=1e-12):
     """
     Cosine similarity between two flattened arrays.
@@ -189,19 +189,19 @@ def validate_models(keras_model, tflite_model_path, rep_data_gen):
         None. Prints summary statistics to stdout.
     """
     # Create interpreter without delegates (disables XNNPACK explicitly)
-    interpreter = tf.lite.Interpreter(model_path=tflite_model_path, 
-                                      experimental_delegates=None, 
+    interpreter = tf.lite.Interpreter(model_path=tflite_model_path,
+                                      experimental_delegates=None,
                                       num_threads=1)
     interpreter.allocate_tensors()
     in_det = interpreter.get_input_details()[0]
     out_det = interpreter.get_output_details()[0]
     assert in_det['dtype'] == np.float32, "Input type is not float32"
     assert out_det['dtype'] == np.float32, "Output type is not float32"
-    
+
     print(f"TFLite input shape: {in_det['shape']}, output shape: {out_det['shape']}")
 
     cos_list, mse_list, mae_list, pcc_list = [], [], [], []
-    
+
     for sample in rep_data_gen():
         # Keras forward
         yk = keras_model(sample[0], training=False).numpy()
@@ -266,7 +266,7 @@ def main():
         args.model_config = os.path.splitext(args.checkpoint_path)[0] + "_model_config.json"
     if not os.path.isfile(args.model_config):
         raise FileNotFoundError(f"Model config JSON not found: {args.model_config}")
-    with open(args.model_config, "r") as f:
+    with open(args.model_config) as f:
         cfg = json.load(f)
 
     # Load model with custom layers
@@ -280,14 +280,22 @@ def main():
     # Build representative dataset generator
     if os.path.isdir(args.data_path_train):
         file_paths, _ = load_file_paths_from_directory(args.data_path_train)
-        rep_data_gen = lambda: representative_data_gen(file_paths, cfg, num_samples=args.num_samples)
-        rep_data_gen_val = lambda: representative_data_gen(file_paths, cfg, num_samples=args.validate_samples)
+
+        def rep_data_gen():
+            return representative_data_gen(file_paths, cfg, num_samples=args.num_samples)
+
+        def rep_data_gen_val():
+            return representative_data_gen(file_paths, cfg, num_samples=args.validate_samples)
     else:
         print(f"No training data directory provided, generating random representative dataset with {args.num_samples} samples.")
         def rep_data_gen(num_samples=args.num_samples):
-            sr = int(cfg["sample_rate"]); cd = cfg["chunk_duration"]; T = int(sr * cd)
-            spec_width = int(cfg["spec_width"]); n_fft = int(cfg["fft_length"])
-            frontend = cfg["audio_frontend"]; num_mels = int(cfg["num_mels"])
+            sr = int(cfg["sample_rate"])
+            cd = cfg["chunk_duration"]
+            T = int(sr * cd)
+            spec_width = int(cfg["spec_width"])
+            n_fft = int(cfg["fft_length"])
+            frontend = cfg["audio_frontend"]
+            num_mels = int(cfg["num_mels"])
             fft_bins = n_fft // 2 + 1
             for _ in tqdm(range(num_samples), desc="Generating random samples", unit="sample", dynamic_ncols=True):
                 if frontend in ('precomputed', 'librosa'):
@@ -297,7 +305,9 @@ def main():
                     yield [np.random.rand(1, fft_bins, spec_width, 1).astype(np.float32)]
                 else:  # tf/raw
                     yield [np.random.randn(1, T, 1).astype(np.float32)]
-        rep_data_gen_val = lambda: rep_data_gen(num_samples=args.validate_samples)
+
+        def rep_data_gen_val():
+            return rep_data_gen(num_samples=args.validate_samples)
 
     # Convert to TFLite
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
@@ -325,7 +335,7 @@ def main():
         tflite_model_path=args.output_path if args.output_path else os.path.splitext(args.checkpoint_path)[0] + "_quantized.tflite",
         rep_data_gen=rep_data_gen_val
     )
-        
+
     # Always save representative samples as .npz
     validation_data = []
     for sample in rep_data_gen_val():

@@ -1,23 +1,23 @@
-import os
 import argparse
-import numpy as np
-from typing import Optional
-import tensorflow as tf
-from tensorflow.keras import layers, constraints, regularizers
-import math
 import json
+import math
+import os
+
 import librosa
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras import constraints, layers, regularizers
+
+from utils.audio import (
+    get_spectrogram_from_audio,
+    load_audio_file,
+    pick_random_samples,
+    plot_spectrogram,
+    sort_by_activity,
+)
 
 # Supported audio filename extensions (lowercase)
 SUPPORTED_AUDIO_EXTS = ('.wav', '.mp3', '.flac', '.ogg', '.m4a')
-
-from utils.audio import (
-    load_audio_file,
-    get_spectrogram_from_audio,
-    sort_by_activity,
-    pick_random_samples,
-    plot_spectrogram,
-)
 
 # Mute TensorFlow warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -33,17 +33,17 @@ if gpus:
             tf.config.experimental.set_memory_growth(gpu, True)
     except Exception as e:
         print(f"Could not set memory growth: {e}")
-    
-def dataset_sanity_check(file_paths, 
-                         classes, 
-                         sample_rate=22050, 
-                         max_duration=30, 
-                         chunk_duration=3, 
-                         spec_width=128, 
-                         mel_bins=64, 
-                         audio_frontend='precomputed', 
-                         tf_frontend_layer=None, 
-                         fft_length=512, 
+
+def dataset_sanity_check(file_paths,
+                         classes,
+                         sample_rate=22050,
+                         max_duration=30,
+                         chunk_duration=3,
+                         spec_width=128,
+                         mel_bins=64,
+                         audio_frontend='precomputed',
+                         tf_frontend_layer=None,
+                         fft_length=512,
                          mag_scale='pwl',
                          snr_threshold=0.05,
                          prefix='pre'):
@@ -96,7 +96,7 @@ def dataset_sanity_check(file_paths,
 
     for i, path in enumerate(file_paths[:10]):
         audio_chunks = load_audio_file(path, sample_rate, max_duration, chunk_duration)
-        if len(audio_chunks) == 0: 
+        if len(audio_chunks) == 0:
             print(f"Skipping file {path} (failed to load)")
             continue
 
@@ -104,7 +104,8 @@ def dataset_sanity_check(file_paths,
             # Precompute mel + requested mag_scale for visualization
             specs = [get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=mel_bins, spec_width=spec_width, mag_scale=mag_scale) for chunk in audio_chunks]
             pool = sort_by_activity(specs, threshold=snr_threshold) or specs
-            if len(pool) == 0: continue
+            if len(pool) == 0:
+                continue
             spec = pick_random_samples(pool, num_samples=1, pick_first=True)
             spec = spec[0] if isinstance(spec, list) else spec
 
@@ -114,7 +115,8 @@ def dataset_sanity_check(file_paths,
             print(f"File {i+1}: {os.path.basename(path)} - {len(audio_chunks)} chunks, example spec shape: {specs[0].shape}")
             pool = sort_by_activity(specs, threshold=snr_threshold) or specs
             print(f"  Selected {len(pool)} chunks after activity-based filtering.")
-            if len(pool) == 0: continue
+            if len(pool) == 0:
+                continue
             spec_in = pick_random_samples(pool, num_samples=1, pick_first=True)
             spec_in = spec_in[0] if isinstance(spec_in, list) else spec_in  # [fft_bins, spec_width]
             inp = spec_in[np.newaxis, :, :, np.newaxis].astype(np.float32)   # [B,fft_bins,T,1]
@@ -122,7 +124,8 @@ def dataset_sanity_check(file_paths,
 
         else:  # raw/tf
             pool = sort_by_activity(audio_chunks, threshold=snr_threshold) or audio_chunks
-            if len(pool) == 0: continue
+            if len(pool) == 0:
+                continue
             chunk = pick_random_samples(pool, num_samples=1, pick_first=True)
             chunk = (chunk[0] if isinstance(chunk, list) else chunk)[:int(sample_rate * chunk_duration)]
             if len(chunk) < sample_rate * chunk_duration:
@@ -132,7 +135,7 @@ def dataset_sanity_check(file_paths,
             spec = tf_frontend(inp, training=False).numpy()[0, :, :, 0]
 
         plot_spectrogram(spec, title=f"{audio_frontend}_{mag_scale}_{prefix}_{os.path.basename(path)}")
-        
+
 def get_classes_with_most_samples(directory, n_classes=25, include_noise=False, exts: tuple = SUPPORTED_AUDIO_EXTS):
     """
     Collect the most frequent class labels from a dataset root.
@@ -149,7 +152,7 @@ def get_classes_with_most_samples(directory, n_classes=25, include_noise=False, 
     classes = {}  # 'class_name': num_samples
     noise_classes = {'noise', 'silence', 'background', 'other'}
 
-    for root, dirs, files in os.walk(directory):
+    for root, _dirs, files in os.walk(directory):
         for fname in files:
             if not fname.lower().endswith(exts):
                 continue
@@ -159,7 +162,7 @@ def get_classes_with_most_samples(directory, n_classes=25, include_noise=False, 
             classes[class_name] = classes.get(class_name, 0) + 1
 
     sorted_classes = sorted(classes.items(), key=lambda x: x[1], reverse=True)
-    return [cls for cls, _ in sorted_classes[:n_classes]]    
+    return [cls for cls, _ in sorted_classes[:n_classes]]
 
 def load_file_paths_from_directory(directory, classes=None, max_samples=None, exts: tuple = SUPPORTED_AUDIO_EXTS):
     """
@@ -200,7 +203,7 @@ def load_file_paths_from_directory(directory, classes=None, max_samples=None, ex
 
     # Enforce max_samples per class (uniform random)
     all_paths = []
-    for cls, paths in per_class.items():
+    for _cls, paths in per_class.items():
         if max_samples is not None and max_samples > 0 and len(paths) > max_samples:
             idx = np.random.permutation(len(paths))[:max_samples]
             paths = [paths[i] for i in idx]
@@ -211,7 +214,7 @@ def load_file_paths_from_directory(directory, classes=None, max_samples=None, ex
 
     # Build classes list from collected keys, excluding noise-like labels
     noise_classes = {'noise', 'silence', 'background', 'other'}
-    classes_out = sorted([c for c in per_class.keys() if c.lower() not in noise_classes])
+    classes_out = sorted([c for c in per_class if c.lower() not in noise_classes])
 
     return all_paths, classes_out
 
@@ -231,22 +234,22 @@ def upsample_minority_classes(file_paths, classes, ratio=0.25):
         - Sampling is with replacement; randomness follows numpy’s global RNG state.
         - This does not rebalance perfectly; it raises all classes up to ratio * max_size.
     """
-    
+
     assert 0 < ratio <= 1, "Ratio must be in (0, 1]."
     class_to_paths = {cls: [] for cls in classes}
-    
+
     # Bucket file paths by class
     for path in file_paths:
         class_name = os.path.basename(os.path.dirname(path))
         if class_name in class_to_paths:
             class_to_paths[class_name].append(path)
-    
+
     # Determine target size based on the largest class
     max_size = max(len(paths) for paths in class_to_paths.values())
     target_size = int(max_size * ratio)
-    
+
     augmented_paths = []
-    for cls, paths in class_to_paths.items():
+    for _cls, paths in class_to_paths.items():
         current_size = len(paths)
         if current_size < target_size:
             # Upsample by random repetition
@@ -254,22 +257,22 @@ def upsample_minority_classes(file_paths, classes, ratio=0.25):
             additional_paths = np.random.choice(paths, size=num_to_add, replace=True).tolist()
             paths.extend(additional_paths)
         augmented_paths.extend(paths)
-    
+
     np.random.shuffle(augmented_paths)
     return augmented_paths
 
-def data_generator(file_paths, 
-                   classes, batch_size=32, 
-                   audio_frontend='librosa', 
-                   sample_rate=22050, 
-                   max_duration=30, 
-                   chunk_duration=3, 
-                   spec_width=128, 
-                   mixup_alpha=0.2, 
-                   mixup_probability=0.25, 
-                   mel_bins=48, 
-                   fft_length=512, 
-                   mag_scale='none', 
+def data_generator(file_paths,
+                   classes, batch_size=32,
+                   audio_frontend='librosa',
+                   sample_rate=22050,
+                   max_duration=30,
+                   chunk_duration=3,
+                   spec_width=128,
+                   mixup_alpha=0.2,
+                   mixup_probability=0.25,
+                   mel_bins=48,
+                   fft_length=512,
+                   mag_scale='none',
                    random_offset=False,
                    snr_threshold=0.5):
     """
@@ -326,7 +329,8 @@ def data_generator(file_paths,
                 if audio_frontend in ('librosa', 'precomputed'):
                     specs = [get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=mel_bins, spec_width=spec_width, mag_scale=mag_scale) for chunk in audio_chunks]
                     pool = sort_by_activity(specs, threshold=snr_threshold) or specs
-                    if len(pool) == 0: continue
+                    if len(pool) == 0:
+                        continue
                     sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
                     sample = sample[0] if isinstance(sample, list) else sample   # [mel, T]
                     need_ch_last = True
@@ -334,18 +338,21 @@ def data_generator(file_paths,
                 elif audio_frontend == 'hybrid':
                     specs = [get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=spec_width) for chunk in audio_chunks]
                     pool = sort_by_activity(specs, threshold=snr_threshold) or specs
-                    if len(pool) == 0: continue
+                    if len(pool) == 0:
+                        continue
                     sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
                     sample = sample[0] if isinstance(sample, list) else sample   # [fft_bins, T]
                     need_ch_last = True
 
                 elif audio_frontend in ('tf', 'raw'):
                     pool = sort_by_activity(audio_chunks, threshold=snr_threshold) or audio_chunks
-                    if len(pool) == 0: continue
+                    if len(pool) == 0:
+                        continue
                     sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
                     x = sample[0] if isinstance(sample, list) else sample
                     x = x[:T]
-                    if x.shape[0] < T: x = np.pad(x, (0, T - x.shape[0]))
+                    if x.shape[0] < T:
+                        x = np.pad(x, (0, T - x.shape[0]))
                     x = x / (np.max(np.abs(x)) + 1e-6)
                     sample = x                                           # [T]
                     need_ch_last = True
@@ -356,7 +363,8 @@ def data_generator(file_paths,
                 if label_str.lower() in ['noise', 'silence', 'background', 'other']:
                     one_hot_label = np.zeros(len(classes), dtype=np.float32)
                 else:
-                    if label_str not in classes: continue
+                    if label_str not in classes:
+                        continue
                     one_hot_label = tf.one_hot(classes.index(label_str), depth=len(classes)).numpy()
 
                 if need_ch_last:
@@ -366,7 +374,8 @@ def data_generator(file_paths,
                 batch_samples.append(sample.astype(np.float32))
                 batch_labels.append(one_hot_label.astype(np.float32))
 
-            if len(batch_samples) == 0: continue
+            if len(batch_samples) == 0:
+                continue
             batch_samples = np.stack(batch_samples)
             batch_labels = np.stack(batch_labels)
 
@@ -420,7 +429,6 @@ def load_dataset(file_paths, classes, audio_frontend='precomputed', batch_size=3
     fft_length = kwargs.get('fft_length', 512)
     mag_scale = kwargs.get('mag_scale', 'none')
     random_offset = kwargs.get('random_offset', False)
-    snr_threshold = kwargs.get('snr_threshold', 0.5)
     chunk_len = int(sr * cd)
 
     if audio_frontend in ('librosa', 'precomputed'):
@@ -482,7 +490,7 @@ class AudioFrontendLayer(layers.Layer):
       - Raw branch uses explicit VALID padding to avoid TF vs. TFLite SAME-padding differences.
       - Channel padding to multiples of 8 may be applied internally for NPU-friendly tensors.
     """
-    def __init__(self, 
+    def __init__(self,
                  mode: str,
                  mel_bins: int,
                  spec_width: int,
@@ -492,7 +500,7 @@ class AudioFrontendLayer(layers.Layer):
                  pcen_K: int = 8,
                  init_mel: bool = True,
                  mel_fmin: float = 150.0,
-                 mel_fmax: Optional[float] = None,
+                 mel_fmax: float | None = None,
                  mel_norm: str = "slaney",
                  mag_scale: str = "none",
                  name: str = "audio_frontend",
@@ -668,7 +676,6 @@ class AudioFrontendLayer(layers.Layer):
             - Used only during training in hybrid mode to obtain gradients w.r.t. breakpoints.
         """
         eps = tf.constant(1e-6, tf.float32)
-        F = tf.shape(self._bins_mel)[0]
         M = int(self.mel_bins)
 
         # Positive intervals via softplus, normalized to full mel range
@@ -809,11 +816,11 @@ class AudioFrontendLayer(layers.Layer):
         Returns:
             tf.Tensor: Compressed output [B, 1, T, C].
         """
-        
+
         branches = []
         if self._pwl_k0_dw is not None:
             branches.append(self._pwl_k0_dw(x))
-        for i, (shift_dw, k_dw) in enumerate(zip(self._pwl_shift_dws, self._pwl_k_dws), start=1):
+        for _i, (shift_dw, k_dw) in enumerate(zip(self._pwl_shift_dws, self._pwl_k_dws, strict=False), start=1):
             relu = tf.nn.relu(shift_dw(x))
             branches.append(k_dw(relu))
         if not branches:
@@ -894,7 +901,9 @@ class AudioFrontendLayer(layers.Layer):
                     tri = self._compute_tri_matrix()                         # [F, M]
                     # Keep kernel in sync but stop gradients through the assignment
                     self._assign_mel_kernel_from_tri(tf.stop_gradient(tri))
-                    B = tf.shape(y_in)[0]; Tt = tf.shape(y_in)[2]; F = tf.shape(y_in)[3]
+                    B = tf.shape(y_in)[0]
+                    Tt = tf.shape(y_in)[2]
+                    F = tf.shape(y_in)[3]
                     y_flat = tf.reshape(y_in, [B * Tt, F])                   # [B*T, F]
                     y_mel = tf.matmul(y_flat, tri)                           # [B*T, M]
                     return tf.reshape(y_mel, [B, 1, Tt, int(self.mel_bins)]) # [B,1,T,M]
@@ -902,7 +911,8 @@ class AudioFrontendLayer(layers.Layer):
                 def _infer_branch(y_in: tf.Tensor) -> tf.Tensor:
                     # N6-friendly 1x1 Conv2D only (no assigns in inference graph)
                     if self._pad_ch_in:
-                        b = tf.shape(y_in)[0]; t = tf.shape(y_in)[2]
+                        b = tf.shape(y_in)[0]
+                        t = tf.shape(y_in)[2]
                         z = tf.zeros([b, 1, t, self._pad_ch_in], dtype=y_in.dtype)
                         y_in = tf.concat([y_in, z], axis=-1)
                     return self.mel_mixer(y_in)
@@ -916,7 +926,8 @@ class AudioFrontendLayer(layers.Layer):
             else:
                 # Fixed mel mixer (Conv2D only)
                 if self._pad_ch_in:
-                    b = tf.shape(y)[0]; t = tf.shape(y)[2]
+                    b = tf.shape(y)[0]
+                    t = tf.shape(y)[2]
                     z = tf.zeros([b, 1, t, self._pad_ch_in], dtype=y.dtype)
                     y = tf.concat([y, z], axis=-1)
                 y = self.mel_mixer(y)
@@ -954,7 +965,7 @@ class AudioFrontendLayer(layers.Layer):
             tuple: (batch, mel_bins, spec_width, 1)
         """
         return (input_shape[0], int(self.mel_bins), int(self.spec_width), 1)
-    
+
     def get_config(self):
         """
         Return a serializable configuration of the frontend layer.
@@ -1130,7 +1141,7 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
         )(inputs)
     else:
         raise ValueError("Invalid audio_frontend.")
-    
+
     # Stem (3x3, stride 1) to lift channels
     stem_ch = _make_divisible(int(16 * alpha), 8)
     x = layers.Conv2D(stem_ch, (3, 3), strides=(1, 2), padding='same', use_bias=False, name="stem_conv")(x)
@@ -1142,18 +1153,18 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
     base_repeats = [2, 3, 4, 2]
     base_strides = [(2, 2), (2, 2), (2, 2), (2, 2)]
 
-    for si, (bf, br, (sf, st)) in enumerate(zip(base_filters, base_repeats, base_strides), start=1):
+    for si, (bf, br, (sf, st)) in enumerate(zip(base_filters, base_repeats, base_strides, strict=True), start=1):
         out_ch = _make_divisible(int(bf * alpha), 8)
         reps = max(1, int(math.ceil(br * depth_multiplier)))
         # First block in stage downsamples both frequency and time
         x = ds_conv_block(x, out_ch, stride_f=sf, stride_t=st, name=f"stage{si}_ds1")
         for bi in range(2, reps + 1):
             x = ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name=f"stage{si}_ds{bi}")
-            
+
     # Final 1x1 conv to embeddings
     emb_ch = _make_divisible(int(embeddings_size), 8)
     # check if we already have emb_ch channels
-    if not (x.shape[-1] is not None and int(x.shape[-1]) == int(emb_ch)):    
+    if not (x.shape[-1] is not None and int(x.shape[-1]) == int(emb_ch)):
         x = layers.Conv2D(emb_ch, (1, 1), strides=(1, 1), padding='same', use_bias=False, name="emb_conv")(x)
         x = layers.BatchNormalization(name="emb_bn")(x)
         x = layers.ReLU(max_value=6, name="emb_relu")(x)
@@ -1164,15 +1175,15 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
     outputs = layers.Dense(num_classes, activation=class_activation, name="pred")(x)
     return tf.keras.models.Model(inputs, outputs, name="dscnn_audio")
 
-def train_model(model, 
-                train_dataset, 
-                val_dataset, 
-                epochs=50, 
-                learning_rate=0.001, 
-                batch_size=64, 
-                patience=10, 
-                checkpoint_path="checkpoints/best_model.keras", 
-                steps_per_epoch=None, 
+def train_model(model,
+                train_dataset,
+                val_dataset,
+                epochs=50,
+                learning_rate=0.001,
+                batch_size=64,
+                patience=10,
+                checkpoint_path="checkpoints/best_model.keras",
+                steps_per_epoch=None,
                 val_steps=None,
                 is_multilabel=False):
     """
@@ -1205,12 +1216,12 @@ def train_model(model,
 
     # Ensure checkpoint dir exists
     os.makedirs(os.path.dirname(checkpoint_path) or ".", exist_ok=True)
-    
+
     lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
         initial_learning_rate=learning_rate,
         decay_steps=epochs * steps_per_epoch,
         alpha=0.0
-    )    
+    )
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
         loss='binary_crossentropy' if is_multilabel else 'categorical_crossentropy',
@@ -1290,13 +1301,13 @@ if __name__ == "__main__":
         if T >= (1 << 16):
             print(f"[WARN] STM32N6 compile will fail: raw input length {T} >= 65536.")
             print("       Use --sample_rate 16000 or --chunk_duration 2, or switch to --audio_frontend hybrid/precomputed.")
-    
+
     # Compute hop length once for config/diagnostics
     hop_length = compute_hop_length(args.sample_rate, args.chunk_duration, args.spec_width)
 
     # Load file paths and classes
-    file_paths, classes = load_file_paths_from_directory(args.data_path_train, 
-                                                         max_samples=args.max_samples, 
+    file_paths, classes = load_file_paths_from_directory(args.data_path_train,
+                                                         max_samples=args.max_samples,
                                                          classes=get_classes_with_most_samples(args.data_path_train, 100, True) # DEBUG: Only use N classes for debugging
                                                          )
 
@@ -1322,7 +1333,7 @@ if __name__ == "__main__":
     train_paths = file_paths[:split_idx]
     val_paths = file_paths[split_idx:]
     print(f"Training on {len(train_paths)} files, validating on {len(val_paths)} files.")
-    
+
     # Upsample classes if requested
     if args.upsample_ratio and args.upsample_ratio > 0 and args.upsample_ratio < 1.0:
         train_paths = upsample_minority_classes(train_paths, classes, args.upsample_ratio)
@@ -1385,10 +1396,10 @@ if __name__ == "__main__":
         frontend_trainable=args.frontend_trainable,
         class_activation='sigmoid'  if args.mixup_probability > 0 else 'softmax'  # Use sigmoid for mixup (multi-label), softmax otherwise
     )
-    
+
     model.summary()
     print("Model built successfully.")
-    
+
     # Save model config JSON next to the checkpoint
     cfg = {
         "sample_rate": args.sample_rate,
@@ -1396,7 +1407,7 @@ if __name__ == "__main__":
         "spec_width": args.spec_width,
         "fft_length": args.fft_length,
         "chunk_duration": args.chunk_duration,
-        "hop_length": hop_length, 
+        "hop_length": hop_length,
         "audio_frontend": args.audio_frontend,
         "mag_scale": args.mag_scale,
         "embeddings_size": args.embeddings_size,
