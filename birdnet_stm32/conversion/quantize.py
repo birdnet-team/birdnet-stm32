@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from birdnet_stm32.audio.io import load_audio_file
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
+from birdnet_stm32.models.frontend import normalize_frontend_name
 
 
 def representative_data_gen(file_paths: list[str], cfg: dict, num_samples: int = 100):
@@ -34,7 +35,7 @@ def representative_data_gen(file_paths: list[str], cfg: dict, num_samples: int =
     spec_width = int(cfg["spec_width"])
     cd = float(cfg["chunk_duration"])
     n_fft = int(cfg["fft_length"])
-    frontend = cfg["audio_frontend"]
+    frontend = normalize_frontend_name(cfg["audio_frontend"])
     mag_scale = cfg.get("mag_scale", "none")
     T = int(sr * cd)
 
@@ -51,7 +52,7 @@ def representative_data_gen(file_paths: list[str], cfg: dict, num_samples: int =
         elif isinstance(audio_chunks, np.ndarray) and audio_chunks.shape[0] > 1:
             audio_chunks = [audio_chunks[audio_chunks.shape[0] // 2]]
 
-        if frontend in ("precomputed", "librosa"):
+        if frontend == "librosa":
             specs = [
                 get_spectrogram_from_audio(
                     ch, sample_rate=sr, n_fft=n_fft, mel_bins=num_mels, spec_width=spec_width, mag_scale=mag_scale
@@ -65,7 +66,7 @@ def representative_data_gen(file_paths: list[str], cfg: dict, num_samples: int =
                 for ch in audio_chunks
             ]
             pool = [s for s in specs if s is not None and np.size(s) > 0]
-        elif frontend in ("tf", "raw"):
+        elif frontend == "raw":
             if isinstance(audio_chunks, np.ndarray):
                 pool = [audio_chunks[i] for i in range(audio_chunks.shape[0])]
             else:
@@ -78,7 +79,7 @@ def representative_data_gen(file_paths: list[str], cfg: dict, num_samples: int =
             continue
 
         for sample in pool:
-            if frontend in ("tf", "raw"):
+            if frontend == "raw":
                 x = sample[:T]
                 if x.shape[0] < T:
                     x = np.pad(x, (0, T - x.shape[0]))

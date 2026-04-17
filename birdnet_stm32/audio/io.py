@@ -61,7 +61,7 @@ def load_audio_file(
 
         # Choose start offset (seconds)
         if random_offset:
-            offset_sec = float(np.random.uniform(0.0, max(0.0, (total_frames / sr0) / 2) - chunk_duration))
+            offset_sec = float(np.random.uniform(0.0, max(0.0, (total_frames / sr0) / 2 - chunk_duration)))
         else:
             offset_sec = 0.0
 

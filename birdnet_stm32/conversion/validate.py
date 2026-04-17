@@ -41,7 +41,7 @@ def pearson_correlation(a: np.ndarray, b: np.ndarray, eps: float = 1e-12) -> flo
     return float(np.dot(a, b) / denom)
 
 
-def validate_models(keras_model: tf.keras.Model, tflite_model_path: str, rep_data_gen):
+def validate_models(keras_model: tf.keras.Model, tflite_model_path: str, rep_data_gen) -> dict[str, float]:
     """Compare Keras vs. TFLite predictions and print summary statistics.
 
     Runs the TFLite interpreter without delegates to minimize numeric differences.
@@ -50,6 +50,9 @@ def validate_models(keras_model: tf.keras.Model, tflite_model_path: str, rep_dat
         keras_model: Loaded Keras model.
         tflite_model_path: Path to the converted .tflite model.
         rep_data_gen: Callable returning an iterable of [input_tensor].
+
+    Returns:
+        Dict with keys 'cosine_mean', 'mse_mean', 'mae_mean', 'pearson_mean'.
     """
     interpreter = tf.lite.Interpreter(model_path=tflite_model_path, experimental_delegates=None, num_threads=1)
     interpreter.allocate_tensors()
@@ -84,3 +87,10 @@ def validate_models(keras_model: tf.keras.Model, tflite_model_path: str, rep_dat
     _summ("mse", mse_list)
     _summ("mae", mae_list)
     _summ("pearson_r", pcc_list)
+
+    return {
+        "cosine_mean": float(np.mean(cos_list)) if cos_list else 0.0,
+        "mse_mean": float(np.mean(mse_list)) if mse_list else float("inf"),
+        "mae_mean": float(np.mean(mae_list)) if mae_list else float("inf"),
+        "pearson_mean": float(np.mean(pcc_list)) if pcc_list else 0.0,
+    }

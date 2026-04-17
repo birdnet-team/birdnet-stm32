@@ -3,7 +3,7 @@
 import os
 
 import numpy as np
-from sklearn.metrics import precision_recall_curve
+from sklearn.metrics import confusion_matrix, precision_recall_curve
 
 
 def print_ascii_histogram(scores: np.ndarray, bins: int = 10, width: int = 40):
@@ -75,3 +75,95 @@ def save_predictions_csv(per_file: list[dict], classes: list[str], out_path: str
                 f"{top1_score:.3f}",
             ] + [f"{s:.3f}" for s in scores]
             f.write(",".join(vals) + "\n")
+
+
+def print_confusion_matrix(y_true: np.ndarray, y_scores: np.ndarray, classes: list[str], threshold: float = 0.5):
+    """Print an ASCII confusion matrix based on top-1 predictions.
+
+    Args:
+        y_true: One-hot ground-truth labels [N, C].
+        y_scores: Predicted scores [N, C].
+        classes: Ordered class names.
+        threshold: Minimum score to count as a prediction (else "none").
+    """
+    true_idx = np.argmax(y_true, axis=1)
+    pred_idx = np.argmax(y_scores, axis=1)
+
+    # Suppress predictions below threshold
+    max_scores = np.max(y_scores, axis=1)
+    pred_idx[max_scores < threshold] = -1
+
+    cm = confusion_matrix(true_idx, pred_idx, labels=list(range(len(classes))))
+
+    # Truncate long class names for display
+    max_name_len = min(12, max(len(c) for c in classes)) if classes else 6
+    short_names = [c[:max_name_len] for c in classes]
+
+    # Header
+    header = " " * (max_name_len + 1) + " ".join(f"{n:>{max_name_len}}" for n in short_names)
+    print(f"\nConfusion Matrix (rows=true, cols=predicted):\n{header}")
+
+    for i, row in enumerate(cm):
+        row_str = " ".join(f"{v:>{max_name_len}}" for v in row)
+        print(f"{short_names[i]:>{max_name_len}} {row_str}")
+
+    # Summary stats
+    correct = np.trace(cm)
+    total = np.sum(cm)
+    print(f"\nAccuracy: {correct}/{total} ({100 * correct / max(total, 1):.1f}%)")
+
+
+def save_confusion_matrix_plot(
+    y_true: np.ndarray,
+    y_scores: np.ndarray,
+    classes: list[str],
+    out_path: str,
+    threshold: float = 0.5,
+):
+    """Save a matplotlib confusion matrix heatmap to a file.
+
+    Requires matplotlib. Silently skips if not available.
+
+    Args:
+        y_true: One-hot ground-truth labels [N, C].
+        y_scores: Predicted scores [N, C].
+        classes: Ordered class names.
+        out_path: Path to save the image (e.g., .png).
+        threshold: Minimum score to count as a prediction.
+    """
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib not available; skipping confusion matrix plot.")
+        return
+
+    true_idx = np.argmax(y_true, axis=1)
+    pred_idx = np.argmax(y_scores, axis=1)
+    max_scores = np.max(y_scores, axis=1)
+    pred_idx[max_scores < threshold] = -1
+
+    cm = confusion_matrix(true_idx, pred_idx, labels=list(range(len(classes))))
+
+    fig, ax = plt.subplots(figsize=(max(6, len(classes) * 0.5), max(5, len(classes) * 0.4)))
+    im = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
+    ax.figure.colorbar(im, ax=ax)
+
+    ax.set(
+        xticks=np.arange(len(classes)),
+        yticks=np.arange(len(classes)),
+        xticklabels=classes,
+        yticklabels=classes,
+        ylabel="True label",
+        xlabel="Predicted label",
+        title="Confusion Matrix",
+    )
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Confusion matrix plot saved to {out_path}")

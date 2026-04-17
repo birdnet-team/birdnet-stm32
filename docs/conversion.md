@@ -60,6 +60,7 @@ After conversion, the script reports:
 | `--data_path_train` | None | Training data for representative dataset |
 | `--num_samples` | 1024 | Number of representative samples |
 | `--validate_samples` | 256 | Samples for Keras vs. TFLite validation |
+| `--min_cosine_sim` | 0.95 | Fail conversion if cosine similarity is below this |
 
 ## Quantization details
 

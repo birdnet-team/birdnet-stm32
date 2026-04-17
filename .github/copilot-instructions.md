@@ -53,3 +53,4 @@ python -m birdnet_stm32 deploy
 - **Quantization similarity**: Overly diverse representative datasets widen INT8 ranges → worse cosine similarity. Target > 0.95 cosine sim in `convert.py` output.
 - **Channel alignment**: Keep channel counts as multiples of 8 for NPU vectorization.
 - **On-device validation**: Requires physical USB at 921600 baud to STM32N6570-DK.
+- **Board test firmware must be standalone.** The `board-test` command must deploy real firmware that does all processing on the board: read WAV from SD card → compute STFT on Cortex-M55 → run NPU inference → write results to SD card + serial. Do NOT precompute spectrograms on the host — that defeats the purpose of an integration test.

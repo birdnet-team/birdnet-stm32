@@ -5,7 +5,7 @@ import pytest
 
 tf = pytest.importorskip("tensorflow", reason="TensorFlow required for frontend tests")
 
-from birdnet_stm32.models.frontend import AudioFrontendLayer
+from birdnet_stm32.models.frontend import AudioFrontendLayer, normalize_frontend_name
 
 
 @pytest.fixture
@@ -115,3 +115,30 @@ class TestSerializationRoundtrip:
         assert config["mode"] == "precomputed"
         assert config["mel_bins"] == 64
         assert config["spec_width"] == 256
+
+
+class TestNormalizeFrontendName:
+    """Tests for normalize_frontend_name."""
+
+    def test_canonical_names_pass_through(self):
+        """Canonical names should be returned as-is."""
+        assert normalize_frontend_name("librosa") == "librosa"
+        assert normalize_frontend_name("hybrid") == "hybrid"
+        assert normalize_frontend_name("raw") == "raw"
+
+    def test_deprecated_precomputed_alias(self):
+        """'precomputed' should map to 'librosa' with a deprecation warning."""
+        with pytest.warns(DeprecationWarning, match="precomputed"):
+            result = normalize_frontend_name("precomputed")
+        assert result == "librosa"
+
+    def test_deprecated_tf_alias(self):
+        """'tf' should map to 'raw' with a deprecation warning."""
+        with pytest.warns(DeprecationWarning, match="tf"):
+            result = normalize_frontend_name("tf")
+        assert result == "raw"
+
+    def test_invalid_name_raises(self):
+        """Invalid frontend name should raise ValueError."""
+        with pytest.raises(ValueError, match="Invalid audio frontend"):
+            normalize_frontend_name("invalid")

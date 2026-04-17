@@ -4,10 +4,15 @@ import argparse
 import json
 import math
 import os
+import random
+
+import numpy as np
 
 from birdnet_stm32.data.dataset import load_file_paths_from_directory, upsample_minority_classes
 from birdnet_stm32.data.generator import load_dataset
 from birdnet_stm32.models.dscnn import build_dscnn_model
+from birdnet_stm32.models.frontend import normalize_frontend_name
+from birdnet_stm32.training.losses import BinaryFocalLoss
 from birdnet_stm32.training.trainer import compute_hop_length, train_model
 
 
@@ -39,17 +44,48 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
     parser.add_argument("--learning_rate", type=float, default=0.001, help="Initial learning rate")
+    parser.add_argument("--dropout", type=float, default=0.5, help="Dropout rate before classifier head")
+    parser.add_argument(
+        "--optimizer", type=str, default="adam", choices=["adam", "sgd", "adamw"], help="Optimizer"
+    )
+    parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay (adamw only)")
+    parser.add_argument(
+        "--loss",
+        type=str,
+        default="auto",
+        choices=["auto", "focal"],
+        help="Loss function. 'auto' selects based on mixup; 'focal' uses focal loss.",
+    )
+    parser.add_argument("--focal_gamma", type=float, default=2.0, help="Focal loss gamma (focusing parameter)")
     parser.add_argument("--val_split", type=float, default=0.2, help="Validation split ratio")
     parser.add_argument("--checkpoint_path", type=str, default="checkpoints/best_model.keras")
+    parser.add_argument("--spec_augment", action="store_true", default=False, help="Enable SpecAugment")
+    parser.add_argument("--freq_mask_max", type=int, default=8, help="Max frequency mask width (bins)")
+    parser.add_argument("--time_mask_max", type=int, default=25, help="Max time mask width (frames)")
+    parser.add_argument("--deterministic", action="store_true", default=False, help="Enable deterministic mode")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed (used with --deterministic)")
     return parser.parse_args()
 
 
 def main():
     """Train a DS-CNN model on a class-structured audio dataset."""
     args = get_args()
+    args.audio_frontend = normalize_frontend_name(args.audio_frontend)
+
+    # Deterministic mode: seed all RNGs and enable TF deterministic ops
+    if args.deterministic:
+        import tensorflow as tf
+
+        seed = args.seed
+        random.seed(seed)
+        np.random.seed(seed)
+        tf.random.set_seed(seed)
+        os.environ["TF_DETERMINISTIC_OPS"] = "1"
+        os.environ["PYTHONHASHSEED"] = str(seed)
+        print(f"Deterministic mode enabled (seed={seed}).")
 
     # Early warning for STM32N6 raw frontend constraint
-    if args.audio_frontend in ("tf", "raw"):
+    if args.audio_frontend == "raw":
         T = int(args.sample_rate * args.chunk_duration)
         if T >= (1 << 16):
             print(f"[WARN] STM32N6 constraint: raw input length {T} >= 65536.")
@@ -90,6 +126,9 @@ def main():
         mixup_probability=args.mixup_probability,
         random_offset=True,
         snr_threshold=0.1,
+        spec_augment=args.spec_augment,
+        freq_mask_max=args.freq_mask_max,
+        time_mask_max=args.time_mask_max,
         **common_kwargs,
     )
     val_dataset = load_dataset(
@@ -101,6 +140,7 @@ def main():
         mixup_probability=0.0,
         random_offset=False,
         snr_threshold=0.5,
+        spec_augment=False,
         **common_kwargs,
     )
 
@@ -123,6 +163,7 @@ def main():
         mag_scale=args.mag_scale,
         frontend_trainable=args.frontend_trainable,
         class_activation="sigmoid" if args.mixup_probability > 0 else "softmax",
+        dropout_rate=args.dropout,
     )
     model.summary()
 
@@ -149,6 +190,11 @@ def main():
         json.dump(cfg, f, indent=2)
     print(f"Saved model config to '{cfg_path}'")
 
+    # Resolve loss function
+    loss_fn = None
+    if args.loss == "focal":
+        loss_fn = BinaryFocalLoss(gamma=args.focal_gamma)
+
     # Train
     print("Starting training...")
     train_model(
@@ -162,6 +208,9 @@ def main():
         steps_per_epoch=steps_per_epoch,
         val_steps=val_steps,
         is_multilabel=(args.mixup_probability > 0),
+        optimizer=args.optimizer,
+        weight_decay=args.weight_decay,
+        loss_fn=loss_fn,
     )
     print(f"Training complete. Best model saved to '{args.checkpoint_path}'.")
 

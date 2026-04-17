@@ -218,14 +218,14 @@ birdnet_stm32/
 
 ### Improvement tasks
 
-- [ ] **Standardize frontend naming**: remove `tf`/`precomputed` aliases → just `librosa`, `hybrid`, `raw` (with deprecation warnings for old names)
+- [x] **Standardize frontend naming**: remove `tf`/`precomputed` aliases → just `librosa`, `hybrid`, `raw` (with deprecation warnings for old names)
 - [ ] **Add MFCC frontend**: mel → DCT → truncate (common baseline, cheap, well-understood)
 - [ ] **Add log-mel frontend**: native TF `tf.signal.stft` + `tf.signal.linear_to_mel_weight_matrix` path as a quantization-friendly alternative to librosa precompute (keeps everything in-graph for TFLite)
-- [ ] **SpecAugment**: add frequency masking + time masking as a configurable augmentation in the frontend or data pipeline (improves robustness, standard practice)
+- [x] **SpecAugment**: add frequency masking + time masking as a configurable augmentation in the frontend or data pipeline (improves robustness, standard practice)
 - [ ] **Mixup improvements**: support Beta distribution mixup (currently uses uniform), label smoothing option
 - [ ] **Frontend registry**: register frontends by name, auto-discover via `__init_subclass__`, validate N6 compatibility at registration
 - [ ] **N6 compatibility checker**: static method on AudioFrontendLayer that checks `sample_rate * chunk_duration < 65536` and channel alignment before building
-- [ ] **Decouple mag scaling from frontend**: make MagnitudeScaling a separate layer that can be composed, tested, and quantized independently
+- [x] **Decouple mag scaling from frontend**: make MagnitudeScaling a separate layer that can be composed, tested, and quantized independently
 - [ ] **Fix `pick_first` logic in `pick_random_samples`**: when `pick_first=True` and `num_samples > 1`, always returns first sample regardless — clarify or fix semantics
 - [ ] **Add frontend unit tests**: test each mode produces correct output shapes, test mag scaling numerics
 
@@ -248,8 +248,8 @@ birdnet_stm32/
 - [ ] **Knowledge distillation**: add option to train with soft labels from a larger BirdNet teacher model
 - [ ] **Model profiling utility**: print per-layer MACs, params, activation memory; flag layers likely to fail N6 compilation
 - [ ] **N6 op compatibility table**: maintain a list of tested TFLite ops on the N6 NPU (from stedgeai reports); warn at model build time if using unsupported ops
-- [ ] **Configurable dropout**: currently hardcoded 0.5; add CLI arg
-- [ ] **Configurable weight decay**: currently hardcoded 1e-4; add CLI arg
+- [x] **Configurable dropout**: currently hardcoded 0.5; add CLI arg
+- [x] **Configurable weight decay**: currently hardcoded 1e-4; add CLI arg
 - [ ] **Label smoothing**: add as training option
 
 ---
@@ -259,16 +259,16 @@ birdnet_stm32/
 ### Improvement tasks
 
 - [ ] **Replace raw dict config with dataclass**: `ModelConfig` with validation + serialization
-- [ ] **Deterministic training mode**: add `--deterministic` flag that sets all seeds + TF deterministic ops
+- [x] **Deterministic training mode**: add `--deterministic` flag that sets all seeds + TF deterministic ops
 - [ ] **Resumable training**: add `--resume` flag that loads optimizer state from checkpoint
 - [ ] **Learning rate finder**: add utility to sweep LR and plot loss (one-cycle policy style)
 - [ ] **Optuna hyperparameter tuning**: add `--tune` flag that uses Optuna to search over LR, alpha, depth_multiplier, dropout, batch size; persist study in SQLite for resumable sweeps
 - ~**WandB / TensorBoard integration**~: decided against — keep logging simple (CSV + stdout). Do not add wandb or tensorboard as dependencies.
 - [ ] **Multi-GPU / mixed precision**: add `--mixed-precision` flag (fp16 compute, fp32 accum) for faster training
 - [ ] **Class weighting**: add `--class-weights` option (inverse frequency, effective number, focal loss)
-- [ ] **Focal loss**: implement as alternative to cross-entropy for imbalanced datasets
+- [x] **Focal loss**: implement as alternative to cross-entropy for imbalanced datasets
 - [ ] **Data pipeline performance**: profile and optimize `data_generator` — pre-fetch audio in separate threads, cache spectrograms
-- [ ] **Configurable optimizer**: add `--optimizer adam|sgd|adamw` CLI arg
+- [x] **Configurable optimizer**: add `--optimizer adam|sgd|adamw` CLI arg
 - [ ] **Gradient clipping**: add `--grad-clip` CLI arg
 - [ ] **Training metrics dashboard**: save training curves as PNG/HTML alongside checkpoint
 
@@ -290,7 +290,7 @@ birdnet_stm32/
 - [ ] **Audit INT8 input assumptions**: audio waveform/spectrogram inputs are continuous-valued and lose meaningful precision at INT8; verify that float32 I/O is enforced throughout the pipeline and remove any code paths that attempt INT8 input quantization
 - ~**INT8-only mode**~: rejected — INT8 I/O does not make sense for audio inputs. Keep float32 I/O + INT8 internals.
 - [ ] **ONNX export**: add `--export-onnx` path (stedgeai also accepts ONNX)
-- [ ] **Automatic cosine similarity validation**: fail conversion if cosine sim < threshold (configurable, default 0.95)
+- [x] **Automatic cosine similarity validation**: fail conversion if cosine sim < threshold (configurable, default 0.95)
 - [ ] **Representative dataset curation**: add SNR filtering + stratified sampling per class (current: random shuffle + center chunk)
 - [ ] **Conversion report**: generate a structured JSON/HTML report with per-layer quantization ranges, before/after histograms
 - [ ] **Batch validation**: validate across multiple random seeds and report worst-case metrics
@@ -301,10 +301,10 @@ birdnet_stm32/
 
 ### Improvement tasks
 
-- [ ] **Confusion matrix**: add per-class confusion matrix output (ASCII + optional matplotlib)
+- [x] **Confusion matrix**: add per-class confusion matrix output (ASCII + optional matplotlib)
 - [ ] **Species-level AP report**: CSV/JSON with AP per species + confidence intervals (bootstrap)
 - [ ] **Detection Error Tradeoff (DET) curve**: standard bioacoustics metric
-- [ ] **Threshold optimization**: find optimal threshold per class via PR curve (not just fixed 0.5)
+- [x] **Threshold optimization**: find optimal threshold per class via PR curve (not just fixed 0.5)
 - [ ] **Benchmark mode**: standardized eval on a fixed test split with multiple metrics, saved as structured JSON for experiment tracking
 - [ ] **Latency measurement**: add `--benchmark-latency` that measures per-chunk inference time (TFLite)
 - [ ] **Memory profiling**: report peak memory usage during inference

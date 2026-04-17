@@ -15,7 +15,7 @@ import math
 import tensorflow as tf
 from tensorflow.keras import layers, regularizers
 
-from birdnet_stm32.models.frontend import AudioFrontendLayer
+from birdnet_stm32.models.frontend import AudioFrontendLayer, normalize_frontend_name
 
 
 def _make_divisible(v: int | float, divisor: int = 8) -> int:
@@ -105,6 +105,7 @@ def build_dscnn_model(
     mag_scale: str = "none",
     frontend_trainable: bool = False,
     class_activation: str = "softmax",
+    dropout_rate: float = 0.5,
 ) -> tf.keras.Model:
     """Build a DS-CNN model with a selectable audio frontend.
 
@@ -115,13 +116,14 @@ def build_dscnn_model(
         chunk_duration: Chunk duration (seconds).
         embeddings_size: Channels in the final embeddings layer.
         num_classes: Number of output classes.
-        audio_frontend: 'precomputed' | 'librosa' | 'hybrid' | 'raw' | 'tf'.
+        audio_frontend: 'librosa' | 'hybrid' | 'raw' (deprecated: 'precomputed', 'tf').
         alpha: Width multiplier for the backbone.
         depth_multiplier: Repeats multiplier for DS blocks per stage.
         fft_length: FFT size for hybrid/librosa paths.
         mag_scale: Magnitude scaling ('pcen' | 'pwl' | 'db' | 'none').
         frontend_trainable: Make frontend sub-layers trainable.
         class_activation: 'softmax' or 'sigmoid' for the classifier head.
+        dropout_rate: Dropout rate before the classifier head.
 
     Returns:
         Uncompiled DS-CNN Keras model.
@@ -129,17 +131,19 @@ def build_dscnn_model(
     Raises:
         ValueError: If raw frontend exceeds STM32N6 input size limit (65536).
     """
+    audio_frontend = normalize_frontend_name(audio_frontend)
+
     # Enforce STM32N6 constraint for raw frontend
-    if audio_frontend in ("tf", "raw"):
+    if audio_frontend == "raw":
         T = int(sample_rate) * int(chunk_duration)
         if T >= (1 << 16):
             raise ValueError(
                 f"STM32N6 constraint: raw input length (sample_rate*chunk_duration={T}) must be < 65536.\n"
-                f"Use --sample_rate 16000, --chunk_duration 2, or --audio_frontend hybrid/precomputed."
+                f"Use --sample_rate 16000, --chunk_duration 2, or --audio_frontend hybrid/librosa."
             )
 
     # Select input shape and frontend mode
-    if audio_frontend in ("librosa", "precomputed"):
+    if audio_frontend == "librosa":
         inputs = tf.keras.Input(shape=(num_mels, spec_width, 1), name="mel_spectrogram_input")
         x = AudioFrontendLayer(
             mode="precomputed",
@@ -166,7 +170,7 @@ def build_dscnn_model(
             is_trainable=frontend_trainable,
             name="audio_frontend",
         )(inputs)
-    elif audio_frontend in ("tf", "raw"):
+    elif audio_frontend == "raw":
         inputs = tf.keras.Input(shape=(int(chunk_duration * sample_rate), 1), name="raw_audio_input")
         x = AudioFrontendLayer(
             mode="raw",
@@ -181,10 +185,6 @@ def build_dscnn_model(
         )(inputs)
     else:
         raise ValueError(f"Invalid audio_frontend: {audio_frontend}")
-
-    # BN + ReLU after frontend
-    x = layers.BatchNormalization(name="frontend_bn")(x)
-    x = layers.ReLU(max_value=6, name="frontend_relu")(x)
 
     # Stem (3x3, stride 1x2) to lift channels
     stem_ch = _make_divisible(int(16 * alpha), 8)
@@ -213,6 +213,6 @@ def build_dscnn_model(
 
     # Head
     x = layers.GlobalAveragePooling2D(name="gap")(x)
-    x = layers.Dropout(0.5, name="dropout")(x)
+    x = layers.Dropout(dropout_rate, name="dropout")(x)
     outputs = layers.Dense(num_classes, activation=class_activation, name="pred")(x)
     return tf.keras.models.Model(inputs, outputs, name="dscnn_audio")

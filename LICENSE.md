@@ -19,3 +19,12 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+## Third-Party Components
+
+The `firmware/` directory contains source files from STMicroelectronics
+(BSD-3-Clause) and ChaN's FatFs (FatFs license). These files retain their
+original licenses. See [`firmware/THIRD_PARTY_LICENSES.md`](firmware/THIRD_PARTY_LICENSES.md)
+for full terms.

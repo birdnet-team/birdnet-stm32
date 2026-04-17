@@ -4,6 +4,8 @@ Resolves paths to X-CUBE-AI tools, models, and project directories from
 (in priority order): CLI arguments > environment variables > config file.
 """
 
+from __future__ import annotations
+
 import json
 import os
 from dataclasses import dataclass, field

@@ -8,6 +8,7 @@ import numpy as np
 import tensorflow as tf
 
 from birdnet_stm32.models.frontend import AudioFrontendLayer
+from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
 
 
 class KerasRunner:
@@ -106,6 +107,8 @@ def load_model_runner(model_path: str):
     if model_path.lower().endswith(".tflite"):
         return TFLiteRunner(model_path)
     model = tf.keras.models.load_model(
-        model_path, compile=False, custom_objects={"AudioFrontendLayer": AudioFrontendLayer}
+        model_path,
+        compile=False,
+        custom_objects={"AudioFrontendLayer": AudioFrontendLayer, "MagnitudeScalingLayer": MagnitudeScalingLayer},
     )
     return KerasRunner(model)
