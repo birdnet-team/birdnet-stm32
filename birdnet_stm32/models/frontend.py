@@ -336,6 +336,10 @@ class AudioFrontendLayer(layers.Layer):
                 y = self.mel_mixer(y)
 
             y = tf.nn.relu(y)
+            # Per-sample normalization to [0, 1] so PWL breakpoints are effective.
+            # Matches the normalize() step in the precomputed spectrogram path.
+            y_max = tf.reduce_max(y, axis=[1, 2, 3], keepdims=True)
+            y = y / (y_max + tf.constant(1e-6, dtype=y.dtype))
             y = self._apply_mag(y)
             y = tf.transpose(y, [0, 3, 2, 1])  # [B,mel,T,1]
             return y[:, :, : self.spec_width, :]

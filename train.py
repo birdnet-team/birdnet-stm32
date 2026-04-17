@@ -922,6 +922,10 @@ class AudioFrontendLayer(layers.Layer):
                 y = self.mel_mixer(y)
 
             y = tf.nn.relu(y)
+            # Per-sample normalization to [0, 1] so PWL breakpoints are effective.
+            # Matches the normalize() step in the precomputed spectrogram path.
+            y_max = tf.reduce_max(y, axis=[1, 2, 3], keepdims=True)
+            y = y / (y_max + tf.constant(1e-6, dtype=y.dtype))
             y = self._apply_mag(y)
             y = tf.transpose(y, [0, 3, 2, 1])       # [B,mel,T,1]
             return y[:, :, :self.spec_width, :]
@@ -1127,10 +1131,6 @@ def build_dscnn_model(num_mels, spec_width, sample_rate, chunk_duration, embeddi
     else:
         raise ValueError("Invalid audio_frontend.")
     
-    # BN+ReLU after frontend
-    x = layers.BatchNormalization(name="frontend_bn")(x)
-    x = layers.ReLU(max_value=6, name="frontend_relu")(x)
-
     # Stem (3x3, stride 1) to lift channels
     stem_ch = _make_divisible(int(16 * alpha), 8)
     x = layers.Conv2D(stem_ch, (3, 3), strides=(1, 2), padding='same', use_bias=False, name="stem_conv")(x)
@@ -1179,7 +1179,7 @@ def train_model(model,
     Train the model with cosine LR schedule, early stopping, and checkpointing.
 
     Monitors:
-        - val_loss (min). Best model is saved as a full .keras file.
+        - val_roc_auc (max). Best model is saved as a full .keras file.
 
     Args:
         model (tf.keras.Model): Model to train.
@@ -1217,9 +1217,9 @@ def train_model(model,
         metrics=[tf.keras.metrics.AUC(curve='ROC', multi_label=True, name="roc_auc")]
     )
     callbacks = [
-        tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=patience, restore_best_weights=True, mode='min'),
+        tf.keras.callbacks.EarlyStopping(monitor='val_roc_auc', patience=patience, restore_best_weights=True, mode='max'),
         # Save full Keras v3 model
-        tf.keras.callbacks.ModelCheckpoint(checkpoint_path, monitor='val_loss', save_best_only=True, mode='min', save_weights_only=False),
+        tf.keras.callbacks.ModelCheckpoint(checkpoint_path, monitor='val_roc_auc', save_best_only=True, mode='max', save_weights_only=False),
     ]
     history = model.fit(
         train_dataset,
