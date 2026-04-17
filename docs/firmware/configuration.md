@@ -15,6 +15,8 @@ labels file. If you're building manually, you must set them yourself.
 | `APP_FFT_BINS` | `257` | Frequency bins (`FFT_LENGTH / 2 + 1`). Derived, do not set independently. |
 | `APP_HOP_LENGTH` | `281` | STFT hop in samples. Controls how many time frames fit in one chunk. |
 | `APP_SPEC_WIDTH` | `256` | Number of STFT time frames. **Must match** the model's expected input width. |
+| `APP_NUM_MELS` | `64` | Number of mel bands for the `precomputed` frontend. |
+| `APP_AUDIO_FRONTEND` | `0` | Frontend mode: `APP_FRONTEND_HYBRID` (0), `APP_FRONTEND_RAW` (1), or `APP_FRONTEND_PRECOMPUTED` (2). |
 | `APP_NUM_CLASSES` | `10` | Number of output classes. **Must match** the model's output dimension. |
 | `APP_TOP_K` | `5` | Number of top predictions printed per file. |
 | `APP_SCORE_THRESHOLD` | `0.01` | Minimum score (0–1) to include in output. Below this, predictions are suppressed. |

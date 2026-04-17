@@ -31,7 +31,10 @@ int __io_putchar(int ch)
 **NPU inference** — `run_inference()` handles the CPU ↔ NPU data transfer:
 
 1. Query input/output buffer addresses from LL_ATON.
-2. `memcpy` spectrogram into the NPU input buffer.
+2. `memcpy` data into the NPU input buffer. Depending on `APP_AUDIO_FRONTEND`:
+   - **Hybrid:** `spec_buf` (STFT spectrogram)
+   - **Raw:** `audio_buf` (raw waveform directly)
+   - **Precomputed:** `mel_buf` (STFT + Mel filterbank)
 3. `SCB_CleanDCache_by_Addr()` — flush CPU cache so the NPU sees fresh data.
 4. `LL_ATON_RT_Main()` — run inference (blocking).
 5. `SCB_InvalidateDCache_by_Addr()` — invalidate cache so the CPU sees NPU
@@ -131,12 +134,12 @@ void stft_magnitude(const float *audio, uint32_t num_samples,
      (frequency-major).
 3. Zero-fill if the audio is shorter than expected.
 
-**Output layout:** `[fft_bins, spec_width]` — frequency-major (each row is one
-frequency bin across all time frames). This matches the hybrid frontend's
-expected input tensor layout `[B, fft_bins, spec_width, 1]`.
+**Output layout:** `[filters, spec_width]` — frequency-major (each row is one
+frequency bin across all time frames). This matches the expected layout layout 
+`[B, filters, spec_width, 1]` for both the hybrid and precomputed frontends.
 
 !!! note "Why frequency-major?"
-    The TFLite model's first layer expects input shaped `[B, fft_bins, T, 1]`.
+    The TFLite model's first layer expects input shaped `[B, filters, T, 1]`.
     By storing frequency-major on the firmware side, the `memcpy` to the NPU
     input buffer preserves the correct layout without a transpose.
 

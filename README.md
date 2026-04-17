@@ -12,7 +12,7 @@ Bird sound classification for edge deployment on the [STM32N6570-DK](https://www
 
 <img src="https://my.avnet.com/wcm/connect/c651fc2f-a5b2-489c-9d63-d3f064753690/STMicroelectronics+STM32N6570-DK.jpg?MOD=AJPERES&CACHEID=ROOTWORKSPACE-c651fc2f-a5b2-489c-9d63-d3f064753690-phBdXih" alt="STM32N6570-DK board" style="width: 100%;" />
 
-A compact DS-CNN trained on mel spectrograms, quantized to INT8 via post-training quantization, and deployed using ST's X-CUBE-AI toolchain. Inference on a 3-second audio chunk takes ~3–5 ms on the NPU (~50–75× faster than real-time).
+A compact DS-CNN trained on audio waveforms or mel spectrograms, quantized to INT8 via post-training quantization, and deployed using ST's X-CUBE-AI toolchain. Depending on the chosen audio frontend, a 2-3 second audio chunk takes approximately **10-14 ms** to infer directly on the NPU (0ms STFT overhead for the **raw** audio frontend, eliminating CPU cycles).
 
 ## Quick start
 
@@ -61,9 +61,10 @@ See the [full documentation](https://birdnet-team.github.io/birdnet-stm32) for d
 
 ## Pre-trained model
 
-| Model | Classes | Frontend | ROC-AUC | Inference (NPU) |
-|---|---|---|---|---|
-| `birdnet_stm32n6_100.tflite` | 100 (NE US + EU + Brazil) | hybrid, 257×256, PWL | 0.84 | 3.3 ms / chunk |
+| Model | Classes | Frontend | ROC-AUC | Inference (NPU) | Total (Inc. STFT) |
+|---|---|---|---|---|---|
+| `birdnet_stm32n6_100.tflite` | 100 (NE US + EU + Brazil) | hybrid, 257×256, PWL | 0.84 | ~12 ms | ~57 ms |
+| `raw_model_quantized.tflite` | 10 (Tiny set) | raw, 24000Hz, 2.0s | 0.85 | ~10 ms | ~10 ms |
 
 ## License
 

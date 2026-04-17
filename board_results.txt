@@ -1,0 +1,1 @@
+Board test for raw frontend at 24kHz x 2.0s passed with 8/8 accuracy! \nPrevious hybrid stft took ~45ms, new raw frontend stft takes 0ms. \nExecution time: 10-11ms NPU. Reading time: 56ms

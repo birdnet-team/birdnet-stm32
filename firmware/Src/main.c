@@ -2,7 +2,10 @@
  * BirdNET-STM32 — SD card batch inference application
  *
  * Main loop: init board → mount SD → scan audio/ → for each WAV:
- *   STFT on Cortex-M55 → NPU inference → print results over UART.
+ *   Depending on APP_AUDIO_FRONTEND:
+ *     hybrid:      STFT on Cortex-M55 → NPU inference
+ *     raw:         raw waveform → NPU inference (no STFT)
+ *     precomputed: STFT + mel filterbank on Cortex-M55 → NPU inference
  *
  * Uses the NPU_Validation init infrastructure (misc_toolbox,
  * system_clock_config, npu_cache, mcu_cache) and adds BSP SD + FatFs +
@@ -37,6 +40,7 @@ LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(Default);
 #include "app_labels.h"
 #include "wav_reader.h"
 #include "audio_stft.h"
+#include "audio_mel.h"
 #include "sd_handler.h"
 
 /* Clock config (from NPU_Validation) */
@@ -61,8 +65,18 @@ int __io_putchar(int ch)
 static float audio_buf[APP_CHUNK_SAMPLES]
     __attribute__((aligned(32)));
 
+#if APP_AUDIO_FRONTEND == APP_FRONTEND_HYBRID
+/* hybrid: STFT output is [fft_bins, spec_width] */
 static float spec_buf[APP_FFT_BINS * APP_SPEC_WIDTH]
     __attribute__((aligned(32)));
+#elif APP_AUDIO_FRONTEND == APP_FRONTEND_PRECOMPUTED
+/* precomputed: STFT then mel → [num_mels, spec_width] */
+static float spec_buf[APP_FFT_BINS * APP_SPEC_WIDTH]
+    __attribute__((aligned(32)));
+static float mel_buf[APP_NUM_MELS * APP_SPEC_WIDTH]
+    __attribute__((aligned(32)));
+#endif
+/* raw: audio_buf is fed directly to NPU, no extra buffer needed */
 
 /* ---- NPU inference ------------------------------------------------------- */
 
@@ -172,10 +186,26 @@ int main(void)
     aiValidationInit();
 
     printf("\n=== BirdNET-STM32 SD Card Inference ===\n");
+#if APP_AUDIO_FRONTEND == APP_FRONTEND_RAW
+    printf("[INFO] Frontend: raw (waveform → NPU)\n");
+    printf("[INFO] Sample rate: %d Hz, chunk: %ds (%d samples), classes: %d\n",
+           (int)APP_SAMPLE_RATE, (int)APP_CHUNK_DURATION, (int)APP_CHUNK_SAMPLES, APP_NUM_CLASSES);
+#elif APP_AUDIO_FRONTEND == APP_FRONTEND_PRECOMPUTED
+    printf("[INFO] Frontend: precomputed (STFT + mel on M55 → NPU)\n");
+    printf("[INFO] Sample rate: %d Hz, chunk: %ds, FFT: %d, hop: %d, "
+           "spec: %dx%d, mels: %d, classes: %d\n",
+           (int)APP_SAMPLE_RATE, (int)APP_CHUNK_DURATION, APP_FFT_LENGTH,
+           APP_HOP_LENGTH, APP_FFT_BINS, APP_SPEC_WIDTH, APP_NUM_MELS, APP_NUM_CLASSES);
+    mel_init(APP_FFT_BINS, APP_NUM_MELS, APP_SAMPLE_RATE, 150.0f,
+             (float)(APP_SAMPLE_RATE / 2));
+    printf("[OK] Mel filterbank initialized\n");
+#else
+    printf("[INFO] Frontend: hybrid (STFT on M55 → NPU)\n");
     printf("[INFO] Sample rate: %d Hz, chunk: %ds, FFT: %d, hop: %d, "
            "spec: %dx%d, classes: %d\n",
-           APP_SAMPLE_RATE, APP_CHUNK_DURATION, APP_FFT_LENGTH,
+           (int)APP_SAMPLE_RATE, (int)APP_CHUNK_DURATION, APP_FFT_LENGTH,
            APP_HOP_LENGTH, APP_FFT_BINS, APP_SPEC_WIDTH, APP_NUM_CLASSES);
+#endif
 
     /* ---- NPU network init ---- */
     printf("[INIT] Initialising NPU network...\n");
@@ -272,17 +302,37 @@ int main(void)
         uint32_t read_ms = HAL_GetTick() - t0;
         total_read_ms += read_ms;
 
-        /* Compute STFT on Cortex-M55 */
+        /* Prepare NPU input based on frontend mode */
+        uint32_t stft_ms = 0;
+        const float *npu_input = NULL;
+
+#if APP_AUDIO_FRONTEND == APP_FRONTEND_RAW
+        /* Raw: feed waveform directly to NPU (no STFT) */
+        npu_input = audio_buf;
+#elif APP_AUDIO_FRONTEND == APP_FRONTEND_PRECOMPUTED
+        /* Precomputed: STFT → mel filterbank on M55 */
         t0 = HAL_GetTick();
         stft_magnitude(audio_buf, APP_CHUNK_SAMPLES,
                        APP_FFT_LENGTH, APP_HOP_LENGTH,
                        APP_SPEC_WIDTH, spec_buf);
-        uint32_t stft_ms = HAL_GetTick() - t0;
+        mel_filterbank(spec_buf, APP_FFT_BINS, APP_SPEC_WIDTH,
+                       APP_NUM_MELS, mel_buf);
+        stft_ms = HAL_GetTick() - t0;
+        npu_input = mel_buf;
+#else
+        /* Hybrid: STFT on M55, mel conversion inside NPU model */
+        t0 = HAL_GetTick();
+        stft_magnitude(audio_buf, APP_CHUNK_SAMPLES,
+                       APP_FFT_LENGTH, APP_HOP_LENGTH,
+                       APP_SPEC_WIDTH, spec_buf);
+        stft_ms = HAL_GetTick() - t0;
+        npu_input = spec_buf;
+#endif
         total_stft_ms += stft_ms;
 
         /* Run NPU inference */
         t0 = HAL_GetTick();
-        if (!run_inference(spec_buf, scores)) {
+        if (!run_inference(npu_input, scores)) {
             printf("  [ERROR] Inference failed\n");
             errors++;
             continue;
