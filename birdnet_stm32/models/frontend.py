@@ -21,14 +21,14 @@ import tensorflow as tf
 from tensorflow.keras import constraints, layers
 
 # Canonical frontend names and deprecated aliases
-VALID_FRONTENDS = ("librosa", "hybrid", "raw")
+VALID_FRONTENDS = ("librosa", "hybrid", "raw", "mfcc", "log_mel")
 _FRONTEND_ALIASES = {"precomputed": "librosa", "tf": "raw"}
 
 
 def normalize_frontend_name(name: str) -> str:
     """Normalize a frontend name, emitting deprecation warnings for aliases.
 
-    Canonical names: 'librosa', 'hybrid', 'raw'.
+    Canonical names: 'librosa', 'hybrid', 'raw', 'mfcc', 'log_mel'.
     Deprecated aliases: 'precomputed' -> 'librosa', 'tf' -> 'raw'.
 
     Args:

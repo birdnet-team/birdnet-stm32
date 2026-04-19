@@ -3,8 +3,9 @@
 The model consists of:
 - An AudioFrontendLayer (from frontend.py) for feature extraction.
 - A stem convolution to lift channels.
-- Four stages of depthwise-separable blocks with stride-2 downsampling.
-- Global average pooling, dropout, and a dense classifier head.
+- Four stages of depthwise-separable or inverted-residual blocks with stride-2 downsampling.
+- Optional squeeze-and-excite (SE) channel attention per block.
+- Global average pooling (or attention pooling), dropout, and a dense classifier head.
 
 Scaling is controlled via alpha (width multiplier) and depth_multiplier (block repeats).
 All channel counts are aligned to multiples of 8 for NPU vectorization.
@@ -15,21 +16,13 @@ import math
 import tensorflow as tf
 from tensorflow.keras import layers, regularizers
 
+from birdnet_stm32.models.blocks import (
+    _make_divisible,
+    attention_pooling,
+    inverted_residual_block,
+    se_block,
+)
 from birdnet_stm32.models.frontend import AudioFrontendLayer, normalize_frontend_name
-
-
-def _make_divisible(v: int | float, divisor: int = 8) -> int:
-    """Round channel count to the nearest multiple of divisor (minimum = divisor).
-
-    Args:
-        v: Target channel count.
-        divisor: Alignment divisor (default 8 for NPU).
-
-    Returns:
-        Aligned channel count.
-    """
-    v = int(v + divisor / 2) // divisor * divisor
-    return max(divisor, v)
 
 
 def ds_conv_block(
@@ -106,6 +99,13 @@ def build_dscnn_model(
     frontend_trainable: bool = False,
     class_activation: str = "softmax",
     dropout_rate: float = 0.5,
+    n_mfcc: int = 20,
+    weight_decay: float = 1e-4,
+    use_se: bool = False,
+    se_reduction: int = 4,
+    use_inverted_residual: bool = False,
+    expansion_factor: int = 6,
+    use_attention_pooling: bool = False,
 ) -> tf.keras.Model:
     """Build a DS-CNN model with a selectable audio frontend.
 
@@ -116,7 +116,8 @@ def build_dscnn_model(
         chunk_duration: Chunk duration (seconds).
         embeddings_size: Channels in the final embeddings layer.
         num_classes: Number of output classes.
-        audio_frontend: 'librosa' | 'hybrid' | 'raw' (deprecated: 'precomputed', 'tf').
+        audio_frontend: 'librosa' | 'hybrid' | 'raw' | 'mfcc' | 'log_mel'
+            (deprecated: 'precomputed', 'tf').
         alpha: Width multiplier for the backbone.
         depth_multiplier: Repeats multiplier for DS blocks per stage.
         fft_length: FFT size for hybrid/librosa paths.
@@ -124,6 +125,13 @@ def build_dscnn_model(
         frontend_trainable: Make frontend sub-layers trainable.
         class_activation: 'softmax' or 'sigmoid' for the classifier head.
         dropout_rate: Dropout rate before the classifier head.
+        n_mfcc: Number of MFCC coefficients (only used when audio_frontend='mfcc').
+        weight_decay: L2 regularization weight for DS-CNN blocks.
+        use_se: Add SE channel attention after each block.
+        se_reduction: SE channel reduction factor.
+        use_inverted_residual: Use inverted residual blocks instead of DS blocks.
+        expansion_factor: Expansion factor for inverted residual hidden dim.
+        use_attention_pooling: Use attention pooling instead of GAP.
 
     Returns:
         Uncompiled DS-CNN Keras model.
@@ -143,16 +151,17 @@ def build_dscnn_model(
             )
 
     # Select input shape and frontend mode
-    if audio_frontend == "librosa":
-        inputs = tf.keras.Input(shape=(num_mels, spec_width, 1), name="mel_spectrogram_input")
+    if audio_frontend in ("librosa", "mfcc", "log_mel"):
+        input_bins = n_mfcc if audio_frontend == "mfcc" else num_mels
+        inputs = tf.keras.Input(shape=(input_bins, spec_width, 1), name="mel_spectrogram_input")
         x = AudioFrontendLayer(
             mode="precomputed",
-            mel_bins=num_mels,
+            mel_bins=input_bins,
             spec_width=spec_width,
             sample_rate=sample_rate,
             chunk_duration=chunk_duration,
             fft_length=fft_length,
-            mag_scale=mag_scale,
+            mag_scale=mag_scale if audio_frontend == "librosa" else "none",
             is_trainable=frontend_trainable,
             name="audio_frontend",
         )(inputs)
@@ -200,9 +209,27 @@ def build_dscnn_model(
     for si, (bf, br, (sf, st)) in enumerate(zip(base_filters, base_repeats, base_strides, strict=True), start=1):
         out_ch = _make_divisible(int(bf * alpha), 8)
         reps = max(1, int(math.ceil(br * depth_multiplier)))
-        x = ds_conv_block(x, out_ch, stride_f=sf, stride_t=st, name=f"stage{si}_ds1")
-        for bi in range(2, reps + 1):
-            x = ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name=f"stage{si}_ds{bi}")
+
+        if use_inverted_residual:
+            x = inverted_residual_block(
+                x, out_ch, expansion=expansion_factor, stride_f=sf, stride_t=st,
+                use_se=use_se, se_reduction=se_reduction, weight_decay=weight_decay,
+                name=f"stage{si}_ir1",
+            )
+            for bi in range(2, reps + 1):
+                x = inverted_residual_block(
+                    x, out_ch, expansion=expansion_factor, stride_f=1, stride_t=1,
+                    use_se=use_se, se_reduction=se_reduction, weight_decay=weight_decay,
+                    name=f"stage{si}_ir{bi}",
+                )
+        else:
+            x = ds_conv_block(x, out_ch, stride_f=sf, stride_t=st, name=f"stage{si}_ds1", weight_decay=weight_decay)
+            if use_se:
+                x = se_block(x, reduction=se_reduction, name=f"stage{si}_se1")
+            for bi in range(2, reps + 1):
+                x = ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name=f"stage{si}_ds{bi}", weight_decay=weight_decay)
+                if use_se:
+                    x = se_block(x, reduction=se_reduction, name=f"stage{si}_se{bi}")
 
     # Final 1x1 conv to embeddings
     emb_ch = _make_divisible(int(embeddings_size), 8)
@@ -212,7 +239,10 @@ def build_dscnn_model(
         x = layers.ReLU(max_value=6, name="emb_relu")(x)
 
     # Head
-    x = layers.GlobalAveragePooling2D(name="gap")(x)
+    if use_attention_pooling:
+        x = attention_pooling(x, name="attn_pool")
+    else:
+        x = layers.GlobalAveragePooling2D(name="gap")(x)
     x = layers.Dropout(dropout_rate, name="dropout")(x)
     outputs = layers.Dense(num_classes, activation=class_activation, name="pred")(x)
     return tf.keras.models.Model(inputs, outputs, name="dscnn_audio")

@@ -10,11 +10,16 @@ def get_args() -> argparse.Namespace:
     """Parse command-line arguments for deployment."""
     parser = argparse.ArgumentParser(description="Deploy quantized TFLite model to STM32N6570-DK.")
     parser.add_argument("--x_cube_ai_path", type=str, default="", help="Path to X-CUBE-AI installation")
-    parser.add_argument("--model_path", type=str, default="", help="Path to quantized .tflite model")
+    parser.add_argument("--stedgeai_path", type=str, default="", help="Direct path to stedgeai binary")
+    parser.add_argument("--model_path", "--model", type=str, default="", help="Path to quantized .tflite model")
     parser.add_argument("--output_dir", type=str, default="", help="stedgeai output directory")
     parser.add_argument("--workspace_dir", type=str, default="", help="stedgeai workspace directory")
     parser.add_argument("--n6_loader_config", type=str, default="", help="Path to n6_loader JSON config")
-    parser.add_argument("--config", type=str, default="config.json", help="Path to config JSON file")
+    parser.add_argument("--cubeide_path", type=str, default="", help="Path to STM32CubeIDE")
+    parser.add_argument("--arm_toolchain_path", type=str, default="", help="Path to arm-none-eabi toolchain")
+    parser.add_argument(
+        "--config", type=str, default="config.json", help="Path to config file (JSON or TOML)"
+    )
     return parser.parse_args()
 
 

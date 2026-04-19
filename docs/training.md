@@ -103,13 +103,13 @@ of 10 epochs.
 | `--data_path_train` | *(required)* | Path to training data |
 | `--max_samples` | None | Max files per class |
 | `--upsample_ratio` | 0.5 | Minority class upsample ratio |
-| `--sample_rate` | 22050 | Audio sample rate (Hz) |
+| `--sample_rate` | 24000 | Audio sample rate (Hz) |
 | `--num_mels` | 64 | Number of mel frequency bins |
 | `--spec_width` | 256 | Spectrogram width (frames) |
 | `--fft_length` | 512 | FFT window length |
 | `--chunk_duration` | 3 | Chunk duration (seconds) |
 | `--max_duration` | 30 | Max seconds to load per file |
-| `--audio_frontend` | hybrid | `librosa`, `hybrid`, or `raw` |
+| `--audio_frontend` | hybrid | `librosa`, `hybrid`, `raw`, `mfcc`, or `log_mel` |
 | `--mag_scale` | pwl | `pwl`, `pcen`, `db`, or `none` |
 | `--embeddings_size` | 256 | Embedding channels before head |
 | `--alpha` | 1.0 | Model width scaling |
@@ -125,6 +125,13 @@ of 10 epochs.
 | `--weight_decay` | 0.0 | Weight decay (adamw only) |
 | `--loss` | auto | `auto` (BCE) or `focal` |
 | `--focal_gamma` | 2.0 | Focal loss focusing parameter |
+| `--label_smoothing` | 0.0 | Label smoothing factor (0 = off) |
+| `--use_se` | False | Add SE channel attention to each block |
+| `--se_reduction` | 4 | SE channel reduction factor |
+| `--use_inverted_residual` | False | Use inverted residual blocks |
+| `--expansion_factor` | 6 | Expansion factor for inverted residuals |
+| `--use_attention_pooling` | False | Use attention pooling instead of GAP |
+| `--n_mfcc` | 20 | Number of MFCC coefficients (mfcc frontend only) |
 | `--deterministic` | False | Enable deterministic training |
 | `--seed` | 42 | Random seed (with `--deterministic`) |
 | `--batch_size` | 32 | Batch size |

@@ -118,19 +118,32 @@ def pick_random_samples(
 ) -> list[np.ndarray] | np.ndarray:
     """Randomly select one or more samples from a list.
 
+    When ``pick_first=True`` and ``num_samples > 1``, the first sample is
+    always included and the remaining are drawn randomly from the rest.
+
     Args:
         samples: List of samples (spectrograms or raw audio).
         num_samples: Number of samples to select.
-        pick_first: If True, always return the first sample.
+        pick_first: If True and num_samples == 1, always return the first sample.
+            If True and num_samples > 1, include the first sample plus random picks.
 
     Returns:
         Selected samples. A list if num_samples > 1, otherwise a single ndarray.
     """
     if len(samples) == 0:
         return []
-    if pick_first:
-        return samples[0]
     if num_samples > len(samples):
         num_samples = len(samples)
+
+    if pick_first:
+        if num_samples == 1:
+            return samples[0]
+        # Always include first, randomly pick remaining from the rest
+        rest_count = min(num_samples - 1, len(samples) - 1)
+        if rest_count > 0:
+            rest_indices = np.random.choice(len(samples) - 1, size=rest_count, replace=False) + 1
+            return [samples[0]] + [samples[i] for i in rest_indices]
+        return [samples[0]]
+
     indices = np.random.choice(len(samples), size=num_samples, replace=False)
     return [samples[i] for i in indices] if num_samples > 1 else samples[indices[0]]

@@ -4,7 +4,8 @@ import pytest
 
 tf = pytest.importorskip("tensorflow", reason="TensorFlow required for model tests")
 
-from birdnet_stm32.models.dscnn import _make_divisible, build_dscnn_model, ds_conv_block
+from birdnet_stm32.models.blocks import _make_divisible
+from birdnet_stm32.models.dscnn import build_dscnn_model, ds_conv_block
 
 
 class TestMakeDivisible:

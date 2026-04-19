@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-04-19
+
+### Added
+
+- **MFCC frontend** (`--audio_frontend mfcc`): mel spectrogram → power-to-dB → librosa DCT. Configurable via `--n_mfcc` (default 20).
+- **Log-mel frontend** (`--audio_frontend log_mel`): mel spectrogram → log1p → normalize. Lightweight alternative to librosa precompute.
+- **Squeeze-and-excite (SE) blocks** (`--use_se`): channel attention after each DS block. NPU-compatible (GAP + Dense + Sigmoid + Multiply).
+- **MobileNetV2-style inverted residual blocks** (`--use_inverted_residual`): expand → DW → project with configurable `--expansion_factor`.
+- **Attention pooling** (`--use_attention_pooling`): learned spatial attention replacing GlobalAveragePooling2D.
+- **Label smoothing** (`--label_smoothing`): applies to CategoricalCrossentropy (single-label) or BinaryCrossentropy (multilabel/mixup).
+- **Knowledge distillation** (`birdnet_stm32/training/distillation.py`): `DistillationLoss` combining hard labels with soft teacher logits (KL divergence, configurable temperature and alpha).
+- **Model registry** (`birdnet_stm32/models/__init__.py`): `build_model(name, **kwargs)`, `register_model()`, `list_models()` dispatcher pattern.
+- **Model profiler** (`birdnet_stm32/models/profiler.py`): per-layer MACs, params, activation memory. N6 NPU compatibility check with `N6_SUPPORTED_OPS` and `N6_WARN_OPS` sets.
+- **Frontend registry** (`birdnet_stm32/models/registry.py`): `FrontendInfo` dataclass with N6 compatibility metadata. `register_frontend()`, `get_frontend_info()`, `list_frontends()`.
+- **Species list utilities** (`birdnet_stm32/data/species.py`): `load_species_list()`, `save_species_list()`, `combine_species_lists()` extracted from dev scripts.
+- **Beta distribution mixup** (`use_beta=True` in `apply_mixup()`): sample mixing weights from Beta(α, α) instead of uniform.
+- Test suite for frontend registry and new spectrogram modes (`tests/test_frontend_registry.py`).
+
+### Changed
+
+- **Default sample rate**: 22050 → 24000 Hz across all CLI defaults, audio I/O, and data generators.
+- **Unified DS-CNN model**: SE, inverted residual, and attention pooling options are now flags on the single `build_dscnn_model()` function (removed separate `dscnn_se` module).
+- **`_make_divisible()` moved** from `dscnn.py` to `blocks.py` to avoid circular imports; `blocks.py` is now the canonical source for all building blocks.
+- Deploy config (`birdnet_stm32/deploy/config.py`) now supports TOML config files alongside JSON, with env vars `STEDGEAI_PATH`, `CUBEIDE_PATH`, `ARM_TOOLCHAIN_PATH`.
+- CLI deploy command accepts `--stedgeai_path`, `--model`, `--cubeide_path`, `--arm_toolchain_path`.
+- Top-level `train.py`, `test.py`, `convert.py` are now thin wrappers with deprecation warnings, delegating to the package CLI.
+
+### Fixed
+
+- Label smoothing with mixup: now correctly uses `BinaryCrossentropy(label_smoothing=...)` when mixup is active (sigmoid output), instead of `CategoricalCrossentropy`.
+- `pick_random_samples()` `pick_first` logic: when `pick_first=True` and `num_samples > 1`, first sample is always included plus random picks from remaining.
+- Model profiler handles Keras 3 layers that lack `output_shape` attribute (e.g., `InputLayer`).
+
+### Removed
+
+- `TERMS_OF_USE.txt` (redundant with `TERMS_OF_USE.md`).
+- `birdnet_stm32/models/dscnn_se.py` (merged into `dscnn.py`).
+- `notes.txt` (moved to `dev/notes.md`).
+
 ## [0.5.0] — 2026-04-17
 
 ### Added

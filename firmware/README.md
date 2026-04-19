@@ -447,7 +447,7 @@ constants that **must match** the values in the model config:
 
 | Define | Example | Description |
 |---|---|---|
-| `APP_SAMPLE_RATE` | 22050 | Audio sample rate in Hz. Set to the model's training rate. |
+| `APP_SAMPLE_RATE` | 24000 | Audio sample rate in Hz. Set to the model's training rate. |
 | `APP_CHUNK_DURATION` | 2.9 | Chunk length in seconds (can be fractional). |
 | `APP_CHUNK_SAMPLES` | 63945 | Total samples per chunk (`int(sr * duration)`). Computed as a literal integer to avoid truncation from integer-only C macro arithmetic. |
 | `APP_FFT_LENGTH` | 512 | FFT window size. Must be 512 (hardcoded in `fft.c`). |

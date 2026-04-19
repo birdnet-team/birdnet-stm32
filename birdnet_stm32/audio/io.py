@@ -32,7 +32,7 @@ def fast_resample(y: np.ndarray, sr_in: int, sr_out: int) -> np.ndarray:
 
 def load_audio_file(
     path: str,
-    sample_rate: int = 22050,
+    sample_rate: int = 24000,
     max_duration: int = 30,
     chunk_duration: float = 3.0,
     chunk_overlap: float = 0.0,
@@ -116,7 +116,7 @@ def load_audio_file(
         return []
 
 
-def save_wav(audio: np.ndarray, path: str, sample_rate: int = 22050) -> None:
+def save_wav(audio: np.ndarray, path: str, sample_rate: int = 24000) -> None:
     """Save an audio signal to a WAV file.
 
     Args:

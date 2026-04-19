@@ -38,8 +38,8 @@ This document is the master plan for rewriting the birdnet-stm32 codebase from a
 
 ### 1.2 Licensing cleanup
 
-- [ ] Consolidate `LICENSE.md`, `TERMS_OF_USE.md`, `TERMS_OF_USE.txt` into a single `LICENSE` (or keep LICENSE + TERMS_OF_USE, but not both .md and .txt)
-- [ ] Add SPDX license identifier to `pyproject.toml`
+- [x] Consolidate `LICENSE.md`, `TERMS_OF_USE.md`, `TERMS_OF_USE.txt` into a single `LICENSE` (or keep LICENSE + TERMS_OF_USE, but not both .md and .txt)
+- [x] Add SPDX license identifier to `pyproject.toml`
 
 ### 1.3 Pre-commit hooks
 
@@ -80,7 +80,7 @@ This document is the master plan for rewriting the birdnet-stm32 codebase from a
 
 ### 2.5 Build & deploy docs
 
-- [ ] GitHub Actions workflow to build + deploy to GitHub Pages on push to `main`
+- [x] GitHub Actions workflow to build + deploy to GitHub Pages on push to `master`
 - [x] Docs extras in `pyproject.toml` (mkdocs-material, mkdocstrings, gen-files, literate-nav)
 
 ---
@@ -178,8 +178,8 @@ birdnet_stm32/
 - [x] Create `birdnet_stm32/training/trainer.py` with training loop
 - [x] Create CLI entry points in `birdnet_stm32/cli/` wrapping each script
 - [x] Create `birdnet_stm32/__main__.py` for `python -m birdnet_stm32 {train,convert,evaluate,deploy}`
-- [ ] Move `dev/make_dev_set.py` utilities into `birdnet_stm32/data/species.py`
-- [ ] Keep top-level `train.py`, `test.py`, `convert.py` as thin wrappers that import from the package (backward compat)
+- [x] Move `dev/make_dev_set.py` utilities into `birdnet_stm32/data/species.py`
+- [x] Keep top-level `train.py`, `test.py`, `convert.py` as thin wrappers that import from the package (backward compat)
 - [x] Add `py.typed` marker for type-checking
 
 ---
@@ -199,10 +199,10 @@ birdnet_stm32/
 - [x] Create `birdnet_stm32/deploy/config.py` — config resolution: CLI args > env vars > `config.toml` > defaults
 - [ ] Replace `config.json` and `config_n6l.json` with a single `config.toml` (or keep JSON but with template + resolution logic)
 - [x] Add `config.toml.example` with placeholder paths and comments
-- [ ] `deploy.sh` → `birdnet_stm32/cli/deploy.py` (Python, no more hardcoded paths)
-- [ ] Support `XCUBEAI_PATH`, `STEDGEAI_PATH`, `CUBEIDE_PATH`, `ARM_TOOLCHAIN_PATH` env vars
-- [ ] Add `--stedgeai-path`, `--model`, `--output-dir`, `--config` CLI args to deploy command
-- [ ] Move `notes.txt` to `dev/notes.md` (or delete — it's personal scratch)
+- [x] `deploy.sh` → `birdnet_stm32/cli/deploy.py` (Python, no more hardcoded paths)
+- [x] Support `XCUBEAI_PATH`, `STEDGEAI_PATH`, `CUBEIDE_PATH`, `ARM_TOOLCHAIN_PATH` env vars
+- [x] Add `--stedgeai-path`, `--model`, `--output-dir`, `--config` CLI args to deploy command
+- [x] Move `notes.txt` to `dev/notes.md` (or delete — it's personal scratch)
 - [ ] Add `config.toml` and `config_n6l.json` to `.gitignore`, ship only `.example` files
 
 ---
@@ -219,15 +219,15 @@ birdnet_stm32/
 ### Improvement tasks
 
 - [x] **Standardize frontend naming**: remove `tf`/`precomputed` aliases → just `librosa`, `hybrid`, `raw` (with deprecation warnings for old names)
-- [ ] **Add MFCC frontend**: mel → DCT → truncate (common baseline, cheap, well-understood)
-- [ ] **Add log-mel frontend**: native TF `tf.signal.stft` + `tf.signal.linear_to_mel_weight_matrix` path as a quantization-friendly alternative to librosa precompute (keeps everything in-graph for TFLite)
+- [x] **Add MFCC frontend**: mel → DCT → truncate (common baseline, cheap, well-understood)
+- [x] **Add log-mel frontend**: native TF `tf.signal.stft` + `tf.signal.linear_to_mel_weight_matrix` path as a quantization-friendly alternative to librosa precompute (keeps everything in-graph for TFLite)
 - [x] **SpecAugment**: add frequency masking + time masking as a configurable augmentation in the frontend or data pipeline (improves robustness, standard practice)
-- [ ] **Mixup improvements**: support Beta distribution mixup (currently uses uniform), label smoothing option
-- [ ] **Frontend registry**: register frontends by name, auto-discover via `__init_subclass__`, validate N6 compatibility at registration
-- [ ] **N6 compatibility checker**: static method on AudioFrontendLayer that checks `sample_rate * chunk_duration < 65536` and channel alignment before building
+- [x] **Mixup improvements**: support Beta distribution mixup (currently uses uniform), label smoothing option
+- [x] **Frontend registry**: register frontends by name, auto-discover via `__init_subclass__`, validate N6 compatibility at registration
+- [x] **N6 compatibility checker**: static method on AudioFrontendLayer that checks `sample_rate * chunk_duration < 65536` and channel alignment before building
 - [x] **Decouple mag scaling from frontend**: make MagnitudeScaling a separate layer that can be composed, tested, and quantized independently
-- [ ] **Fix `pick_first` logic in `pick_random_samples`**: when `pick_first=True` and `num_samples > 1`, always returns first sample regardless — clarify or fix semantics
-- [ ] **Add frontend unit tests**: test each mode produces correct output shapes, test mag scaling numerics
+- [x] **Fix `pick_first` logic in `pick_random_samples`**: when `pick_first=True` and `num_samples > 1`, always returns first sample regardless — clarify or fix semantics
+- [x] **Add frontend unit tests**: test each mode produces correct output shapes, test mag scaling numerics
 
 ---
 
@@ -241,16 +241,16 @@ birdnet_stm32/
 
 ### Improvement tasks
 
-- [ ] **Add model registry**: `build_model(name, **kwargs)` dispatcher (dscnn, mobilenetv2_tiny, efficientnet_lite0, ...)
-- [ ] **MobileNetV2-style inverted residuals**: expand → DW → project with expansion factor; better accuracy/param trade-off
-- [ ] **Squeeze-and-excite (SE) blocks**: lightweight channel attention, compatible with NPU (just pool + dense + sigmoid + mul)
-- [ ] **Multi-head attention pooling**: replace simple GAP with lightweight attention pooling over time dimension (optional, check N6 op support)
-- [ ] **Knowledge distillation**: add option to train with soft labels from a larger BirdNet teacher model
-- [ ] **Model profiling utility**: print per-layer MACs, params, activation memory; flag layers likely to fail N6 compilation
-- [ ] **N6 op compatibility table**: maintain a list of tested TFLite ops on the N6 NPU (from stedgeai reports); warn at model build time if using unsupported ops
+- [x] **Add model registry**: `build_model(name, **kwargs)` dispatcher (dscnn, mobilenetv2_tiny, efficientnet_lite0, ...)
+- [x] **MobileNetV2-style inverted residuals**: expand → DW → project with expansion factor; better accuracy/param trade-off
+- [x] **Squeeze-and-excite (SE) blocks**: lightweight channel attention, compatible with NPU (just pool + dense + sigmoid + mul)
+- [x] **Multi-head attention pooling**: replace simple GAP with lightweight attention pooling over time dimension (optional, check N6 op support)
+- [x] **Knowledge distillation**: add option to train with soft labels from a larger BirdNet teacher model
+- [x] **Model profiling utility**: print per-layer MACs, params, activation memory; flag layers likely to fail N6 compilation
+- [x] **N6 op compatibility table**: maintain a list of tested TFLite ops on the N6 NPU (from stedgeai reports); warn at model build time if using unsupported ops
 - [x] **Configurable dropout**: currently hardcoded 0.5; add CLI arg
 - [x] **Configurable weight decay**: currently hardcoded 1e-4; add CLI arg
-- [ ] **Label smoothing**: add as training option
+- [x] **Label smoothing**: add as training option
 
 ---
 
@@ -258,11 +258,13 @@ birdnet_stm32/
 
 ### Improvement tasks
 
+Use dev dataset (or a 25 species / 500 files subset) at /home/mi/Datasets/stm32_1k for fast iteration. Build as a train and test set in data/train and data/test. use common european and north american species.
+
 - [ ] **Replace raw dict config with dataclass**: `ModelConfig` with validation + serialization
 - [x] **Deterministic training mode**: add `--deterministic` flag that sets all seeds + TF deterministic ops
 - [ ] **Resumable training**: add `--resume` flag that loads optimizer state from checkpoint
 - [ ] **Learning rate finder**: add utility to sweep LR and plot loss (one-cycle policy style)
-- [ ] **Optuna hyperparameter tuning**: add `--tune` flag that uses Optuna to search over LR, alpha, depth_multiplier, dropout, batch size; persist study in SQLite for resumable sweeps
+- [ ] **Optuna hyperparameter tuning**: add `--tune` flag that uses Optuna to search over hyperparameters
 - ~**WandB / TensorBoard integration**~: decided against — keep logging simple (CSV + stdout). Do not add wandb or tensorboard as dependencies.
 - [ ] **Multi-GPU / mixed precision**: add `--mixed-precision` flag (fp16 compute, fp32 accum) for faster training
 - [ ] **Class weighting**: add `--class-weights` option (inverse frequency, effective number, focal loss)
@@ -417,9 +419,9 @@ tests/
 ### Files in `.github/`
 
 - [x] `.github/copilot-instructions.md` — project guidelines, build/test commands, conventions, N6 pitfalls
-- [ ] `.github/instructions/models.instructions.md` — `applyTo: "birdnet_stm32/models/**"`, model architecture conventions, N6 constraints
-- [ ] `.github/instructions/tests.instructions.md` — `applyTo: "tests/**"`, test conventions (fixtures, naming, assertions)
-- [ ] `.github/instructions/audio.instructions.md` — `applyTo: "birdnet_stm32/audio/**"`, audio processing conventions, dtype rules
+- [x] `.github/instructions/models.instructions.md` — `applyTo: "birdnet_stm32/models/**"`, model architecture conventions, N6 constraints
+- [x] `.github/instructions/tests.instructions.md` — `applyTo: "tests/**"`, test conventions (fixtures, naming, assertions)
+- [x] `.github/instructions/audio.instructions.md` — `applyTo: "birdnet_stm32/audio/**"`, audio processing conventions, dtype rules
 
 ### Dev guides (in docs, linked from CONTRIBUTING.md)
 

@@ -8,6 +8,8 @@ import random
 
 import numpy as np
 
+import tensorflow as tf
+
 from birdnet_stm32.data.dataset import load_file_paths_from_directory, upsample_minority_classes
 from birdnet_stm32.data.generator import load_dataset
 from birdnet_stm32.models.dscnn import build_dscnn_model
@@ -22,7 +24,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--data_path_train", type=str, required=True, help="Path to train dataset")
     parser.add_argument("--max_samples", type=int, default=None, help="Max samples per class")
     parser.add_argument("--upsample_ratio", type=float, default=0.5, help="Upsample ratio for minority classes")
-    parser.add_argument("--sample_rate", type=int, default=22050, help="Audio sample rate (Hz)")
+    parser.add_argument("--sample_rate", type=int, default=24000, help="Audio sample rate (Hz)")
     parser.add_argument("--num_mels", type=int, default=64, help="Number of mel bins")
     parser.add_argument("--spec_width", type=int, default=256, help="Spectrogram width (frames)")
     parser.add_argument("--fft_length", type=int, default=512, help="FFT length")
@@ -32,9 +34,10 @@ def get_args() -> argparse.Namespace:
         "--audio_frontend",
         type=str,
         default="hybrid",
-        choices=["precomputed", "hybrid", "raw", "librosa", "tf"],
+        choices=["precomputed", "hybrid", "raw", "librosa", "tf", "mfcc", "log_mel"],
     )
     parser.add_argument("--mag_scale", type=str, default="pwl", choices=["pcen", "pwl", "db", "none"])
+    parser.add_argument("--n_mfcc", type=int, default=20, help="Number of MFCC coefficients (mfcc frontend only)")
     parser.add_argument("--embeddings_size", type=int, default=256, help="Embeddings layer size")
     parser.add_argument("--alpha", type=float, default=1.0, help="Width multiplier")
     parser.add_argument("--depth_multiplier", type=int, default=1, help="Depth multiplier")
@@ -57,6 +60,12 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--focal_gamma", type=float, default=2.0, help="Focal loss gamma (focusing parameter)")
     parser.add_argument("--val_split", type=float, default=0.2, help="Validation split ratio")
     parser.add_argument("--checkpoint_path", type=str, default="checkpoints/best_model.keras")
+    parser.add_argument("--label_smoothing", type=float, default=0.0, help="Label smoothing factor (0 = off)")
+    parser.add_argument("--use_se", action="store_true", default=False, help="Add SE channel attention to each block")
+    parser.add_argument("--se_reduction", type=int, default=4, help="SE channel reduction factor")
+    parser.add_argument("--use_inverted_residual", action="store_true", default=False, help="Use inverted residual blocks")
+    parser.add_argument("--expansion_factor", type=int, default=6, help="Expansion factor for inverted residuals")
+    parser.add_argument("--use_attention_pooling", action="store_true", default=False, help="Use attention pooling instead of GAP")
     parser.add_argument("--spec_augment", action="store_true", default=False, help="Enable SpecAugment")
     parser.add_argument("--freq_mask_max", type=int, default=8, help="Max frequency mask width (bins)")
     parser.add_argument("--time_mask_max", type=int, default=25, help="Max time mask width (frames)")
@@ -72,8 +81,6 @@ def main():
 
     # Deterministic mode: seed all RNGs and enable TF deterministic ops
     if args.deterministic:
-        import tensorflow as tf
-
         seed = args.seed
         random.seed(seed)
         np.random.seed(seed)
@@ -162,6 +169,11 @@ def main():
         frontend_trainable=args.frontend_trainable,
         class_activation="sigmoid" if args.mixup_probability > 0 else "softmax",
         dropout_rate=args.dropout,
+        use_se=args.use_se,
+        se_reduction=args.se_reduction,
+        use_inverted_residual=args.use_inverted_residual,
+        expansion_factor=args.expansion_factor,
+        use_attention_pooling=args.use_attention_pooling,
     )
     model.summary()
 
@@ -189,9 +201,15 @@ def main():
     print(f"Saved model config to '{cfg_path}'")
 
     # Resolve loss function
+    is_multilabel = args.mixup_probability > 0
     loss_fn = None
     if args.loss == "focal":
         loss_fn = BinaryFocalLoss(gamma=args.focal_gamma)
+    elif args.label_smoothing > 0:
+        if is_multilabel:
+            loss_fn = tf.keras.losses.BinaryCrossentropy(label_smoothing=args.label_smoothing)
+        else:
+            loss_fn = tf.keras.losses.CategoricalCrossentropy(label_smoothing=args.label_smoothing)
 
     # Train
     print("Starting training...")
@@ -205,7 +223,7 @@ def main():
         checkpoint_path=args.checkpoint_path,
         steps_per_epoch=steps_per_epoch,
         val_steps=val_steps,
-        is_multilabel=(args.mixup_probability > 0),
+        is_multilabel=is_multilabel,
         optimizer=args.optimizer,
         weight_decay=args.weight_decay,
         loss_fn=loss_fn,

@@ -28,7 +28,7 @@ The `board-test` command calls the same generator automatically.
 
 | Define | Example | Description |
 |---|---|---|
-| `APP_SAMPLE_RATE` | `22050` | Audio sample rate in Hz. **Must match** the model's training rate. WAV files with a different rate are skipped. |
+| `APP_SAMPLE_RATE` | `24000` | Audio sample rate in Hz. **Must match** the model's training rate. WAV files with a different rate are skipped. |
 | `APP_CHUNK_DURATION` | `2.9` | Chunk length in seconds. Can be fractional. |
 | `APP_CHUNK_SAMPLES` | `63945` | Total samples per chunk (`int(SR × duration)`). Computed as an integer literal — avoids truncation from integer-only C macros. |
 | `APP_FFT_LENGTH` | `512` | FFT window size. **Must be 512** — the FFT implementation is hardcoded for this size. |
@@ -84,12 +84,12 @@ real-time inference (the NPU finishes a 3 s chunk in ~4 ms at 800 MHz).
 
 ```json
 {
-    "sample_rate": 22050,
-    "chunk_duration": 2.9,
+    "sample_rate": 24000,
+    "chunk_duration": 3,
     "fft_length": 512,
     "spec_width": 256,
     "num_mels": 64,
-    "audio_frontend": "raw"
+    "audio_frontend": "hybrid"
 }
 ```
 

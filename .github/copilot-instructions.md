@@ -27,9 +27,12 @@ python -m birdnet_stm32 board-test --config config.json
 
 ## Architecture
 
-- **Audio frontend** (`birdnet_stm32/models/frontend.py`): Three modes — `librosa` (precomputed mel), `hybrid` (offline STFT + learned mel mixer), `raw` (waveform → learned filterbank). `hybrid` or `raw` are the deployment options (`raw` achieves 0ms STFT overhead but uses more NPU).
+- **Audio frontend** (`birdnet_stm32/models/frontend.py`): Five modes — `librosa` (precomputed mel), `hybrid` (offline STFT + learned mel mixer), `raw` (waveform → learned filterbank), `mfcc` (precomputed MFCC), `log_mel` (precomputed log-mel). `hybrid` or `raw` are the deployment options (`raw` achieves 0ms STFT overhead but uses more NPU).
 - **Magnitude scaling**: `pwl` (piecewise-linear, default, quantization-friendly), `pcen`, `db` (avoid — poor quantization). Decoupled in `birdnet_stm32/models/magnitude.py`.
-- **Model**: DS-CNN (depthwise-separable CNN) with 4 stages, ReLU6, global avg pool → dropout → dense. Scaled via `alpha` (channel multiplier) and `depth_multiplier` (block repeats).
+- **Model**: DS-CNN (depthwise-separable CNN) with 4 stages, ReLU6, global avg pool → dropout → dense. Scaled via `alpha` (channel multiplier) and `depth_multiplier` (block repeats). Optional SE channel attention (`--use_se`), inverted residual blocks (`--use_inverted_residual`), and attention pooling (`--use_attention_pooling`).
+- **Building blocks** (`birdnet_stm32/models/blocks.py`): SE block, inverted residual block, attention pooling — all NPU-compatible.
+- **Model registry** (`birdnet_stm32/models/__init__.py`): `build_model(name, **kwargs)` dispatcher. Currently registers `dscnn`.
+- **Model profiler** (`birdnet_stm32/models/profiler.py`): Per-layer MACs, params, activation memory, N6 compatibility check.
 - **Quantization**: Post-training quantization (PTQ) with representative dataset calibration. Float32 I/O, INT8 internals.
 - **Deployment**: `stedgeai generate` → `n6_loader.py` (serial flash) → `stedgeai validate` (on-device).
 

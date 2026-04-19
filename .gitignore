@@ -147,3 +147,6 @@ venv.bak/
 firmware/build/
 firmware/network.c
 firmware/network.h
+
+# Legacy script backups
+*.py.bak
