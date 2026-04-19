@@ -61,15 +61,28 @@ After conversion, the script reports:
 | `--num_samples` | 1024 | Number of representative samples |
 | `--validate_samples` | 256 | Samples for Keras vs. TFLite validation |
 | `--min_cosine_sim` | 0.95 | Fail conversion if cosine similarity is below this |
+| `--quantization` | `ptq` | `ptq` (full INT8 with calibration) or `dynamic` (dynamic range, no calibration data) |
+| `--per_tensor` | off | Use per-tensor quantization instead of per-channel |
+| `--batch_validate` | 0 | Run validation N times with different seeds, report worst-case |
+| `--export_onnx` | off | Also export ONNX model (requires `tf2onnx`) |
+| `--report_json` | None | Save structured JSON conversion report |
 
 ## Quantization details
 
 - **Scheme**: full integer quantization (INT8 weights + INT8 activations)
 - **I/O**: float32 — audio inputs are continuous-valued and lose meaningful
   precision at INT8
-- **Calibration**: representative dataset drawn from training data, center-
-  cropped to chunk duration
+- **Calibration**: representative dataset drawn from training data with
+  stratified class sampling and SNR filtering (near-silent chunks skipped)
 - **Target hardware**: STM32N6 NPU (requires channel counts in multiples of 8)
+- **Per-channel** (default): quantizes each output channel separately — better accuracy
+- **Per-tensor**: single scale per tensor — use only if per-channel causes N6 issues
+- **Dynamic range**: INT8 weights, runtime float activations — no calibration data needed, less compression
+
+!!! tip "Quantization modes"
+    Use `--quantization ptq` (default) for best on-device performance.
+    Use `--quantization dynamic` when no training data is available.
+    Use `--per_tensor` only if stedgeai rejects a per-channel model.
 
 !!! note "No INT8 I/O"
     Audio spectrograms are continuous-valued signals. Quantizing model inputs

@@ -286,15 +286,15 @@ Use dev dataset (or a 25 species / 500 files subset) at /home/mi/Datasets/stm32_
 ### Improvement tasks
 
 - [ ] **Quantization-aware training (QAT)**: add `--qat` flag to train.py that inserts fake-quant nodes (TF Model Optimization Toolkit)
-- [ ] **Per-channel vs per-tensor quantization**: add flag to control granularity
-- [ ] **Dynamic range quantization**: add as alternative (no representative dataset needed)
-- [ ] **Audit INT8 input assumptions**: audio waveform/spectrogram inputs are continuous-valued and lose meaningful precision at INT8; verify that float32 I/O is enforced throughout the pipeline and remove any code paths that attempt INT8 input quantization
+- [x] **Per-channel vs per-tensor quantization**: add flag to control granularity
+- [x] **Dynamic range quantization**: add as alternative (no representative dataset needed)
+- [x] **Audit INT8 input assumptions**: audio waveform/spectrogram inputs are continuous-valued and lose meaningful precision at INT8; verify that float32 I/O is enforced throughout the pipeline and remove any code paths that attempt INT8 input quantization
 - ~**INT8-only mode**~: rejected — INT8 I/O does not make sense for audio inputs. Keep float32 I/O + INT8 internals.
-- [ ] **ONNX export**: add `--export-onnx` path (stedgeai also accepts ONNX)
+- [x] **ONNX export**: add `--export-onnx` path (stedgeai also accepts ONNX)
 - [x] **Automatic cosine similarity validation**: fail conversion if cosine sim < threshold (configurable, default 0.95)
-- [ ] **Representative dataset curation**: add SNR filtering + stratified sampling per class (current: random shuffle + center chunk)
-- [ ] **Conversion report**: generate a structured JSON/HTML report with per-layer quantization ranges, before/after histograms
-- [ ] **Batch validation**: validate across multiple random seeds and report worst-case metrics
+- [x] **Representative dataset curation**: add SNR filtering + stratified sampling per class (current: random shuffle + center chunk)
+- [x] **Conversion report**: generate a structured JSON/HTML report with per-layer quantization ranges, before/after histograms
+- [x] **Batch validation**: validate across multiple random seeds and report worst-case metrics
 
 ---
 

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-04-19
+
+### Added
+
+- **Optuna hyperparameter tuning** (`--tune`, `--n_trials`): searches over alpha, depth_multiplier, embeddings_size, learning_rate, dropout, batch_size, mixup_alpha, label_smoothing, optimizer, weight_decay, grad_clip, use_se, use_inverted_residual, use_attention_pooling, se_reduction, expansion_factor. Maximizes val_roc_auc with MedianPruner.
+- **Per-channel / per-tensor quantization** (`--per_tensor`): per-channel (default, more accurate) or per-tensor (simpler, use if N6 rejects per-channel).
+- **Dynamic range quantization** (`--quantization dynamic`): INT8 weights with runtime float activations — no calibration data needed.
+- **Stratified representative dataset**: calibration sampling now draws equal samples per class with SNR filtering (near-silent chunks skipped).
+- **Batch validation** (`--batch_validate N`): run Keras-vs-TFLite validation N times with different seeds, report worst-case metrics.
+- **ONNX export** (`--export_onnx`): exports `.onnx` alongside `.tflite` (requires `tf2onnx`).
+- **Conversion report** (`--report_json`): structured JSON with validation metrics, compression ratio, model sizes, and config.
+- **Float32 I/O runtime assertion**: `convert_to_tflite()` now verifies the quantized model preserved float32 I/O after conversion.
+- **`pip install -e ".[all]"`**: meta extras group pulling in dev + docs + deploy + tune dependencies.
+- **ModelConfig dataclass** (`birdnet_stm32/training/config.py`): validated, JSON-serializable, backward-compatible.
+- **Resumable training** (`--resume`): reloads model + optimizer state from checkpoint.
+- **Gradient clipping** (`--grad_clip`): max gradient norm for optimizer.
+- **Mixed precision** (`--mixed_precision`): FP16 compute, FP32 accumulation.
+- **Balanced class weights** (`--class_weights balanced`): inverse-frequency weighting.
+- **LR finder** (`birdnet_stm32/training/lr_finder.py`): LR range test utility.
+- **Training dashboard**: CSV history (`_history.csv`) + training curves PNG (`_curves.png`).
+
+### Changed
+
+- Representative dataset generator now uses stratified class sampling instead of random shuffle.
+- Cosine similarity function handles near-zero vectors gracefully (both-zero = perfect match for noise/background class predictions).
+- Removed stale `setuptools-scm` build requirement from `pyproject.toml`.
+- Removed deprecated license classifier (PEP 639 compliance).
+
 ## [0.6.0] — 2026-04-19
 
 ### Added
