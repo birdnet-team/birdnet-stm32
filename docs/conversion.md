@@ -6,7 +6,7 @@ quantization (PTQ) with INT8 internals and float32 I/O.
 ## Basic usage
 
 ```bash
-python convert.py \
+python -m birdnet_stm32 convert \
   --checkpoint_path checkpoints/my_model.keras \
   --model_config checkpoints/my_model_model_config.json \
   --data_path_train data/train

@@ -233,6 +233,46 @@ The demo application is under development. The planned pipeline:
 4. Map prediction scores to labels using `labels.txt`.
 5. Log top-5 predictions to the serial console.
 
+## Board test
+
+The `board-test` command runs a standalone inference test on the STM32N6570-DK.
+The firmware reads WAV files from the SD card, computes the STFT on the
+Cortex-M55, runs the model on the NPU, and streams results over UART. This
+verifies the entire on-device pipeline end-to-end.
+
+```bash
+python -m birdnet_stm32 board-test --config config.json
+```
+
+### SD card preparation
+
+1. Format a micro-SD card as FAT32.
+2. Create an `audio/` directory at the root.
+3. Copy mono or stereo 16-bit PCM `.wav` files into `audio/`. Each file should
+   be at least as long as the model's chunk duration (default 3 s). **The sample
+   rate must match the model's** (printed in `_model_config.json`).
+4. Insert the card into the STM32N6570-DK slot.
+
+### Board-test arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `--model_path` | *(from config)* | Path to quantized `.tflite` model |
+| `--model_config` | *(inferred)* | Path to `_model_config.json` |
+| `--labels` | *(inferred)* | Path to `_labels.txt` |
+| `--serial_port` | `/dev/ttyACM0` | Serial port for UART capture |
+| `--top_k` | 5 | Top-K predictions per file |
+| `--score_threshold` | 0.01 | Minimum score to display |
+| `--config` | `config.json` | Deploy configuration JSON |
+| `--timeout` | 300 | Max seconds to wait for firmware response |
+| `--save_results` | None | Save results summary to a CSV file |
+
+!!! warning "Board test is standalone"
+    The board-test command deploys real firmware that does all processing on
+    the board: read WAV from SD card → compute STFT on Cortex-M55 → run NPU
+    inference → write results to SD card + serial. Do NOT precompute
+    spectrograms on the host — that defeats the purpose of an integration test.
+
 ## Firmware documentation
 
 For detailed documentation on the board firmware — hardware specs, build

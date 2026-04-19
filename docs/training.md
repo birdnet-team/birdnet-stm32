@@ -3,7 +3,7 @@
 ## Basic usage
 
 ```bash
-python train.py \
+python -m birdnet_stm32 train \
   --data_path_train data/train \
   --audio_frontend hybrid \
   --mag_scale pwl \
@@ -158,6 +158,23 @@ The QAT model is saved as `{name}_qat.keras` alongside the original.
 Cosine decay schedule from `--learning_rate` (default 0.001) to near-zero
 over `--epochs` (default 50). Early stopping on validation loss with patience
 of 10 epochs.
+
+### Hyperparameter tuning with Optuna
+
+Use `--tune` to run an automated hyperparameter search using Optuna (requires
+`pip install -e ".[tune]"`). The tuner explores alpha, depth_multiplier,
+embeddings_size, learning_rate, dropout, batch_size, mixup_alpha,
+label_smoothing, optimizer, weight_decay, grad_clip, use_se,
+use_inverted_residual, use_attention_pooling, se_reduction, and
+expansion_factor. It maximizes `val_roc_auc` with MedianPruner.
+
+```bash
+python -m birdnet_stm32 train \
+  --data_path_train data/train \
+  --tune --n_trials 20 --epochs 30
+```
+
+Set `--n_trials` to control how many configurations to try (default 20).
 
 ## Full argument reference
 
