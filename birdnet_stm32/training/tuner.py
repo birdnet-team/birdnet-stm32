@@ -31,8 +31,12 @@ def _build_search_space(trial: optuna.Trial, args: argparse.Namespace) -> dict:
     Returns:
         Dictionary of sampled hyperparameters.
     """
-    return {
+    hp = {
+        # Model scaling
         "alpha": trial.suggest_float("alpha", 0.25, 1.5, step=0.25),
+        "depth_multiplier": trial.suggest_int("depth_multiplier", 1, 3),
+        "embeddings_size": trial.suggest_categorical("embeddings_size", [64, 128, 256]),
+        # Training
         "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True),
         "dropout": trial.suggest_float("dropout", 0.2, 0.7, step=0.1),
         "batch_size": trial.suggest_categorical("batch_size", [16, 32, 64]),
@@ -40,10 +44,23 @@ def _build_search_space(trial: optuna.Trial, args: argparse.Namespace) -> dict:
         "label_smoothing": trial.suggest_float("label_smoothing", 0.0, 0.2, step=0.05),
         "optimizer": trial.suggest_categorical("optimizer", ["adam", "adamw"]),
         "weight_decay": trial.suggest_float("weight_decay", 1e-5, 1e-2, log=True),
+        "grad_clip": trial.suggest_float("grad_clip", 0.0, 5.0, step=1.0),
+        # Architecture blocks
         "use_se": trial.suggest_categorical("use_se", [True, False]),
         "use_inverted_residual": trial.suggest_categorical("use_inverted_residual", [True, False]),
-        "grad_clip": trial.suggest_float("grad_clip", 0.0, 5.0, step=1.0),
+        "use_attention_pooling": trial.suggest_categorical("use_attention_pooling", [True, False]),
     }
+    # Conditional: SE reduction only matters when SE is enabled
+    if hp["use_se"]:
+        hp["se_reduction"] = trial.suggest_categorical("se_reduction", [2, 4, 8])
+    else:
+        hp["se_reduction"] = 4
+    # Conditional: expansion factor only matters with inverted residuals
+    if hp["use_inverted_residual"]:
+        hp["expansion_factor"] = trial.suggest_int("expansion_factor", 2, 6)
+    else:
+        hp["expansion_factor"] = 6
+    return hp
 
 
 def _objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
@@ -119,18 +136,18 @@ def _objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
         audio_frontend=args.audio_frontend,
         num_classes=len(classes),
         alpha=hp["alpha"],
-        depth_multiplier=args.depth_multiplier,
-        embeddings_size=args.embeddings_size,
+        depth_multiplier=hp["depth_multiplier"],
+        embeddings_size=hp["embeddings_size"],
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
         frontend_trainable=args.frontend_trainable,
         class_activation="sigmoid" if is_multilabel else "softmax",
         dropout_rate=hp["dropout"],
         use_se=hp["use_se"],
-        se_reduction=args.se_reduction,
+        se_reduction=hp["se_reduction"],
         use_inverted_residual=hp["use_inverted_residual"],
-        expansion_factor=args.expansion_factor,
-        use_attention_pooling=args.use_attention_pooling,
+        expansion_factor=hp["expansion_factor"],
+        use_attention_pooling=hp["use_attention_pooling"],
     )
 
     # Loss
