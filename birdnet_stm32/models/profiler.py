@@ -6,7 +6,6 @@ reports per-layer statistics useful for estimating NPU/MCU cost.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 import tensorflow as tf

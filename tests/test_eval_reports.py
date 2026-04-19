@@ -18,7 +18,6 @@ from birdnet_stm32.evaluation.reporting import (
     save_species_report_csv,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -78,7 +77,7 @@ class TestBootstrapApCi:
         y_true, y_scores, classes = binary_data
         ci_90 = bootstrap_ap_ci(y_true, y_scores, classes, n_bootstrap=500, confidence=0.90)
         ci_99 = bootstrap_ap_ci(y_true, y_scores, classes, n_bootstrap=500, confidence=0.99)
-        for r90, r99 in zip(ci_90, ci_99):
+        for r90, r99 in zip(ci_90, ci_99, strict=False):
             w90 = r90["ci_upper"] - r90["ci_lower"]
             w99 = r99["ci_upper"] - r99["ci_lower"]
             assert w99 >= w90 - 1e-6
@@ -106,7 +105,7 @@ class TestBootstrapApCi:
         y_true, y_scores, classes = binary_data
         r1 = bootstrap_ap_ci(y_true, y_scores, classes, n_bootstrap=200, seed=123)
         r2 = bootstrap_ap_ci(y_true, y_scores, classes, n_bootstrap=200, seed=123)
-        for a, b in zip(r1, r2):
+        for a, b in zip(r1, r2, strict=False):
             assert a["ci_lower"] == b["ci_lower"]
             assert a["ci_upper"] == b["ci_upper"]
 

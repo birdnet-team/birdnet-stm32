@@ -6,14 +6,12 @@ import argparse
 import math
 import os
 
-import numpy as np
 import optuna
 import tensorflow as tf
 
 from birdnet_stm32.data.dataset import load_file_paths_from_directory, upsample_minority_classes
 from birdnet_stm32.data.generator import load_dataset
 from birdnet_stm32.models.dscnn import build_dscnn_model
-from birdnet_stm32.training.config import ModelConfig
 from birdnet_stm32.training.trainer import compute_hop_length, train_model
 
 
@@ -75,7 +73,7 @@ def _objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
     """
     hp = _build_search_space(trial, args)
 
-    hop_length = compute_hop_length(args.sample_rate, args.chunk_duration, args.spec_width)
+    compute_hop_length(args.sample_rate, args.chunk_duration, args.spec_width)
 
     # Load file paths
     file_paths, classes = load_file_paths_from_directory(args.data_path_train)

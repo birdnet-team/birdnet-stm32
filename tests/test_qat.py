@@ -13,7 +13,6 @@ from birdnet_stm32.training.qat import (
     freeze_batch_norm,
 )
 
-
 # ---------------------------------------------------------------------------
 # fake_quantize_weights
 # ---------------------------------------------------------------------------
@@ -188,7 +187,7 @@ class TestQATCallback:
         tiny_model.fit(X, y, epochs=1, batch_size=8, callbacks=[cb], verbose=0)
         # Should have found conv and pred layers
         assert len(cb._qat_layers) == 2
-        names = {l.name for l in cb._qat_layers}
+        names = {lyr.name for lyr in cb._qat_layers}
         assert "conv" in names
         assert "pred" in names
 
@@ -203,7 +202,7 @@ class TestQATCallback:
         w_after = [w.numpy() for w in tiny_model.trainable_weights]
 
         # At least some weights should have changed
-        changed = any(not np.array_equal(a, b) for a, b in zip(w_before, w_after))
+        changed = any(not np.array_equal(a, b) for a, b in zip(w_before, w_after, strict=False))
         assert changed
 
     def test_callback_preserves_fp_precision(self, tiny_model, tiny_data):

@@ -6,7 +6,6 @@ import os
 import random
 
 import numpy as np
-
 import tensorflow as tf
 
 from birdnet_stm32.data.dataset import load_file_paths_from_directory, upsample_minority_classes

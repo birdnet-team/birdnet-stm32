@@ -323,7 +323,7 @@ def compute_det_curve(
 
     # Sort by descending score
     desc = np.argsort(-y_s)
-    y_t_sorted = y_t[desc]
+    y_t[desc]
     y_s_sorted = y_s[desc]
 
     total_pos = y_t.sum()

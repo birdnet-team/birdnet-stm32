@@ -108,10 +108,10 @@ class QATCallback(tf.keras.callbacks.Callback):
 
     def on_train_begin(self, logs=None):
         """Identify quantizable layers and report statistics."""
-        self._qat_layers = [l for l in self.model.layers if _is_quantizable(l)]
+        self._qat_layers = [lyr for lyr in self.model.layers if _is_quantizable(lyr)]
         n_params = sum(
-            sum(int(np.prod(w.shape)) for w in l.trainable_weights if "bias" not in w.name)
-            for l in self._qat_layers
+            sum(int(np.prod(w.shape)) for w in lyr.trainable_weights if "bias" not in w.name)
+            for lyr in self._qat_layers
         )
         print(
             f"[QAT] {len(self._qat_layers)} layers, {n_params:,} kernel params, "

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from dataclasses import dataclass, field
 
 
@@ -62,13 +61,7 @@ def _load_config_file(config_path: str) -> dict:
         return {}
 
     if config_path.endswith(".toml"):
-        if sys.version_info >= (3, 11):
-            import tomllib
-        else:
-            try:
-                import tomllib  # type: ignore[import-not-found]
-            except ModuleNotFoundError:
-                import tomli as tomllib  # type: ignore[no-redef]
+        import tomllib  # type: ignore[no-redef]
         with open(config_path, "rb") as f:
             data = tomllib.load(f)
         # Flatten: merge [deploy] and [build] sections

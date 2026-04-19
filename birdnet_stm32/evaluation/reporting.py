@@ -321,6 +321,7 @@ def save_html_report(
     try:
         import base64
         import io
+
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
@@ -347,7 +348,7 @@ def save_html_report(
     html_parts.append("</style></head><body>")
 
     # Header
-    html_parts.append(f"<h1>Evaluation Report</h1>")
+    html_parts.append("<h1>Evaluation Report</h1>")
     html_parts.append(f"<p>Model: <code>{os.path.basename(model_path)}</code></p>")
 
     # Metrics table

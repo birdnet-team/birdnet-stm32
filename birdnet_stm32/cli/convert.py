@@ -104,7 +104,7 @@ def main():
 
         per_class = max(1, args.num_samples // max(len(class_files), 1))
         stratified_paths: list[str] = []
-        for cls_name, paths in class_files.items():
+        for _cls_name, paths in class_files.items():
             n = min(per_class, len(paths))
             stratified_paths.extend(random.sample(paths, n))
         random.shuffle(stratified_paths)
