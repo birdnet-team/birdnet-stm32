@@ -121,9 +121,7 @@ def data_generator(
 
         elif audio_frontend == "hybrid":
             specs = [
-                get_spectrogram_from_audio(
-                    chunk, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=spec_width
-                )
+                get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=spec_width)
                 for chunk in audio_chunks
             ]
             pool = sort_by_activity(specs, threshold=snr_threshold) or specs

@@ -5,7 +5,6 @@ to a large value over a fixed number of steps, recording loss at each step.
 The optimal LR is typically in the steepest descent region of the loss curve.
 """
 
-
 import numpy as np
 import tensorflow as tf
 

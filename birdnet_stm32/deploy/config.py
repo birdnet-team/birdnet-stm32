@@ -62,6 +62,7 @@ def _load_config_file(config_path: str) -> dict:
 
     if config_path.endswith(".toml"):
         import tomllib  # type: ignore[no-redef]
+
         with open(config_path, "rb") as f:
             data = tomllib.load(f)
         # Flatten: merge [deploy] and [build] sections
@@ -102,7 +103,11 @@ def resolve_deploy_config(
     # Try the given path; fall back to the other format if not found
     file_cfg = _load_config_file(config_path)
     if not file_cfg:
-        alt = config_path.replace(".json", ".toml") if config_path.endswith(".json") else config_path.replace(".toml", ".json")
+        alt = (
+            config_path.replace(".json", ".toml")
+            if config_path.endswith(".json")
+            else config_path.replace(".toml", ".json")
+        )
         file_cfg = _load_config_file(alt)
 
     cli_args = cli_args or {}

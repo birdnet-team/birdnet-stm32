@@ -22,6 +22,7 @@ from birdnet_stm32.evaluation.reporting import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def binary_data():
     """Synthetic binary classification data (2 classes, 50 samples)."""
@@ -52,6 +53,7 @@ def three_class_data():
 # ---------------------------------------------------------------------------
 # bootstrap_ap_ci
 # ---------------------------------------------------------------------------
+
 
 class TestBootstrapApCi:
     """Tests for bootstrap_ap_ci."""
@@ -122,6 +124,7 @@ class TestBootstrapApCi:
 # compute_det_curve
 # ---------------------------------------------------------------------------
 
+
 class TestComputeDetCurve:
     """Tests for compute_det_curve."""
 
@@ -165,6 +168,7 @@ class TestComputeDetCurve:
 # save_species_report_csv
 # ---------------------------------------------------------------------------
 
+
 class TestSaveSpeciesReportCsv:
     """Tests for save_species_report_csv."""
 
@@ -199,6 +203,7 @@ class TestSaveSpeciesReportCsv:
 # ---------------------------------------------------------------------------
 # save_benchmark_json
 # ---------------------------------------------------------------------------
+
 
 class TestSaveBenchmarkJson:
     """Tests for save_benchmark_json."""
@@ -254,6 +259,7 @@ class TestSaveBenchmarkJson:
 # print_ascii_det_curve
 # ---------------------------------------------------------------------------
 
+
 class TestPrintAsciiDetCurve:
     """Tests for print_ascii_det_curve."""
 
@@ -276,6 +282,7 @@ class TestPrintAsciiDetCurve:
 # save_det_curve_plot
 # ---------------------------------------------------------------------------
 
+
 class TestSaveDetCurvePlot:
     """Tests for save_det_curve_plot."""
 
@@ -291,6 +298,7 @@ class TestSaveDetCurvePlot:
 # ---------------------------------------------------------------------------
 # save_html_report
 # ---------------------------------------------------------------------------
+
 
 class TestSaveHtmlReport:
     """Tests for save_html_report."""
@@ -333,6 +341,7 @@ class TestSaveHtmlReport:
 # ---------------------------------------------------------------------------
 # Latency measurement in evaluate()
 # ---------------------------------------------------------------------------
+
 
 class TestLatencyMeasurement:
     """Tests for latency measurement in evaluate()."""
@@ -382,9 +391,7 @@ class TestLatencyMeasurement:
                 self._idx += x.shape[0]
                 return out.astype(np.float32)
 
-        metrics, _, _, _ = evaluate(
-            FakeRunner(), files, classes, cfg, pooling="avg", measure_latency=True
-        )
+        metrics, _, _, _ = evaluate(FakeRunner(), files, classes, cfg, pooling="avg", measure_latency=True)
         assert "latency_mean_ms" in metrics
         assert "latency_median_ms" in metrics
         assert "latency_p95_ms" in metrics

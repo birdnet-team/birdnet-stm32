@@ -26,11 +26,13 @@ def register_model(name: str):
     Args:
         name: Canonical model name (e.g. "dscnn").
     """
+
     def decorator(fn: Callable[..., tf.keras.Model]) -> Callable[..., tf.keras.Model]:
         if name in _MODEL_REGISTRY:
             raise ValueError(f"Model '{name}' is already registered.")
         _MODEL_REGISTRY[name] = fn
         return fn
+
     return decorator
 
 
@@ -61,4 +63,3 @@ def list_models() -> list[str]:
 from birdnet_stm32.models.dscnn import build_dscnn_model as _build_dscnn  # noqa: E402
 
 _MODEL_REGISTRY["dscnn"] = _build_dscnn
-

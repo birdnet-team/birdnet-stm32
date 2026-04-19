@@ -16,9 +16,7 @@ from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
 from birdnet_stm32.models.frontend import normalize_frontend_name
 
 
-def representative_data_gen(
-    file_paths: list[str], cfg: dict, num_samples: int = 100, snr_threshold: float = 0.01
-):
+def representative_data_gen(file_paths: list[str], cfg: dict, num_samples: int = 100, snr_threshold: float = 0.01):
     """Build a representative dataset generator for TFLite PTQ calibration.
 
     Yields one input tensor per iteration in the exact shape expected by the model.

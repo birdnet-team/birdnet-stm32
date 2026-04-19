@@ -212,14 +212,26 @@ def build_dscnn_model(
 
         if use_inverted_residual:
             x = inverted_residual_block(
-                x, out_ch, expansion=expansion_factor, stride_f=sf, stride_t=st,
-                use_se=use_se, se_reduction=se_reduction, weight_decay=weight_decay,
+                x,
+                out_ch,
+                expansion=expansion_factor,
+                stride_f=sf,
+                stride_t=st,
+                use_se=use_se,
+                se_reduction=se_reduction,
+                weight_decay=weight_decay,
                 name=f"stage{si}_ir1",
             )
             for bi in range(2, reps + 1):
                 x = inverted_residual_block(
-                    x, out_ch, expansion=expansion_factor, stride_f=1, stride_t=1,
-                    use_se=use_se, se_reduction=se_reduction, weight_decay=weight_decay,
+                    x,
+                    out_ch,
+                    expansion=expansion_factor,
+                    stride_f=1,
+                    stride_t=1,
+                    use_se=use_se,
+                    se_reduction=se_reduction,
+                    weight_decay=weight_decay,
                     name=f"stage{si}_ir{bi}",
                 )
         else:
@@ -227,7 +239,9 @@ def build_dscnn_model(
             if use_se:
                 x = se_block(x, reduction=se_reduction, name=f"stage{si}_se1")
             for bi in range(2, reps + 1):
-                x = ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name=f"stage{si}_ds{bi}", weight_decay=weight_decay)
+                x = ds_conv_block(
+                    x, out_ch, stride_f=1, stride_t=1, name=f"stage{si}_ds{bi}", weight_decay=weight_decay
+                )
                 if use_se:
                     x = se_block(x, reduction=se_reduction, name=f"stage{si}_se{bi}")
 

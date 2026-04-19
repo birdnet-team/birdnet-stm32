@@ -256,9 +256,7 @@ def print_ascii_det_curve(far: np.ndarray, frr: np.ndarray, bins: int = 10, widt
         print(f"FRR {lo:4.2f}-{hi:4.2f} | {bar} (FAR={min_far:4.3f})")
 
 
-def save_det_curve_plot(
-    far: np.ndarray, frr: np.ndarray, out_path: str
-) -> None:
+def save_det_curve_plot(far: np.ndarray, frr: np.ndarray, out_path: str) -> None:
     """Save a matplotlib DET curve plot.
 
     Requires matplotlib. Silently skips if not available.
@@ -270,6 +268,7 @@ def save_det_curve_plot(
     """
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
@@ -323,8 +322,10 @@ def save_html_report(
         import io
 
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+
         has_mpl = True
     except ImportError:
         pass
@@ -365,8 +366,7 @@ def save_html_report(
     # Species AP table
     if species_data:
         html_parts.append("<h2>Per-Species Average Precision</h2>")
-        html_parts.append("<table><tr><th>Species</th><th>AP</th>"
-                         "<th>95% CI</th><th>N pos</th><th>N total</th></tr>")
+        html_parts.append("<table><tr><th>Species</th><th>AP</th><th>95% CI</th><th>N pos</th><th>N total</th></tr>")
         for row in sorted(species_data, key=lambda r: r["ap"], reverse=True):
             html_parts.append(
                 f"<tr><td>{row['class']}</td><td class='metric-val'>{row['ap']:.4f}</td>"
@@ -384,9 +384,15 @@ def save_html_report(
         fig, ax = plt.subplots(figsize=(max(6, len(classes) * 0.5), max(5, len(classes) * 0.4)))
         im = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
         ax.figure.colorbar(im, ax=ax)
-        ax.set(xticks=np.arange(len(classes)), yticks=np.arange(len(classes)),
-               xticklabels=classes, yticklabels=classes,
-               ylabel="True", xlabel="Predicted", title="Confusion Matrix")
+        ax.set(
+            xticks=np.arange(len(classes)),
+            yticks=np.arange(len(classes)),
+            xticklabels=classes,
+            yticklabels=classes,
+            ylabel="True",
+            xlabel="Predicted",
+            title="Confusion Matrix",
+        )
         plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
         fig.tight_layout()
 
@@ -395,8 +401,9 @@ def save_html_report(
         plt.close(fig)
         buf.seek(0)
         img_b64 = base64.b64encode(buf.read()).decode("ascii")
-        html_parts.append(f"<h2>Confusion Matrix</h2><div class='chart'>"
-                         f"<img src='data:image/png;base64,{img_b64}'></div>")
+        html_parts.append(
+            f"<h2>Confusion Matrix</h2><div class='chart'><img src='data:image/png;base64,{img_b64}'></div>"
+        )
 
     html_parts.append("</body></html>")
 

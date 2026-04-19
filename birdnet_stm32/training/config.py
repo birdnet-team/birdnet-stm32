@@ -84,13 +84,9 @@ class ModelConfig:
         if self.chunk_duration <= 0:
             raise ValueError(f"chunk_duration must be positive, got {self.chunk_duration}")
         if self.audio_frontend not in self._VALID_FRONTENDS:
-            raise ValueError(
-                f"audio_frontend '{self.audio_frontend}' not in {sorted(self._VALID_FRONTENDS)}"
-            )
+            raise ValueError(f"audio_frontend '{self.audio_frontend}' not in {sorted(self._VALID_FRONTENDS)}")
         if self.mag_scale not in self._VALID_MAG_SCALES:
-            raise ValueError(
-                f"mag_scale '{self.mag_scale}' not in {sorted(self._VALID_MAG_SCALES)}"
-            )
+            raise ValueError(f"mag_scale '{self.mag_scale}' not in {sorted(self._VALID_MAG_SCALES)}")
         if self.alpha <= 0:
             raise ValueError(f"alpha must be positive, got {self.alpha}")
         if self.depth_multiplier < 1:
@@ -100,9 +96,7 @@ class ModelConfig:
         if self.num_classes < 0:
             raise ValueError(f"num_classes must be >= 0, got {self.num_classes}")
         if self.class_names and len(self.class_names) != self.num_classes:
-            raise ValueError(
-                f"class_names length ({len(self.class_names)}) != num_classes ({self.num_classes})"
-            )
+            raise ValueError(f"class_names length ({len(self.class_names)}) != num_classes ({self.num_classes})")
 
     # -- Serialization -------------------------------------------------------
 

@@ -11,40 +11,44 @@ from dataclasses import dataclass
 import tensorflow as tf
 
 # Operations known to be supported by the STM32N6 NPU
-N6_SUPPORTED_OPS = frozenset({
-    "Conv2D",
-    "DepthwiseConv2D",
-    "Dense",
-    "BatchNormalization",
-    "ReLU",
-    "Add",
-    "Multiply",
-    "GlobalAveragePooling2D",
-    "AveragePooling2D",
-    "MaxPooling2D",
-    "Reshape",
-    "Flatten",
-    "Concatenate",
-    "ZeroPadding2D",
-    "Dropout",
-    "SpatialDropout2D",
-    "Activation",
-    "Softmax",
-    "Sigmoid",
-    "InputLayer",
-})
+N6_SUPPORTED_OPS = frozenset(
+    {
+        "Conv2D",
+        "DepthwiseConv2D",
+        "Dense",
+        "BatchNormalization",
+        "ReLU",
+        "Add",
+        "Multiply",
+        "GlobalAveragePooling2D",
+        "AveragePooling2D",
+        "MaxPooling2D",
+        "Reshape",
+        "Flatten",
+        "Concatenate",
+        "ZeroPadding2D",
+        "Dropout",
+        "SpatialDropout2D",
+        "Activation",
+        "Softmax",
+        "Sigmoid",
+        "InputLayer",
+    }
+)
 
 # Layer types that are unsupported or need manual verification
-N6_WARN_OPS = frozenset({
-    "Lambda",
-    "LSTM",
-    "GRU",
-    "SimpleRNN",
-    "Bidirectional",
-    "MultiHeadAttention",
-    "LayerNormalization",
-    "GroupNormalization",
-})
+N6_WARN_OPS = frozenset(
+    {
+        "Lambda",
+        "LSTM",
+        "GRU",
+        "SimpleRNN",
+        "Bidirectional",
+        "MultiHeadAttention",
+        "LayerNormalization",
+        "GroupNormalization",
+    }
+)
 
 
 @dataclass
@@ -159,15 +163,17 @@ def profile_model(model: tf.keras.Model) -> list[LayerProfile]:
         macs = _estimate_macs(layer)
         act_bytes = _activation_bytes(layer)
 
-        profiles.append(LayerProfile(
-            name=layer.name,
-            layer_type=ltype,
-            output_shape=out_shape,
-            params=params,
-            macs=macs,
-            activation_bytes=act_bytes,
-            n6_supported=n6_ok,
-        ))
+        profiles.append(
+            LayerProfile(
+                name=layer.name,
+                layer_type=ltype,
+                output_shape=out_shape,
+                params=params,
+                macs=macs,
+                activation_bytes=act_bytes,
+                n6_supported=n6_ok,
+            )
+        )
     return profiles
 
 

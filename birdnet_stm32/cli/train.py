@@ -62,9 +62,13 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--label_smoothing", type=float, default=0.0, help="Label smoothing factor (0 = off)")
     parser.add_argument("--use_se", action="store_true", default=False, help="Add SE channel attention to each block")
     parser.add_argument("--se_reduction", type=int, default=4, help="SE channel reduction factor")
-    parser.add_argument("--use_inverted_residual", action="store_true", default=False, help="Use inverted residual blocks")
+    parser.add_argument(
+        "--use_inverted_residual", action="store_true", default=False, help="Use inverted residual blocks"
+    )
     parser.add_argument("--expansion_factor", type=int, default=6, help="Expansion factor for inverted residuals")
-    parser.add_argument("--use_attention_pooling", action="store_true", default=False, help="Use attention pooling instead of GAP")
+    parser.add_argument(
+        "--use_attention_pooling", action="store_true", default=False, help="Use attention pooling instead of GAP"
+    )
     parser.add_argument("--spec_augment", action="store_true", default=False, help="Enable SpecAugment")
     parser.add_argument("--freq_mask_max", type=int, default=8, help="Max frequency mask width (bins)")
     parser.add_argument("--time_mask_max", type=int, default=25, help="Max time mask width (frames)")
@@ -76,13 +80,22 @@ def get_args() -> argparse.Namespace:
         choices=["none", "balanced"],
         help="Class weighting strategy ('none' or 'balanced' inverse-frequency)",
     )
-    parser.add_argument("--mixed_precision", action="store_true", default=False, help="Enable FP16 mixed precision training")
+    parser.add_argument(
+        "--mixed_precision", action="store_true", default=False, help="Enable FP16 mixed precision training"
+    )
     parser.add_argument("--resume", action="store_true", default=False, help="Resume training from checkpoint")
     parser.add_argument("--deterministic", action="store_true", default=False, help="Enable deterministic mode")
     parser.add_argument("--seed", type=int, default=42, help="Random seed (used with --deterministic)")
-    parser.add_argument("--tune", action="store_true", default=False, help="Run Optuna hyperparameter search instead of single training")
+    parser.add_argument(
+        "--tune", action="store_true", default=False, help="Run Optuna hyperparameter search instead of single training"
+    )
     parser.add_argument("--n_trials", type=int, default=20, help="Number of Optuna trials (used with --tune)")
-    parser.add_argument("--qat", action="store_true", default=False, help="Quantization-aware fine-tuning (requires pretrained --checkpoint_path)")
+    parser.add_argument(
+        "--qat",
+        action="store_true",
+        default=False,
+        help="Quantization-aware fine-tuning (requires pretrained --checkpoint_path)",
+    )
     return parser.parse_args()
 
 
@@ -260,10 +273,10 @@ def main():
         if label_counts:
             total = sum(label_counts.values())
             n_classes = len(classes)
-            class_weights = {
-                i: total / (n_classes * label_counts.get(i, 1)) for i in range(n_classes)
-            }
-            print(f"Balanced class weights: min={min(class_weights.values()):.2f}, max={max(class_weights.values()):.2f}")
+            class_weights = {i: total / (n_classes * label_counts.get(i, 1)) for i in range(n_classes)}
+            print(
+                f"Balanced class weights: min={min(class_weights.values()):.2f}, max={max(class_weights.values()):.2f}"
+            )
 
     # Train
     print("Starting training...")

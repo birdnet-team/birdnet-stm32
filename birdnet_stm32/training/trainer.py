@@ -35,9 +35,7 @@ def _build_optimizer(
     if name == "sgd":
         return tf.keras.optimizers.SGD(learning_rate=learning_rate, momentum=0.9, **clip_kw)
     if name == "adamw":
-        return tf.keras.optimizers.AdamW(
-            learning_rate=learning_rate, weight_decay=weight_decay, **clip_kw
-        )
+        return tf.keras.optimizers.AdamW(learning_rate=learning_rate, weight_decay=weight_decay, **clip_kw)
     raise ValueError(f"Invalid optimizer: '{name}'. Valid options: {VALID_OPTIMIZERS}")
 
 

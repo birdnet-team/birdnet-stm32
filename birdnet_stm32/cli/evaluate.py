@@ -42,25 +42,31 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         "--optimize_thresholds", action="store_true", default=False, help="Find per-class optimal F1 thresholds"
     )
+    parser.add_argument("--benchmark", type=str, default="", help="Save structured JSON benchmark report to this path")
     parser.add_argument(
-        "--benchmark", type=str, default="", help="Save structured JSON benchmark report to this path"
-    )
-    parser.add_argument(
-        "--benchmark_latency", action="store_true", default=False,
+        "--benchmark_latency",
+        action="store_true",
+        default=False,
         help="Measure per-chunk inference latency (mean, median, p95, p99)",
     )
     parser.add_argument(
-        "--species_report", type=str, default="",
+        "--species_report",
+        type=str,
+        default="",
         help="Save per-species AP report with 95%% bootstrap CI to this CSV path",
     )
     parser.add_argument(
-        "--n_bootstrap", type=int, default=1000,
+        "--n_bootstrap",
+        type=int,
+        default=1000,
         help="Number of bootstrap resamples for species AP confidence intervals (default: 1000)",
     )
     parser.add_argument("--det_curve", action="store_true", default=False, help="Print ASCII DET curve")
     parser.add_argument("--save_det_plot", type=str, default="", help="Save DET curve plot to file")
     parser.add_argument(
-        "--report_html", type=str, default="",
+        "--report_html",
+        type=str,
+        default="",
         help="Generate a self-contained HTML evaluation report",
     )
     return parser.parse_args()
@@ -147,9 +153,7 @@ def main():
     # Species AP report with bootstrap CI
     species_data = None
     if args.species_report or args.benchmark or args.report_html:
-        species_data = bootstrap_ap_ci(
-            y_true, y_scores, classes, n_bootstrap=args.n_bootstrap
-        )
+        species_data = bootstrap_ap_ci(y_true, y_scores, classes, n_bootstrap=args.n_bootstrap)
         if args.species_report:
             save_species_report_csv(species_data, args.species_report)
 
@@ -174,15 +178,25 @@ def main():
     # Benchmark JSON
     if args.benchmark:
         save_benchmark_json(
-            metrics, classes, args.model_path, args.benchmark,
-            species_data=species_data, config=cfg,
+            metrics,
+            classes,
+            args.model_path,
+            args.benchmark,
+            species_data=species_data,
+            config=cfg,
         )
 
     # HTML report
     if args.report_html:
         save_html_report(
-            metrics, classes, y_true, y_scores, args.model_path,
-            args.report_html, species_data=species_data, per_file=per_file,
+            metrics,
+            classes,
+            y_true,
+            y_scores,
+            args.model_path,
+            args.report_html,
+            species_data=species_data,
+            per_file=per_file,
         )
 
 

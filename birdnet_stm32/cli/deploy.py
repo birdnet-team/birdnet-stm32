@@ -17,9 +17,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--n6_loader_config", type=str, default="", help="Path to n6_loader JSON config")
     parser.add_argument("--cubeide_path", type=str, default="", help="Path to STM32CubeIDE")
     parser.add_argument("--arm_toolchain_path", type=str, default="", help="Path to arm-none-eabi toolchain")
-    parser.add_argument(
-        "--config", type=str, default="config.json", help="Path to config file (JSON or TOML)"
-    )
+    parser.add_argument("--config", type=str, default="config.json", help="Path to config file (JSON or TOML)")
     return parser.parse_args()
 
 

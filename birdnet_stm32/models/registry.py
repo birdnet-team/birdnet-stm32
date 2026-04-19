@@ -93,38 +93,48 @@ def is_n6_compatible(name: str) -> bool:
 
 
 # Built-in frontend registrations
-register_frontend(FrontendInfo(
-    name="librosa",
-    mode="precomputed",
-    precomputed=True,
-    n6_compatible=True,
-    description="Host-side mel spectrogram (librosa). Pass-through in model.",
-))
-register_frontend(FrontendInfo(
-    name="hybrid",
-    mode="hybrid",
-    precomputed=False,
-    n6_compatible=True,
-    description="Offline STFT + in-model 1x1 Conv2D mel mixer.",
-))
-register_frontend(FrontendInfo(
-    name="raw",
-    mode="raw",
-    precomputed=False,
-    n6_compatible=True,
-    description="Raw waveform -> learned Conv2D filterbank (requires T < 65536).",
-))
-register_frontend(FrontendInfo(
-    name="mfcc",
-    mode="precomputed",
-    precomputed=True,
-    n6_compatible=True,
-    description="Host-side MFCC (mel -> DCT -> truncate). Pass-through in model.",
-))
-register_frontend(FrontendInfo(
-    name="log_mel",
-    mode="precomputed",
-    precomputed=True,
-    n6_compatible=True,
-    description="Host-side log-mel spectrogram (log1p). Quantization-friendly.",
-))
+register_frontend(
+    FrontendInfo(
+        name="librosa",
+        mode="precomputed",
+        precomputed=True,
+        n6_compatible=True,
+        description="Host-side mel spectrogram (librosa). Pass-through in model.",
+    )
+)
+register_frontend(
+    FrontendInfo(
+        name="hybrid",
+        mode="hybrid",
+        precomputed=False,
+        n6_compatible=True,
+        description="Offline STFT + in-model 1x1 Conv2D mel mixer.",
+    )
+)
+register_frontend(
+    FrontendInfo(
+        name="raw",
+        mode="raw",
+        precomputed=False,
+        n6_compatible=True,
+        description="Raw waveform -> learned Conv2D filterbank (requires T < 65536).",
+    )
+)
+register_frontend(
+    FrontendInfo(
+        name="mfcc",
+        mode="precomputed",
+        precomputed=True,
+        n6_compatible=True,
+        description="Host-side MFCC (mel -> DCT -> truncate). Pass-through in model.",
+    )
+)
+register_frontend(
+    FrontendInfo(
+        name="log_mel",
+        mode="precomputed",
+        precomputed=True,
+        n6_compatible=True,
+        description="Host-side log-mel spectrogram (log1p). Quantization-friendly.",
+    )
+)

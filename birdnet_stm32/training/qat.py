@@ -191,9 +191,7 @@ def run_qat(args) -> None:
 
     # --- Load pretrained model -----------------------------------------------
     if not os.path.isfile(args.checkpoint_path):
-        raise FileNotFoundError(
-            f"QAT requires a pretrained model. Not found: {args.checkpoint_path}"
-        )
+        raise FileNotFoundError(f"QAT requires a pretrained model. Not found: {args.checkpoint_path}")
 
     print(f"[QAT] Loading pretrained model from {args.checkpoint_path}")
     model = tf.keras.models.load_model(
@@ -294,5 +292,4 @@ def run_qat(args) -> None:
     )
 
     print(f"[QAT] Fine-tuned model saved to {qat_path}")
-    print(f"[QAT] Convert with: python -m birdnet_stm32 convert "
-          f"--checkpoint_path {qat_path} --model_config {cfg_path}")
+    print(f"[QAT] Convert with: python -m birdnet_stm32 convert --checkpoint_path {qat_path} --model_config {cfg_path}")

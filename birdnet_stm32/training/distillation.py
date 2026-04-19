@@ -34,9 +34,7 @@ class DistillationLoss(tf.keras.losses.Loss):
         super().__init__(name=name, **kwargs)
         self.alpha = alpha
         self.temperature = temperature
-        self.student_loss = student_loss or tf.keras.losses.CategoricalCrossentropy(
-            from_logits=False
-        )
+        self.student_loss = student_loss or tf.keras.losses.CategoricalCrossentropy(from_logits=False)
 
     def call(self, y_true, y_pred):
         """Compute combined distillation loss.
@@ -69,8 +67,10 @@ class DistillationLoss(tf.keras.losses.Loss):
     def get_config(self):
         """Return serializable config."""
         config = super().get_config()
-        config.update({
-            "alpha": self.alpha,
-            "temperature": self.temperature,
-        })
+        config.update(
+            {
+                "alpha": self.alpha,
+                "temperature": self.temperature,
+            }
+        )
         return config

@@ -56,9 +56,14 @@ class TestFrontendRegistry:
     def test_duplicate_registration_raises(self):
         """Registering a frontend twice should raise ValueError."""
         with pytest.raises(ValueError, match="already registered"):
-            register_frontend(FrontendInfo(
-                name="librosa", mode="precomputed", precomputed=True, n6_compatible=True,
-            ))
+            register_frontend(
+                FrontendInfo(
+                    name="librosa",
+                    mode="precomputed",
+                    precomputed=True,
+                    n6_compatible=True,
+                )
+            )
 
 
 class TestNormalizeFrontendName:

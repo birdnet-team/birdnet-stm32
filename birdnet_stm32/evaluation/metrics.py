@@ -266,11 +266,16 @@ def bootstrap_ap_ci(
             ap = float("nan")
 
         if n_pos == 0 or n_pos == n_samples:
-            results.append({
-                "class": cls_name, "ap": ap,
-                "ci_lower": ap, "ci_upper": ap,
-                "n_positive": n_pos, "n_total": n_samples,
-            })
+            results.append(
+                {
+                    "class": cls_name,
+                    "ap": ap,
+                    "ci_lower": ap,
+                    "ci_upper": ap,
+                    "n_positive": n_pos,
+                    "n_total": n_samples,
+                }
+            )
             continue
 
         # Bootstrap
@@ -292,11 +297,16 @@ def bootstrap_ap_ci(
         else:
             ci_lower = ci_upper = ap
 
-        results.append({
-            "class": cls_name, "ap": ap,
-            "ci_lower": ci_lower, "ci_upper": ci_upper,
-            "n_positive": n_pos, "n_total": n_samples,
-        })
+        results.append(
+            {
+                "class": cls_name,
+                "ap": ap,
+                "ci_lower": ci_lower,
+                "ci_upper": ci_upper,
+                "n_positive": n_pos,
+                "n_total": n_samples,
+            }
+        )
 
     return results
 

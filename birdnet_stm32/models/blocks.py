@@ -86,16 +86,24 @@ def inverted_residual_block(
 
     # Expand
     y = layers.Conv2D(
-        hidden_ch, (1, 1), padding="same", use_bias=False,
-        kernel_regularizer=reg, name=f"{name}_expand",
+        hidden_ch,
+        (1, 1),
+        padding="same",
+        use_bias=False,
+        kernel_regularizer=reg,
+        name=f"{name}_expand",
     )(x)
     y = layers.BatchNormalization(name=f"{name}_expand_bn")(y)
     y = layers.ReLU(max_value=6, name=f"{name}_expand_relu")(y)
 
     # Depthwise
     y = layers.DepthwiseConv2D(
-        (3, 3), strides=(stride_f, stride_t), padding="same", use_bias=False,
-        depthwise_regularizer=reg, name=f"{name}_dw",
+        (3, 3),
+        strides=(stride_f, stride_t),
+        padding="same",
+        use_bias=False,
+        depthwise_regularizer=reg,
+        name=f"{name}_dw",
     )(y)
     y = layers.BatchNormalization(name=f"{name}_dw_bn")(y)
     y = layers.ReLU(max_value=6, name=f"{name}_dw_relu")(y)
@@ -106,8 +114,12 @@ def inverted_residual_block(
 
     # Project (no activation — linear bottleneck)
     y = layers.Conv2D(
-        out_ch, (1, 1), padding="same", use_bias=False,
-        kernel_regularizer=reg, name=f"{name}_project",
+        out_ch,
+        (1, 1),
+        padding="same",
+        use_bias=False,
+        kernel_regularizer=reg,
+        name=f"{name}_project",
     )(y)
     y = layers.BatchNormalization(name=f"{name}_project_bn")(y)
 

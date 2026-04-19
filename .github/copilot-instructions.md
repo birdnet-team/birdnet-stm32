@@ -47,6 +47,7 @@ python -m birdnet_stm32 train --data_path_train data/train --tune --n_trials 20 
 - **Documentation**: Document often — add docstrings to public functions, update docs when behavior changes.
 - **Commits**: One semantic unit per commit. One-line commit messages (imperative mood, e.g., "Add lme pooling to evaluation pipeline").
 - **Linting**: Always run `ruff check .` (and fix any errors) before committing. Zero warnings policy — all code must pass `ruff check` cleanly.
+- **Formatting**: Always run `ruff format birdnet_stm32/ tests/` before committing. CI runs `ruff format --check` and rejects unformatted code.
 
 ## Conventions
 

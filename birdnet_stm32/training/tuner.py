@@ -223,9 +223,7 @@ def run_tuning(args: argparse.Namespace) -> None:
     # Save best params as JSON
     import json
 
-    results_path = os.path.join(
-        os.path.dirname(args.checkpoint_path), "optuna_best_params.json"
-    )
+    results_path = os.path.join(os.path.dirname(args.checkpoint_path), "optuna_best_params.json")
     best_data = {
         "best_value": study.best_value,
         "best_trial": study.best_trial.number,
