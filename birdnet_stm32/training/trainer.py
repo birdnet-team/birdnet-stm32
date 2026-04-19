@@ -59,6 +59,7 @@ def train_model(
     gradient_clip_norm: float = 0.0,
     class_weights: dict[int, float] | None = None,
     resume: bool = False,
+    extra_callbacks: list[tf.keras.callbacks.Callback] | None = None,
 ) -> tf.keras.callbacks.History:
     """Train a model with cosine LR schedule, early stopping, and checkpointing.
 
@@ -82,6 +83,7 @@ def train_model(
         gradient_clip_norm: Max gradient norm for clipping (0 = disabled).
         class_weights: Optional class index → weight mapping for imbalanced data.
         resume: If True, load optimizer state from a previous run and continue.
+        extra_callbacks: Additional Keras callbacks (e.g. QAT callback).
 
     Returns:
         Keras training history.
@@ -171,6 +173,8 @@ def train_model(
         _SaveTrainState(),
         _CSVHistoryLogger(csv_path),
     ]
+    if extra_callbacks:
+        callbacks.extend(extra_callbacks)
     history = model.fit(
         train_dataset,
         validation_data=val_dataset,

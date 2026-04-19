@@ -123,6 +123,36 @@ python -m birdnet_stm32 train --epochs 30 --checkpoint_path ckpt/model.keras ...
 python -m birdnet_stm32 train --epochs 50 --resume --checkpoint_path ckpt/model.keras ...
 ```
 
+### Quantization-Aware Training (QAT)
+
+Use `--qat` to fine-tune a pretrained model with simulated INT8 quantization
+noise. This closes the accuracy gap between the float Keras model and the
+quantized TFLite model by teaching the weights to survive quantization.
+
+QAT works by injecting fake-quantization noise into kernel weights during
+training while maintaining full-precision shadow copies. BatchNorm layers are
+frozen to prevent running statistics drift. No FakeQuant ops remain in the
+saved model, so the N6 NPU runs it without issues.
+
+```bash
+# Step 1: Normal training
+python -m birdnet_stm32 train --data_path_train data/train \
+  --epochs 50 --checkpoint_path checkpoints/model.keras
+
+# Step 2: QAT fine-tuning (lower LR, fewer epochs)
+python -m birdnet_stm32 train --data_path_train data/train --qat \
+  --checkpoint_path checkpoints/model.keras \
+  --epochs 10 --learning_rate 0.0001
+
+# Step 3: Convert the QAT model
+python -m birdnet_stm32 convert \
+  --checkpoint_path checkpoints/model_qat.keras \
+  --model_config checkpoints/model_model_config.json \
+  --data_path_train data/train
+```
+
+The QAT model is saved as `{name}_qat.keras` alongside the original.
+
 ### Learning rate
 
 Cosine decay schedule from `--learning_rate` (default 0.001) to near-zero
@@ -176,6 +206,9 @@ of 10 epochs.
 | `--learning_rate` | 0.001 | Initial learning rate |
 | `--val_split` | 0.2 | Validation split fraction |
 | `--checkpoint_path` | *(required)* | Output path (.keras) |
+| `--tune` | False | Run Optuna hyperparameter search |
+| `--n_trials` | 20 | Number of Optuna trials |
+| `--qat` | False | Quantization-aware fine-tuning |
 
 ## Noise classes
 

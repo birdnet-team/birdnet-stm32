@@ -37,6 +37,7 @@ python -m birdnet_stm32 train --data_path_train data/train --tune --n_trials 20 
 - **Model registry** (`birdnet_stm32/models/__init__.py`): `build_model(name, **kwargs)` dispatcher. Currently registers `dscnn`.
 - **Model profiler** (`birdnet_stm32/models/profiler.py`): Per-layer MACs, params, activation memory, N6 compatibility check.
 - **Quantization**: Post-training quantization (PTQ) with representative dataset calibration (stratified sampling + SNR filtering). Float32 I/O, INT8 internals. Per-channel (default) or per-tensor (`--per_tensor`). Dynamic range mode (`--quantization dynamic`). Batch validation (`--batch_validate N`). ONNX export (`--export_onnx`). JSON conversion report (`--report_json`).
+- **QAT**: Quantization-aware training via shadow-weight fake-quantization (`--qat`). Freezes BN, injects INT8 noise into kernels during fine-tuning. No FakeQuant ops in saved model — N6 compatible. Implemented in `birdnet_stm32/training/qat.py`.
 - **Training pipeline**: Cosine LR decay, early stopping, resume (`--resume`), gradient clipping (`--grad_clip`), mixed precision (`--mixed_precision`), balanced class weights (`--class_weights balanced`), LR finder utility (`birdnet_stm32/training/lr_finder.py`), Optuna hyperparameter tuning (`--tune`, `birdnet_stm32/training/tuner.py`).
 - **Deployment**: `stedgeai generate` → `n6_loader.py` (serial flash) → `stedgeai validate` (on-device).
 

@@ -83,6 +83,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42, help="Random seed (used with --deterministic)")
     parser.add_argument("--tune", action="store_true", default=False, help="Run Optuna hyperparameter search instead of single training")
     parser.add_argument("--n_trials", type=int, default=20, help="Number of Optuna trials (used with --tune)")
+    parser.add_argument("--qat", action="store_true", default=False, help="Quantization-aware fine-tuning (requires pretrained --checkpoint_path)")
     return parser.parse_args()
 
 
@@ -118,6 +119,13 @@ def main():
         from birdnet_stm32.training.tuner import run_tuning
 
         run_tuning(args)
+        return
+
+    # Quantization-aware fine-tuning
+    if args.qat:
+        from birdnet_stm32.training.qat import run_qat
+
+        run_qat(args)
         return
 
     hop_length = compute_hop_length(args.sample_rate, args.chunk_duration, args.spec_width)
