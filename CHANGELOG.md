@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Quantization-Aware Training (QAT)** (`--qat`): shadow-weight fake-quantization fine-tuning for Keras 3. Freezes BatchNorm, injects INT8 noise into kernel weights during training, maintains FP32 shadow weights with STE-like gradient transfer. No FakeQuant ops in saved model — full N6 NPU compatibility. Improves quantized model accuracy (cmAP +1.5pp, ROC-AUC +0.8pp on 10-class test set).
+- `extra_callbacks` parameter for `train_model()` to support QAT and other custom callbacks.
+- **Species-level AP report** (`--species_report`): per-species average precision with bootstrap confidence intervals (`--n_bootstrap`).
+- **DET curve** (`--det_curve`, `--save_det_plot`): Detection Error Tradeoff curve (FAR vs FRR) — ASCII and matplotlib output.
+- **Benchmark mode** (`--benchmark`): structured JSON report with all metrics, per-species AP, latency stats, and model config.
+- **Latency measurement** (`--benchmark_latency`): per-chunk inference timing with mean/median/p95/p99 statistics.
+- **HTML evaluation report** (`--report_html`): self-contained HTML with inline CSS, summary metrics table, per-species AP table, and confusion matrix heatmap (base64 matplotlib).
+
+## [0.7.0] — 2026-04-19
+
+### Added
+
+- **Optuna hyperparameter tuning** (`--tune`, `--n_trials`): searches over alpha, depth_multiplier, embeddings_size, learning_rate, dropout, batch_size, mixup_alpha, label_smoothing, optimizer, weight_decay, grad_clip, use_se, use_inverted_residual, use_attention_pooling, se_reduction, expansion_factor. Maximizes val_roc_auc with MedianPruner.
+- **Per-channel / per-tensor quantization** (`--per_tensor`): per-channel (default, more accurate) or per-tensor (simpler, use if N6 rejects per-channel).
+- **Dynamic range quantization** (`--quantization dynamic`): INT8 weights with runtime float activations — no calibration data needed.
+- **Stratified representative dataset**: calibration sampling now draws equal samples per class with SNR filtering (near-silent chunks skipped).
+- **Batch validation** (`--batch_validate N`): run Keras-vs-TFLite validation N times with different seeds, report worst-case metrics.
+- **ONNX export** (`--export_onnx`): exports `.onnx` alongside `.tflite` (requires `tf2onnx`).
+- **Conversion report** (`--report_json`): structured JSON with validation metrics, compression ratio, model sizes, and config.
+- **Float32 I/O runtime assertion**: `convert_to_tflite()` now verifies the quantized model preserved float32 I/O after conversion.
+- **`pip install -e ".[all]"`**: meta extras group pulling in dev + docs + deploy + tune dependencies.
+- **ModelConfig dataclass** (`birdnet_stm32/training/config.py`): validated, JSON-serializable, backward-compatible.
+- **Resumable training** (`--resume`): reloads model + optimizer state from checkpoint.
+- **Gradient clipping** (`--grad_clip`): max gradient norm for optimizer.
+- **Mixed precision** (`--mixed_precision`): FP16 compute, FP32 accumulation.
+- **Balanced class weights** (`--class_weights balanced`): inverse-frequency weighting.
+- **LR finder** (`birdnet_stm32/training/lr_finder.py`): LR range test utility.
+- **Training dashboard**: CSV history (`_history.csv`) + training curves PNG (`_curves.png`).
+
+### Changed
+
+- Representative dataset generator now uses stratified class sampling instead of random shuffle.
+- Cosine similarity function handles near-zero vectors gracefully (both-zero = perfect match for noise/background class predictions).
+- Removed stale `setuptools-scm` build requirement from `pyproject.toml`.
+- Removed deprecated license classifier (PEP 639 compliance).
+
+## [0.6.0] — 2026-04-19
+
+### Added
+
+- **MFCC frontend** (`--audio_frontend mfcc`): mel spectrogram → power-to-dB → librosa DCT. Configurable via `--n_mfcc` (default 20).
+- **Log-mel frontend** (`--audio_frontend log_mel`): mel spectrogram → log1p → normalize. Lightweight alternative to librosa precompute.
+- **Squeeze-and-excite (SE) blocks** (`--use_se`): channel attention after each DS block. NPU-compatible (GAP + Dense + Sigmoid + Multiply).
+- **MobileNetV2-style inverted residual blocks** (`--use_inverted_residual`): expand → DW → project with configurable `--expansion_factor`.
+- **Attention pooling** (`--use_attention_pooling`): learned spatial attention replacing GlobalAveragePooling2D.
+- **Label smoothing** (`--label_smoothing`): applies to CategoricalCrossentropy (single-label) or BinaryCrossentropy (multilabel/mixup).
+- **Knowledge distillation** (`birdnet_stm32/training/distillation.py`): `DistillationLoss` combining hard labels with soft teacher logits (KL divergence, configurable temperature and alpha).
+- **Model registry** (`birdnet_stm32/models/__init__.py`): `build_model(name, **kwargs)`, `register_model()`, `list_models()` dispatcher pattern.
+- **Model profiler** (`birdnet_stm32/models/profiler.py`): per-layer MACs, params, activation memory. N6 NPU compatibility check with `N6_SUPPORTED_OPS` and `N6_WARN_OPS` sets.
+- **Frontend registry** (`birdnet_stm32/models/registry.py`): `FrontendInfo` dataclass with N6 compatibility metadata. `register_frontend()`, `get_frontend_info()`, `list_frontends()`.
+- **Species list utilities** (`birdnet_stm32/data/species.py`): `load_species_list()`, `save_species_list()`, `combine_species_lists()` extracted from dev scripts.
+- **Beta distribution mixup** (`use_beta=True` in `apply_mixup()`): sample mixing weights from Beta(α, α) instead of uniform.
+- Test suite for frontend registry and new spectrogram modes (`tests/test_frontend_registry.py`).
+
+### Changed
+
+- **Default sample rate**: 22050 → 24000 Hz across all CLI defaults, audio I/O, and data generators.
+- **Unified DS-CNN model**: SE, inverted residual, and attention pooling options are now flags on the single `build_dscnn_model()` function (removed separate `dscnn_se` module).
+- **`_make_divisible()` moved** from `dscnn.py` to `blocks.py` to avoid circular imports; `blocks.py` is now the canonical source for all building blocks.
+- Deploy config (`birdnet_stm32/deploy/config.py`) now supports TOML config files alongside JSON, with env vars `STEDGEAI_PATH`, `CUBEIDE_PATH`, `ARM_TOOLCHAIN_PATH`.
+- CLI deploy command accepts `--stedgeai_path`, `--model`, `--cubeide_path`, `--arm_toolchain_path`.
+- Top-level `train.py`, `test.py`, `convert.py` are now thin wrappers with deprecation warnings, delegating to the package CLI.
+
+### Fixed
+
+- Label smoothing with mixup: now correctly uses `BinaryCrossentropy(label_smoothing=...)` when mixup is active (sigmoid output), instead of `CategoricalCrossentropy`.
+- `pick_random_samples()` `pick_first` logic: when `pick_first=True` and `num_samples > 1`, first sample is always included plus random picks from remaining.
+- Model profiler handles Keras 3 layers that lack `output_shape` attribute (e.g., `InputLayer`).
+
+### Removed
+
+- `TERMS_OF_USE.txt` (redundant with `TERMS_OF_USE.md`).
+- `birdnet_stm32/models/dscnn_se.py` (merged into `dscnn.py`).
+- `notes.txt` (moved to `dev/notes.md`).
+
 ## [0.5.0] — 2026-04-17
 
 ### Added

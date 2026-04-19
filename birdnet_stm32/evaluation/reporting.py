@@ -1,5 +1,6 @@
-"""ASCII visualization and CSV export for evaluation results."""
+"""ASCII visualization, CSV/JSON export, and optional HTML report for evaluation results."""
 
+import json
 import os
 
 import numpy as np
@@ -167,3 +168,246 @@ def save_confusion_matrix_plot(
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     print(f"Confusion matrix plot saved to {out_path}")
+
+
+def save_species_report_csv(species_data: list[dict], out_path: str) -> None:
+    """Save per-species AP with confidence intervals to CSV.
+
+    Args:
+        species_data: Output of ``bootstrap_ap_ci()``.
+        out_path: Output CSV path.
+    """
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "w") as f:
+        f.write("class,ap,ci_lower,ci_upper,n_positive,n_total\n")
+        for row in sorted(species_data, key=lambda r: r["ap"], reverse=True):
+            f.write(
+                f"{row['class']},{row['ap']:.6f},"
+                f"{row['ci_lower']:.6f},{row['ci_upper']:.6f},"
+                f"{row['n_positive']},{row['n_total']}\n"
+            )
+    print(f"Species AP report saved to {out_path}")
+
+
+def save_benchmark_json(
+    metrics: dict,
+    classes: list[str],
+    model_path: str,
+    out_path: str,
+    species_data: list[dict] | None = None,
+    config: dict | None = None,
+) -> None:
+    """Save a structured JSON benchmark report.
+
+    Args:
+        metrics: Metrics dict from ``evaluate()``.
+        classes: Ordered class names.
+        model_path: Path to the evaluated model.
+        out_path: Output JSON path.
+        species_data: Optional per-species AP with CIs from ``bootstrap_ap_ci()``.
+        config: Optional model config dict.
+    """
+    report: dict = {
+        "model_path": model_path,
+        "num_classes": len(classes),
+        "num_files": metrics.get("total_chunks", 0),
+    }
+
+    # Core metrics (exclude internal arrays)
+    core = {}
+    for k, v in metrics.items():
+        if k == "ap_per_class":
+            continue
+        if isinstance(v, float):
+            core[k] = round(v, 6)
+        else:
+            core[k] = v
+    report["metrics"] = core
+
+    if species_data:
+        report["species"] = species_data
+
+    if config:
+        report["config"] = config
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump(report, f, indent=2, default=str)
+    print(f"Benchmark report saved to {out_path}")
+
+
+def print_ascii_det_curve(far: np.ndarray, frr: np.ndarray, bins: int = 10, width: int = 40) -> None:
+    """Print an ASCII DET curve (FAR vs FRR).
+
+    Args:
+        far: False acceptance rate array.
+        frr: False rejection rate array.
+        bins: Number of FRR bins.
+        width: Bar width in characters.
+    """
+    print("\nASCII DET Curve (FRR down, FAR right):")
+    bin_edges = np.linspace(0.0, 1.0, bins + 1)
+    for i in range(bins):
+        lo = bin_edges[i]
+        hi = bin_edges[i + 1]
+        mask = (frr >= lo) & (frr < hi)
+        min_far = float(np.min(far[mask])) if np.any(mask) else 1.0
+        bar = "#" * int(width * min_far)
+        print(f"FRR {lo:4.2f}-{hi:4.2f} | {bar} (FAR={min_far:4.3f})")
+
+
+def save_det_curve_plot(far: np.ndarray, frr: np.ndarray, out_path: str) -> None:
+    """Save a matplotlib DET curve plot.
+
+    Requires matplotlib. Silently skips if not available.
+
+    Args:
+        far: False acceptance rate array.
+        frr: False rejection rate array.
+        out_path: Output image path.
+    """
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib not available; skipping DET curve plot.")
+        return
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.plot(far, frr, linewidth=1.5)
+    ax.set_xlabel("False Acceptance Rate (FAR)")
+    ax.set_ylabel("False Rejection Rate (FRR)")
+    ax.set_title("Detection Error Tradeoff (DET) Curve")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.grid(True, alpha=0.3)
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"DET curve saved to {out_path}")
+
+
+def save_html_report(
+    metrics: dict,
+    classes: list[str],
+    y_true: np.ndarray,
+    y_scores: np.ndarray,
+    model_path: str,
+    out_path: str,
+    species_data: list[dict] | None = None,
+    per_file: list[dict] | None = None,
+) -> None:
+    """Generate a self-contained HTML evaluation report.
+
+    Uses inline CSS and basic HTML tables — no external dependencies.
+    Optionally embeds matplotlib charts as base64 PNG if matplotlib is available.
+
+    Args:
+        metrics: Metrics dict from ``evaluate()``.
+        classes: Ordered class names.
+        y_true: Ground-truth labels ``(N, C)``.
+        y_scores: Predicted scores ``(N, C)``.
+        model_path: Path to the evaluated model.
+        out_path: Output HTML path.
+        species_data: Optional per-species AP with CIs.
+        per_file: Optional per-file predictions.
+    """
+    has_mpl = False
+    try:
+        import base64
+        import io
+
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        has_mpl = True
+    except ImportError:
+        pass
+
+    html_parts: list[str] = []
+    html_parts.append("<!DOCTYPE html><html><head><meta charset='utf-8'>")
+    html_parts.append("<title>Evaluation Report</title>")
+    html_parts.append("<style>")
+    html_parts.append("""
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+               max-width: 960px; margin: 2em auto; padding: 0 1em; color: #333; }
+        h1, h2, h3 { color: #1a1a2e; }
+        table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+        th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; }
+        th { background: #f5f5f5; }
+        tr:nth-child(even) { background: #fafafa; }
+        .metric-val { font-weight: bold; font-size: 1.1em; }
+        .chart { margin: 1em 0; text-align: center; }
+        .chart img { max-width: 100%; }
+    """)
+    html_parts.append("</style></head><body>")
+
+    # Header
+    html_parts.append("<h1>Evaluation Report</h1>")
+    html_parts.append(f"<p>Model: <code>{os.path.basename(model_path)}</code></p>")
+
+    # Metrics table
+    html_parts.append("<h2>Summary Metrics</h2><table><tr><th>Metric</th><th>Value</th></tr>")
+    for k, v in metrics.items():
+        if k == "ap_per_class":
+            continue
+        if isinstance(v, float):
+            html_parts.append(f"<tr><td>{k}</td><td class='metric-val'>{v:.4f}</td></tr>")
+        else:
+            html_parts.append(f"<tr><td>{k}</td><td>{v}</td></tr>")
+    html_parts.append("</table>")
+
+    # Species AP table
+    if species_data:
+        html_parts.append("<h2>Per-Species Average Precision</h2>")
+        html_parts.append("<table><tr><th>Species</th><th>AP</th><th>95% CI</th><th>N pos</th><th>N total</th></tr>")
+        for row in sorted(species_data, key=lambda r: r["ap"], reverse=True):
+            html_parts.append(
+                f"<tr><td>{row['class']}</td><td class='metric-val'>{row['ap']:.4f}</td>"
+                f"<td>[{row['ci_lower']:.4f}, {row['ci_upper']:.4f}]</td>"
+                f"<td>{row['n_positive']}</td><td>{row['n_total']}</td></tr>"
+            )
+        html_parts.append("</table>")
+
+    # Confusion matrix
+    if has_mpl:
+        true_idx = np.argmax(y_true, axis=1)
+        pred_idx = np.argmax(y_scores, axis=1)
+        cm = confusion_matrix(true_idx, pred_idx, labels=list(range(len(classes))))
+
+        fig, ax = plt.subplots(figsize=(max(6, len(classes) * 0.5), max(5, len(classes) * 0.4)))
+        im = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
+        ax.figure.colorbar(im, ax=ax)
+        ax.set(
+            xticks=np.arange(len(classes)),
+            yticks=np.arange(len(classes)),
+            xticklabels=classes,
+            yticklabels=classes,
+            ylabel="True",
+            xlabel="Predicted",
+            title="Confusion Matrix",
+        )
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+        fig.tight_layout()
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=100)
+        plt.close(fig)
+        buf.seek(0)
+        img_b64 = base64.b64encode(buf.read()).decode("ascii")
+        html_parts.append(
+            f"<h2>Confusion Matrix</h2><div class='chart'><img src='data:image/png;base64,{img_b64}'></div>"
+        )
+
+    html_parts.append("</body></html>")
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "w") as f:
+        f.write("\n".join(html_parts))
+    print(f"HTML report saved to {out_path}")

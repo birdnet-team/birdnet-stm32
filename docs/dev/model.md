@@ -3,11 +3,13 @@
 ## DS-CNN architecture
 
 The backbone is a depthwise-separable convolutional neural network (DS-CNN)
-with 4 stages, inspired by MobileNetV1.
+with 4 stages, inspired by MobileNetV1. All variants are built by the single
+`build_dscnn_model()` function in `birdnet_stm32/models/dscnn.py` and
+registered via the model registry (`build_model("dscnn", ...)`).
 
 ### Block structure
 
-Each depthwise-separable block:
+Each depthwise-separable block (default):
 
 ```mermaid
 flowchart TD
@@ -25,6 +27,18 @@ flowchart TD
 When `stride=1` and input/output channels match, a **residual skip connection**
 is added.
 
+#### Inverted residual blocks (`--use_inverted_residual`)
+
+When enabled, each DS block is replaced by an inverted residual block
+(MobileNetV2-style): expand → depthwise 3×3 → project, with ReLU6
+activations and a residual skip when stride=1 and channels match. Controlled
+by `--expansion_factor` (default 4).
+
+#### SE channel attention (`--use_se`)
+
+Adds a squeeze-and-excitation block after each DS or inverted residual block.
+The SE ratio is set via `--se_reduction` (default 4).
+
 ### Stage configuration
 
 | Stage | Output channels | Stride | Repeats |
@@ -35,15 +49,27 @@ is added.
 | 4 | 512 × alpha | 2 | 1 × depth_multiplier |
 
 All channel counts are rounded to the nearest multiple of 8 via
-`_make_divisible(channels, 8)`.
+`_make_divisible(channels, 8)` (defined in `birdnet_stm32/models/blocks.py`).
 
 ### Head
 
 After the final stage:
 
-1. **Global Average Pooling** over spatial dimensions
+1. **Global Average Pooling** (or **Attention Pooling** with `--use_attention_pooling`)
 2. **Dropout** (0.5)
 3. **Dense** with sigmoid activation → `[B, num_classes]`
+
+Attention pooling learns per-channel weights before averaging, giving the
+model a soft spatial attention mechanism while remaining NPU-compatible.
+
+## Building blocks
+
+All reusable building blocks live in `birdnet_stm32/models/blocks.py`:
+
+- `_make_divisible(v, divisor)` — round channel counts to multiples of `divisor`
+- `se_block(x, ratio)` — squeeze-and-excitation channel attention
+- `inverted_residual_block(x, filters, stride, expansion)` — MobileNetV2-style block
+- `AttentionPooling` — Keras Layer that learns per-channel spatial attention weights
 
 ## Scaling knobs
 
@@ -63,6 +89,14 @@ Scales channel counts across all stages. Default 1.0.
 Repeats each DS block within a stage. Default 1. Only the first block in each
 stage uses stride 2; subsequent blocks use stride 1 with residual connections.
 
+## Model profiler
+
+Use `birdnet_stm32/models/profiler.py` to analyze a model before deployment:
+
+- `profile_model(model)` — per-layer MACs, params, and activation memory
+- `check_n6_compatibility(model)` — flags layers using ops outside the N6 NPU
+  supported set
+
 ## N6 NPU constraints
 
 !!! danger "N6 compatibility is the absolute priority"
@@ -74,8 +108,8 @@ Key constraints:
 - **Channel alignment**: all channel counts must be multiples of 8 for NPU
   vectorization.
 - **Supported ops**: Conv2D, DepthwiseConv2D, BatchNormalization, ReLU6,
-  GlobalAveragePooling2D, Dense, Add (residuals). Verify exotic ops with
-  `stedgeai analyze`.
+  GlobalAveragePooling2D, Dense, Add, Multiply (SE), Reshape, Sigmoid.
+  Verify exotic ops with `stedgeai analyze`.
 - **Activation memory**: intermediate activations must fit in NPU SRAM. Large
   spatial dimensions or channel counts may exceed limits.
 - **No QAT artifacts**: quantization-aware training may leave fake-quant nodes

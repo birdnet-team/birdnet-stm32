@@ -7,10 +7,17 @@ checkpoints/*.npz
 checkpoints/*.tflite
 checkpoints/*_labels.txt
 checkpoints/*_model_config.json
+checkpoints/*_train_state.json
+checkpoints/*_curves.png
+checkpoints/*_history.csv
+checkpoints/optuna_trials/
+checkpoints/optuna_best_params.json
 notes.txt
 deploy.sh
 /dev/
 /report/
+data/train_25/
+data/test_25/
 
 # Machine-local config (ship .example files instead)
 config_n6l.json
@@ -147,3 +154,7 @@ venv.bak/
 firmware/build/
 firmware/network.c
 firmware/network.h
+
+# Legacy script backups
+*.py.bak
+checkpoints/*_conversion_report.json

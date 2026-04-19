@@ -34,10 +34,12 @@ pip install -e ".[dev]"
 This installs the `birdnet_stm32` package in editable mode with development
 dependencies (pytest, ruff, pre-commit).
 
-To also install documentation tools:
+Optional extras:
 
 ```bash
-pip install -e ".[dev,docs]"
+pip install -e ".[dev,docs]"   # + documentation tools (mkdocs)
+pip install -e ".[tune]"       # + Optuna for hyperparameter search
+pip install -e ".[all]"        # everything (dev + docs + deploy + tune)
 ```
 
 ## Quick workflow
@@ -58,7 +60,7 @@ the iNatSounds subset.
 ### 2. Train
 
 ```bash
-python train.py \
+python -m birdnet_stm32 train \
   --data_path_train data/train \
   --audio_frontend hybrid \
   --mag_scale pwl \
@@ -68,7 +70,7 @@ python train.py \
 ### 3. Convert
 
 ```bash
-python convert.py \
+python -m birdnet_stm32 convert \
   --checkpoint_path checkpoints/my_model.keras \
   --model_config checkpoints/my_model_model_config.json \
   --data_path_train data/train
@@ -77,7 +79,7 @@ python convert.py \
 ### 4. Evaluate
 
 ```bash
-python test.py \
+python -m birdnet_stm32 evaluate \
   --model_path checkpoints/my_model_quantized.tflite \
   --model_config checkpoints/my_model_model_config.json \
   --data_path_test data/test \

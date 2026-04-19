@@ -1,6 +1,6 @@
 """Data augmentation for audio and spectrograms.
 
-Implements mixup and SpecAugment (frequency/time masking) augmentation.
+Implements mixup (uniform or Beta distribution) and SpecAugment (frequency/time masking).
 """
 
 import numpy as np
@@ -11,6 +11,8 @@ def apply_mixup(
     batch_labels: np.ndarray,
     alpha: float = 0.2,
     probability: float = 0.25,
+    use_beta: bool = False,
+    label_smoothing: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Apply mixup augmentation to a batch of samples and labels.
 
@@ -21,8 +23,13 @@ def apply_mixup(
     Args:
         batch_samples: Input batch [B, ...].
         batch_labels: One-hot labels [B, C].
-        alpha: Mixup strength (uniform [alpha, 1 - alpha]). 0 disables.
+        alpha: Mixup strength. For uniform: range [alpha, 1 - alpha].
+            For Beta: concentration parameter (Beta(alpha, alpha)).
         probability: Fraction of the batch to apply mixup to.
+        use_beta: If True, sample lambda from Beta(alpha, alpha) instead of
+            uniform. Beta distribution provides more diversity in mixing ratios.
+        label_smoothing: If > 0, smooth labels after mixup by
+            ``(1 - eps) * label + eps / C`` where ``eps = label_smoothing``.
 
     Returns:
         Tuple of (mixed_samples, mixed_labels) with same shapes as inputs.
@@ -37,7 +44,11 @@ def apply_mixup(
     mix_indices = np.random.choice(batch_samples.shape[0], size=num_mix, replace=False)
     permuted_indices = np.random.permutation(batch_samples.shape[0])
 
-    lam = np.random.uniform(alpha, 1 - alpha, size=(num_mix,))
+    if use_beta:
+        lam = np.random.beta(alpha, alpha, size=(num_mix,)).astype(np.float32)
+    else:
+        lam = np.random.uniform(alpha, 1 - alpha, size=(num_mix,)).astype(np.float32)
+
     lam_inp = lam.reshape((num_mix,) + (1,) * (batch_samples.ndim - 1))
 
     # Audio: weighted mix
@@ -46,6 +57,12 @@ def apply_mixup(
     )
     # Labels: element-wise OR (multi-label union)
     batch_labels[mix_indices] = np.maximum(batch_labels[mix_indices], batch_labels[permuted_indices[mix_indices]])
+
+    # Optional label smoothing
+    if label_smoothing > 0 and batch_labels.shape[-1] > 1:
+        C = batch_labels.shape[-1]
+        batch_labels = (1.0 - label_smoothing) * batch_labels + label_smoothing / C
+
     return batch_samples, batch_labels
 
 

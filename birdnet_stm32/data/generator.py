@@ -4,6 +4,8 @@ Provides a Python generator that yields (inputs, one_hot_labels) batches,
 and a tf.data.Dataset wrapper with static shape signatures.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 import tensorflow as tf
 
@@ -13,13 +15,16 @@ from birdnet_stm32.audio.io import load_audio_file
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
 from birdnet_stm32.models.frontend import normalize_frontend_name
 
+# Thread pool for parallel audio I/O within batches
+_io_pool = ThreadPoolExecutor(max_workers=4)
+
 
 def data_generator(
     file_paths: list[str],
     classes: list[str],
     batch_size: int = 32,
     audio_frontend: str = "librosa",
-    sample_rate: int = 22050,
+    sample_rate: int = 24000,
     max_duration: int = 30,
     chunk_duration: float = 3,
     spec_width: int = 128,
@@ -33,6 +38,7 @@ def data_generator(
     spec_augment: bool = False,
     freq_mask_max: int = 8,
     time_mask_max: int = 25,
+    n_mfcc: int = 20,
 ):
     """Yield batches of (inputs, one_hot_labels) for training/validation.
 
@@ -66,63 +72,94 @@ def data_generator(
     """
     audio_frontend = normalize_frontend_name(audio_frontend)
     T = int(sample_rate * chunk_duration)
+
+    def _load_one(path):
+        """Load and preprocess one audio file. Returns (sample, label_str) or None."""
+        label_str = path.split("/")[-2]
+        audio_chunks = load_audio_file(path, sample_rate, max_duration, chunk_duration, random_offset=True)
+        if len(audio_chunks) == 0:
+            audio_chunks = [np.random.uniform(-1.0, 1.0, size=(T,)).astype(np.float32)]
+            label_str = "noise"
+
+        if audio_frontend in ("mfcc", "log_mel"):
+            specs = [
+                get_spectrogram_from_audio(
+                    chunk,
+                    sample_rate,
+                    n_fft=fft_length,
+                    mel_bins=mel_bins,
+                    spec_width=spec_width,
+                    mag_scale="none",
+                    mode=audio_frontend,
+                    n_mfcc=n_mfcc,
+                )
+                for chunk in audio_chunks
+            ]
+            pool = sort_by_activity(specs, threshold=snr_threshold) or specs
+            if len(pool) == 0:
+                return None
+            sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
+            sample = sample[0] if isinstance(sample, list) else sample
+
+        elif audio_frontend == "librosa":
+            specs = [
+                get_spectrogram_from_audio(
+                    chunk,
+                    sample_rate,
+                    n_fft=fft_length,
+                    mel_bins=mel_bins,
+                    spec_width=spec_width,
+                    mag_scale=mag_scale,
+                )
+                for chunk in audio_chunks
+            ]
+            pool = sort_by_activity(specs, threshold=snr_threshold) or specs
+            if len(pool) == 0:
+                return None
+            sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
+            sample = sample[0] if isinstance(sample, list) else sample
+
+        elif audio_frontend == "hybrid":
+            specs = [
+                get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=spec_width)
+                for chunk in audio_chunks
+            ]
+            pool = sort_by_activity(specs, threshold=snr_threshold) or specs
+            if len(pool) == 0:
+                return None
+            sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
+            sample = sample[0] if isinstance(sample, list) else sample
+
+        elif audio_frontend == "raw":
+            pool = sort_by_activity(audio_chunks, threshold=snr_threshold) or audio_chunks
+            if len(pool) == 0:
+                return None
+            sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
+            x = sample[0] if isinstance(sample, list) else sample
+            x = x[:T]
+            if x.shape[0] < T:
+                x = np.pad(x, (0, T - x.shape[0]))
+            x = x / (np.max(np.abs(x)) + 1e-6)
+            sample = x
+        else:
+            raise ValueError(f"Invalid audio frontend: {audio_frontend}")
+
+        return sample, label_str
+
     while True:
         idxs = np.random.permutation(len(file_paths))
         for batch_start in range(0, len(idxs), batch_size):
             batch_idxs = idxs[batch_start : batch_start + batch_size]
             batch_samples, batch_labels = [], []
-            for idx in batch_idxs:
-                path = file_paths[idx]
-                label_str = path.split("/")[-2]
-                audio_chunks = load_audio_file(path, sample_rate, max_duration, chunk_duration, random_offset=True)
-                if len(audio_chunks) == 0:
-                    audio_chunks = [np.random.uniform(-1.0, 1.0, size=(T,)).astype(np.float32)]
-                    label_str = "noise"
 
-                if audio_frontend == "librosa":
-                    specs = [
-                        get_spectrogram_from_audio(
-                            chunk,
-                            sample_rate,
-                            n_fft=fft_length,
-                            mel_bins=mel_bins,
-                            spec_width=spec_width,
-                            mag_scale=mag_scale,
-                        )
-                        for chunk in audio_chunks
-                    ]
-                    pool = sort_by_activity(specs, threshold=snr_threshold) or specs
-                    if len(pool) == 0:
-                        continue
-                    sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
-                    sample = sample[0] if isinstance(sample, list) else sample
+            # Parallel audio loading
+            paths = [file_paths[idx] for idx in batch_idxs]
+            results = list(_io_pool.map(_load_one, paths))
 
-                elif audio_frontend == "hybrid":
-                    specs = [
-                        get_spectrogram_from_audio(
-                            chunk, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=spec_width
-                        )
-                        for chunk in audio_chunks
-                    ]
-                    pool = sort_by_activity(specs, threshold=snr_threshold) or specs
-                    if len(pool) == 0:
-                        continue
-                    sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
-                    sample = sample[0] if isinstance(sample, list) else sample
-
-                elif audio_frontend == "raw":
-                    pool = sort_by_activity(audio_chunks, threshold=snr_threshold) or audio_chunks
-                    if len(pool) == 0:
-                        continue
-                    sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
-                    x = sample[0] if isinstance(sample, list) else sample
-                    x = x[:T]
-                    if x.shape[0] < T:
-                        x = np.pad(x, (0, T - x.shape[0]))
-                    x = x / (np.max(np.abs(x)) + 1e-6)
-                    sample = x
-                else:
-                    raise ValueError(f"Invalid audio frontend: {audio_frontend}")
+            for result in results:
+                if result is None:
+                    continue
+                sample, label_str = result
 
                 # One-hot label; noise-like labels get all-zero vector
                 if label_str.lower() in ("noise", "silence", "background", "other"):
@@ -133,7 +170,7 @@ def data_generator(
                     one_hot_label = tf.one_hot(classes.index(label_str), depth=len(classes)).numpy()
 
                 # SpecAugment (only for spectrogram-based frontends)
-                if spec_augment and audio_frontend in ("librosa", "hybrid"):
+                if spec_augment and audio_frontend in ("librosa", "hybrid", "mfcc", "log_mel"):
                     sample = apply_spec_augment(
                         sample,
                         freq_mask_max=freq_mask_max,
@@ -197,7 +234,11 @@ def load_dataset(
     fft_length = kwargs.get("fft_length", 512)
     chunk_len = int(sr * cd)
 
-    if audio_frontend == "librosa":
+    n_mfcc = kwargs.get("n_mfcc", 20)
+
+    if audio_frontend == "mfcc":
+        input_spec = tf.TensorSpec(shape=(None, n_mfcc, spec_width, 1), dtype=tf.float32)
+    elif audio_frontend in ("librosa", "log_mel"):
         input_spec = tf.TensorSpec(shape=(None, mel_bins, spec_width, 1), dtype=tf.float32)
     elif audio_frontend == "hybrid":
         fft_bins = fft_length // 2 + 1
@@ -223,6 +264,7 @@ def load_dataset(
             mixup_probability=kwargs.get("mixup_probability", 0.0),
             mel_bins=mel_bins,
             fft_length=fft_length,
+            n_mfcc=n_mfcc,
             mag_scale=kwargs.get("mag_scale", "none"),
             random_offset=kwargs.get("random_offset", False),
             spec_augment=kwargs.get("spec_augment", False),

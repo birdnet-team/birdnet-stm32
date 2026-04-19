@@ -4,8 +4,11 @@ import numpy as np
 import tensorflow as tf
 
 
-def cosine_similarity(a: np.ndarray, b: np.ndarray, eps: float = 1e-12) -> float:
+def cosine_similarity(a: np.ndarray, b: np.ndarray, eps: float = 1e-8) -> float:
     """Cosine similarity between two flattened arrays.
+
+    When both vectors have negligible magnitude (e.g., background/noise class
+    predictions near zero), returns 1.0 since both models agree on "no detection".
 
     Args:
         a: Flattened predictions from Keras.
@@ -17,8 +20,12 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray, eps: float = 1e-12) -> float
     """
     an = np.linalg.norm(a)
     bn = np.linalg.norm(b)
+    # Both near-zero: models agree on no-detection — treat as perfect match
+    if an < eps and bn < eps:
+        return 1.0
+    # One near-zero but not both: genuine disagreement
     if an < eps or bn < eps:
-        return 1.0 if an < eps and bn < eps else 0.0
+        return 0.0
     return float(np.dot(a, b) / (an * bn))
 
 

@@ -16,5 +16,8 @@ When editing or creating models in `birdnet_stm32/models/`, strictly adhere to t
 ## Network Structure (DS-CNN)
 - Use Depthwise Separable convolutions extensively.
 - Rely on scaling parameters `alpha` (width multiplier) and `depth_multiplier` (block repeats).
-- Enforce the `_make_divisible` check to ensure the channel counts are suitable for integer operations.
+- Optional enhancements: `--use_se` (squeeze-and-excite channel attention), `--use_inverted_residual` (MobileNetV2-style blocks), `--use_attention_pooling` (learned spatial attention instead of GAP).
+- Building blocks are in `birdnet_stm32/models/blocks.py`: `se_block()`, `inverted_residual_block()`, `AttentionPooling`.
+- Use `birdnet_stm32/models/profiler.py` to check N6 compatibility and estimate MACs/params.
+- Enforce the `_make_divisible` check (in `blocks.py`) to ensure the channel counts are suitable for integer operations.
 - Quantization is done post-training (PTQ). Ensure model architecture supports PTQ. Avoid intermediate states that explode INT8 dynamic ranges.

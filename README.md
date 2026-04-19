@@ -5,7 +5,7 @@
   <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.12%2B-blue.svg" alt="Python 3.12+"></a>
   <a href="https://birdnet-team.github.io/birdnet-stm32"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Docs"></a>
-  <a href="https://github.com/birdnet-team/birdnet-stm32/releases/tag/v0.5.0"><img src="https://img.shields.io/badge/version-0.5.0-orange.svg" alt="Version"></a>
+  <a href="https://github.com/birdnet-team/birdnet-stm32/releases/tag/v0.7.0"><img src="https://img.shields.io/badge/version-0.7.0-orange.svg" alt="Version"></a>
 </p>
 
 Bird sound classification for edge deployment on the [STM32N6570-DK](https://www.st.com/en/evaluation-tools/stm32n6570-dk.html) development board with neural processing unit (NPU).
@@ -17,22 +17,28 @@ A compact DS-CNN trained on audio waveforms or mel spectrograms, quantized to IN
 ## Quick start
 
 ```bash
-# One-liner setup (creates venv, installs deps, generates config files)
+# Install
 git clone https://github.com/birdnet-team/birdnet-stm32.git
 cd birdnet-stm32
-bash setup.sh
-source .venv/bin/activate
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
 
 # Train
-python train.py --data_path_train data/train --audio_frontend hybrid --mag_scale pwl
+python -m birdnet_stm32 train \
+  --data_path_train data/train \
+  --audio_frontend hybrid --mag_scale pwl
 
 # Convert to quantized TFLite
-python convert.py --checkpoint_path checkpoints/best_model.keras \
-  --model_config checkpoints/best_model_model_config.json --data_path_train data/train
+python -m birdnet_stm32 convert \
+  --checkpoint_path checkpoints/best_model.keras \
+  --model_config checkpoints/best_model_model_config.json \
+  --data_path_train data/train
 
 # Evaluate
-python test.py --model_path checkpoints/best_model_quantized.tflite \
-  --model_config checkpoints/best_model_model_config.json --data_path_test data/test
+python -m birdnet_stm32 evaluate \
+  --model_path checkpoints/best_model_quantized.tflite \
+  --model_config checkpoints/best_model_model_config.json \
+  --data_path_test data/test --pooling lme
 
 # Deploy to STM32N6570-DK (requires config.json; see config.example.json)
 python -m birdnet_stm32 deploy
@@ -59,12 +65,41 @@ Prepare the SD card as follows:
 
 See the [full documentation](https://birdnet-team.github.io/birdnet-stm32) for detailed guides on [dataset preparation](https://birdnet-team.github.io/birdnet-stm32/dataset/), [training](https://birdnet-team.github.io/birdnet-stm32/training/), [conversion](https://birdnet-team.github.io/birdnet-stm32/conversion/), [evaluation](https://birdnet-team.github.io/birdnet-stm32/evaluation/), and [deployment](https://birdnet-team.github.io/birdnet-stm32/deployment/).
 
-## Pre-trained model
+## Features
 
-| Model | Classes | Frontend | ROC-AUC | Inference (NPU) | Total (Inc. STFT) |
-|---|---|---|---|---|---|
-| `birdnet_stm32n6_100.tflite` | 100 (NE US + EU + Brazil) | hybrid, 257×256, PWL | 0.84 | ~12 ms | ~57 ms |
-| `raw_model_quantized.tflite` | 10 (Tiny set) | raw, 24000Hz, 2.0s | 0.85 | ~10 ms | ~10 ms |
+### Training
+
+- **Audio frontends**: `hybrid` (STFT + learned mel mixer), `raw` (waveform → learned filterbank), `librosa` (precomputed mel), `mfcc`, `log_mel`
+- **Magnitude scaling**: `pwl` (piecewise-linear, quantization-friendly), `pcen`, `db`, `none`
+- **Model**: DS-CNN with configurable width (`--alpha`) and depth (`--depth_multiplier`), optional SE attention (`--use_se`), inverted residuals (`--use_inverted_residual`), and attention pooling (`--use_attention_pooling`)
+- **Augmentation**: mixup, SpecAugment, label smoothing
+- **Optimization**: cosine LR decay, Adam/SGD/AdamW, gradient clipping, mixed precision (FP16), balanced class weights
+- **QAT**: quantization-aware fine-tuning via `--qat` — shadow-weight fake-quantization, no FakeQuant ops in saved model
+- **Hyperparameter tuning**: Optuna search via `--tune --n_trials N`
+
+### Conversion
+
+- **Post-training quantization**: INT8 internals, float32 I/O, per-channel (default) or per-tensor
+- **Dynamic range quantization**: `--quantization dynamic` — no calibration data needed
+- **Validation**: cosine similarity, MSE, Pearson r between Keras and TFLite outputs
+- **Batch validation**: `--batch_validate N` for worst-case metrics across seeds
+- **ONNX export**: `--export_onnx` (requires `tf2onnx`)
+
+### Evaluation
+
+- **Pooling**: avg, max, LME (log-mean-exponential)
+- **Metrics**: ROC-AUC, cmAP, mAP, precision, recall, F1
+- **Species AP report**: per-species AP with bootstrap 95% CI (`--species_report`)
+- **DET curve**: detection error tradeoff (`--det_curve`, `--save_det_plot`)
+- **Latency measurement**: per-chunk inference timing (`--benchmark_latency`)
+- **Benchmark JSON**: structured report for experiment tracking (`--benchmark`)
+- **HTML report**: self-contained evaluation report (`--report_html`)
+
+### Deployment
+
+- **X-CUBE-AI / stedgeai**: generate → flash → validate pipeline
+- **Board test**: standalone on-device inference (`board-test`) — reads WAV from SD card, STFT on Cortex-M55, inference on NPU
+
 
 ## License
 
