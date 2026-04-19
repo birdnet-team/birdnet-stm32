@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Quantization-Aware Training (QAT)** (`--qat`): shadow-weight fake-quantization fine-tuning for Keras 3. Freezes BatchNorm, injects INT8 noise into kernel weights during training, maintains FP32 shadow weights with STE-like gradient transfer. No FakeQuant ops in saved model — full N6 NPU compatibility. Improves quantized model accuracy (cmAP +1.5pp, ROC-AUC +0.8pp on 10-class test set).
 - `extra_callbacks` parameter for `train_model()` to support QAT and other custom callbacks.
+- **Species-level AP report** (`--species_report`): per-species average precision with bootstrap confidence intervals (`--n_bootstrap`).
+- **DET curve** (`--det_curve`, `--save_det_plot`): Detection Error Tradeoff curve (FAR vs FRR) — ASCII and matplotlib output.
+- **Benchmark mode** (`--benchmark`): structured JSON report with all metrics, per-species AP, latency stats, and model config.
+- **Latency measurement** (`--benchmark_latency`): per-chunk inference timing with mean/median/p95/p99 statistics.
+- **HTML evaluation report** (`--report_html`): self-contained HTML with inline CSS, summary metrics table, per-species AP table, and confusion matrix heatmap (base64 matplotlib).
 
 ## [0.7.0] — 2026-04-19
 

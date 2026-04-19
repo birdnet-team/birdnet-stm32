@@ -285,7 +285,7 @@ Use dev dataset (or a 25 species / 500 files subset) at /home/mi/Datasets/stm32_
 
 ### Improvement tasks
 
-- [ ] **Quantization-aware training (QAT)**: add `--qat` flag to train.py that inserts fake-quant nodes (TF Model Optimization Toolkit)
+- [x] **Quantization-aware training (QAT)**: `--qat` flag for shadow-weight fake-quantization fine-tuning (Keras 3 compatible, no tfmot dependency). Freezes BN, injects INT8 noise into kernels, maintains FP32 shadow weights. No FakeQuant ops in saved model — N6 compatible. +1.5pp cmAP improvement over PTQ-only.
 - [x] **Per-channel vs per-tensor quantization**: add flag to control granularity
 - [x] **Dynamic range quantization**: add as alternative (no representative dataset needed)
 - [x] **Audit INT8 input assumptions**: audio waveform/spectrogram inputs are continuous-valued and lose meaningful precision at INT8; verify that float32 I/O is enforced throughout the pipeline and remove any code paths that attempt INT8 input quantization
@@ -303,14 +303,14 @@ Use dev dataset (or a 25 species / 500 files subset) at /home/mi/Datasets/stm32_
 ### Improvement tasks
 
 - [x] **Confusion matrix**: add per-class confusion matrix output (ASCII + optional matplotlib)
-- [ ] **Species-level AP report**: CSV/JSON with AP per species + confidence intervals (bootstrap)
-- [ ] **Detection Error Tradeoff (DET) curve**: standard bioacoustics metric
+- [x] **Species-level AP report**: CSV/JSON with AP per species + confidence intervals (bootstrap). `--species_report`, `--n_bootstrap`.
+- [x] **Detection Error Tradeoff (DET) curve**: standard bioacoustics metric. `--det_curve` (ASCII) + `--save_det_plot` (matplotlib).
 - [x] **Threshold optimization**: find optimal threshold per class via PR curve (not just fixed 0.5)
-- [ ] **Benchmark mode**: standardized eval on a fixed test split with multiple metrics, saved as structured JSON for experiment tracking
-- [ ] **Latency measurement**: add `--benchmark-latency` that measures per-chunk inference time (TFLite)
+- [x] **Benchmark mode**: standardized eval on a fixed test split with multiple metrics, saved as structured JSON for experiment tracking. `--benchmark`.
+- [x] **Latency measurement**: add `--benchmark_latency` that measures per-chunk inference time (TFLite). Per-sample mean/median/p95/p99 stats.
 - [ ] **Memory profiling**: report peak memory usage during inference
 - [ ] **Cross-validation**: add k-fold CV option for more robust metrics on small datasets
-- [ ] **HTML report generation**: replace ASCII viz with optional HTML report (plotly/matplotlib)
+- [x] **HTML report generation**: self-contained HTML report with inline CSS, metrics table, per-species AP table, and confusion matrix heatmap (base64 matplotlib). `--report_html`.
 
 ---
 
