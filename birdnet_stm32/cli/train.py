@@ -1,7 +1,6 @@
 """CLI entry point for training."""
 
 import argparse
-import json
 import math
 import os
 import random
@@ -14,6 +13,7 @@ from birdnet_stm32.data.dataset import load_file_paths_from_directory, upsample_
 from birdnet_stm32.data.generator import load_dataset
 from birdnet_stm32.models.dscnn import build_dscnn_model
 from birdnet_stm32.models.frontend import normalize_frontend_name
+from birdnet_stm32.training.config import ModelConfig
 from birdnet_stm32.training.losses import BinaryFocalLoss
 from birdnet_stm32.training.trainer import compute_hop_length, train_model
 
@@ -69,6 +69,16 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--spec_augment", action="store_true", default=False, help="Enable SpecAugment")
     parser.add_argument("--freq_mask_max", type=int, default=8, help="Max frequency mask width (bins)")
     parser.add_argument("--time_mask_max", type=int, default=25, help="Max time mask width (frames)")
+    parser.add_argument("--grad_clip", type=float, default=0.0, help="Max gradient norm for clipping (0 = disabled)")
+    parser.add_argument(
+        "--class_weights",
+        type=str,
+        default="none",
+        choices=["none", "balanced"],
+        help="Class weighting strategy ('none' or 'balanced' inverse-frequency)",
+    )
+    parser.add_argument("--mixed_precision", action="store_true", default=False, help="Enable FP16 mixed precision training")
+    parser.add_argument("--resume", action="store_true", default=False, help="Resume training from checkpoint")
     parser.add_argument("--deterministic", action="store_true", default=False, help="Enable deterministic mode")
     parser.add_argument("--seed", type=int, default=42, help="Random seed (used with --deterministic)")
     return parser.parse_args()
@@ -95,6 +105,11 @@ def main():
         if T >= (1 << 16):
             print(f"[WARN] STM32N6 constraint: raw input length {T} >= 65536.")
             print("       Use --sample_rate 16000 or --chunk_duration 2, or --audio_frontend hybrid.")
+
+    # Mixed precision
+    if args.mixed_precision:
+        tf.keras.mixed_precision.set_global_policy("mixed_float16")
+        print("Mixed precision enabled (float16 compute, float32 accumulation).")
 
     hop_length = compute_hop_length(args.sample_rate, args.chunk_duration, args.spec_width)
 
@@ -178,26 +193,31 @@ def main():
     model.summary()
 
     # Save model config
-    cfg = {
-        "sample_rate": args.sample_rate,
-        "num_mels": args.num_mels,
-        "spec_width": args.spec_width,
-        "fft_length": args.fft_length,
-        "chunk_duration": args.chunk_duration,
-        "hop_length": hop_length,
-        "audio_frontend": args.audio_frontend,
-        "mag_scale": args.mag_scale,
-        "embeddings_size": args.embeddings_size,
-        "alpha": args.alpha,
-        "depth_multiplier": args.depth_multiplier,
-        "num_classes": len(classes),
-        "class_names": classes,
-        "frontend_trainable": args.frontend_trainable,
-    }
+    cfg = ModelConfig(
+        sample_rate=args.sample_rate,
+        num_mels=args.num_mels,
+        spec_width=args.spec_width,
+        fft_length=args.fft_length,
+        chunk_duration=args.chunk_duration,
+        hop_length=hop_length,
+        audio_frontend=args.audio_frontend,
+        mag_scale=args.mag_scale,
+        embeddings_size=args.embeddings_size,
+        alpha=args.alpha,
+        depth_multiplier=args.depth_multiplier,
+        num_classes=len(classes),
+        class_names=classes,
+        frontend_trainable=args.frontend_trainable,
+        n_mfcc=args.n_mfcc,
+        use_se=args.use_se,
+        se_reduction=args.se_reduction,
+        use_inverted_residual=args.use_inverted_residual,
+        expansion_factor=args.expansion_factor,
+        use_attention_pooling=args.use_attention_pooling,
+        dropout_rate=args.dropout,
+    )
     cfg_path = os.path.splitext(args.checkpoint_path)[0] + "_model_config.json"
-    os.makedirs(os.path.dirname(cfg_path) or ".", exist_ok=True)
-    with open(cfg_path, "w") as f:
-        json.dump(cfg, f, indent=2)
+    cfg.save(cfg_path)
     print(f"Saved model config to '{cfg_path}'")
 
     # Resolve loss function
@@ -210,6 +230,24 @@ def main():
             loss_fn = tf.keras.losses.BinaryCrossentropy(label_smoothing=args.label_smoothing)
         else:
             loss_fn = tf.keras.losses.CategoricalCrossentropy(label_smoothing=args.label_smoothing)
+
+    # Class weights
+    class_weights = None
+    if args.class_weights == "balanced":
+        from collections import Counter
+
+        label_counts = Counter()
+        for p in train_paths:
+            label_str = p.split("/")[-2]
+            if label_str in classes:
+                label_counts[classes.index(label_str)] += 1
+        if label_counts:
+            total = sum(label_counts.values())
+            n_classes = len(classes)
+            class_weights = {
+                i: total / (n_classes * label_counts.get(i, 1)) for i in range(n_classes)
+            }
+            print(f"Balanced class weights: min={min(class_weights.values()):.2f}, max={max(class_weights.values()):.2f}")
 
     # Train
     print("Starting training...")
@@ -227,6 +265,9 @@ def main():
         optimizer=args.optimizer,
         weight_decay=args.weight_decay,
         loss_fn=loss_fn,
+        gradient_clip_norm=args.grad_clip,
+        class_weights=class_weights,
+        resume=args.resume,
     )
     print(f"Training complete. Best model saved to '{args.checkpoint_path}'.")
 

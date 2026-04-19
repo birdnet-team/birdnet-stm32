@@ -7,10 +7,15 @@ checkpoints/*.npz
 checkpoints/*.tflite
 checkpoints/*_labels.txt
 checkpoints/*_model_config.json
+checkpoints/*_train_state.json
+checkpoints/*_curves.png
+checkpoints/*_history.csv
 notes.txt
 deploy.sh
 /dev/
 /report/
+data/train_25/
+data/test_25/
 
 # Machine-local config (ship .example files instead)
 config_n6l.json

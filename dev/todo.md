@@ -260,19 +260,19 @@ birdnet_stm32/
 
 Use dev dataset (or a 25 species / 500 files subset) at /home/mi/Datasets/stm32_1k for fast iteration. Build as a train and test set in data/train and data/test. use common european and north american species.
 
-- [ ] **Replace raw dict config with dataclass**: `ModelConfig` with validation + serialization
+- [x] **Replace raw dict config with dataclass**: `ModelConfig` with validation + serialization
 - [x] **Deterministic training mode**: add `--deterministic` flag that sets all seeds + TF deterministic ops
-- [ ] **Resumable training**: add `--resume` flag that loads optimizer state from checkpoint
-- [ ] **Learning rate finder**: add utility to sweep LR and plot loss (one-cycle policy style)
+- [x] **Resumable training**: add `--resume` flag that loads optimizer state from checkpoint
+- [x] **Learning rate finder**: add utility to sweep LR and plot loss (one-cycle policy style)
 - [ ] **Optuna hyperparameter tuning**: add `--tune` flag that uses Optuna to search over hyperparameters
 - ~**WandB / TensorBoard integration**~: decided against — keep logging simple (CSV + stdout). Do not add wandb or tensorboard as dependencies.
-- [ ] **Multi-GPU / mixed precision**: add `--mixed-precision` flag (fp16 compute, fp32 accum) for faster training
-- [ ] **Class weighting**: add `--class-weights` option (inverse frequency, effective number, focal loss)
+- [x] **Multi-GPU / mixed precision**: add `--mixed-precision` flag (fp16 compute, fp32 accum) for faster training
+- [x] **Class weighting**: add `--class-weights` option (inverse frequency, effective number, focal loss)
 - [x] **Focal loss**: implement as alternative to cross-entropy for imbalanced datasets
-- [ ] **Data pipeline performance**: profile and optimize `data_generator` — pre-fetch audio in separate threads, cache spectrograms
+- [x] **Data pipeline performance**: profile and optimize `data_generator` — pre-fetch audio in separate threads, cache spectrograms
 - [x] **Configurable optimizer**: add `--optimizer adam|sgd|adamw` CLI arg
-- [ ] **Gradient clipping**: add `--grad-clip` CLI arg
-- [ ] **Training metrics dashboard**: save training curves as PNG/HTML alongside checkpoint
+- [x] **Gradient clipping**: add `--grad-clip` CLI arg
+- [x] **Training metrics dashboard**: save training curves as PNG/HTML alongside checkpoint
 
 ---
 

@@ -1,7 +1,6 @@
 """CLI entry point for TFLite conversion."""
 
 import argparse
-import json
 import os
 import random
 
@@ -15,6 +14,7 @@ from birdnet_stm32.conversion.validate import validate_models
 from birdnet_stm32.data.dataset import load_file_paths_from_directory
 from birdnet_stm32.models.frontend import AudioFrontendLayer, normalize_frontend_name
 from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
+from birdnet_stm32.training.config import ModelConfig
 
 random.seed(42)
 np.random.seed(42)
@@ -49,8 +49,7 @@ def main():
         args.model_config = os.path.splitext(args.checkpoint_path)[0] + "_model_config.json"
     if not os.path.isfile(args.model_config):
         raise FileNotFoundError(f"Model config JSON not found: {args.model_config}")
-    with open(args.model_config) as f:
-        cfg = json.load(f)
+    cfg = ModelConfig.load(args.model_config).to_dict()
 
     # Load model
     model = tf.keras.models.load_model(

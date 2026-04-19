@@ -1,7 +1,6 @@
 """CLI entry point for model evaluation."""
 
 import argparse
-import json
 import math
 import os
 
@@ -47,8 +46,9 @@ def main():
         model_cfg_path = root + "_model_config.json"
     if not os.path.isfile(model_cfg_path):
         raise FileNotFoundError(f"Model config JSON not found: {model_cfg_path}")
-    with open(model_cfg_path) as f:
-        cfg = json.load(f)
+    from birdnet_stm32.training.config import ModelConfig
+
+    cfg = ModelConfig.load(model_cfg_path).to_dict()
 
     classes = cfg.get("class_names", [])
     if not classes:

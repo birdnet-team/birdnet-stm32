@@ -10,11 +10,14 @@ python train.py \
   --checkpoint_path checkpoints/my_model.keras
 ```
 
-The script saves three files alongside the checkpoint:
+The script saves these files alongside the checkpoint:
 
 - `my_model.keras` — trained Keras model
 - `my_model_model_config.json` — conversion metadata (frontend, shapes, etc.)
 - `my_model_labels.txt` — ordered class names
+- `my_model_history.csv` — per-epoch training metrics (loss, ROC-AUC)
+- `my_model_curves.png` — loss and ROC-AUC training curves plot
+- `my_model_train_state.json` — epoch counter for `--resume`
 
 ## Audio frontends
 
@@ -90,6 +93,36 @@ Set weight decay with `--weight_decay` (default 0, only used by `adamw`).
 Use `--deterministic` to set all random seeds (Python, NumPy, TensorFlow)
 and enable `TF_DETERMINISTIC_OPS`. Optionally specify `--seed` (default 42).
 
+### Gradient clipping
+
+Use `--grad_clip 1.0` to clip gradients by global norm. Prevents exploding
+gradients, especially useful with large models or unstable training. Default 0
+(disabled).
+
+### Class weighting
+
+Use `--class_weights balanced` to apply inverse-frequency class weights.
+Useful for imbalanced datasets where some species have fewer training files.
+
+### Mixed precision
+
+Use `--mixed_precision` to enable FP16 compute with FP32 accumulation.
+Reduces memory usage and speeds up training on GPUs with Tensor Cores.
+
+### Resumable training
+
+Use `--resume` to continue training from a previously saved checkpoint.
+The optimizer state is recompiled and training resumes from the last saved
+epoch. Example:
+
+```bash
+# Initial training (interrupted or completed at epoch 30)
+python -m birdnet_stm32 train --epochs 30 --checkpoint_path ckpt/model.keras ...
+
+# Resume and extend to 50 epochs
+python -m birdnet_stm32 train --epochs 50 --resume --checkpoint_path ckpt/model.keras ...
+```
+
 ### Learning rate
 
 Cosine decay schedule from `--learning_rate` (default 0.001) to near-zero
@@ -132,6 +165,10 @@ of 10 epochs.
 | `--expansion_factor` | 6 | Expansion factor for inverted residuals |
 | `--use_attention_pooling` | False | Use attention pooling instead of GAP |
 | `--n_mfcc` | 20 | Number of MFCC coefficients (mfcc frontend only) |
+| `--grad_clip` | 0.0 | Max gradient norm for clipping (0 = disabled) |
+| `--class_weights` | none | `none` or `balanced` (inverse-frequency) |
+| `--mixed_precision` | False | Enable FP16 mixed precision training |
+| `--resume` | False | Resume training from checkpoint |
 | `--deterministic` | False | Enable deterministic training |
 | `--seed` | 42 | Random seed (with `--deterministic`) |
 | `--batch_size` | 32 | Batch size |

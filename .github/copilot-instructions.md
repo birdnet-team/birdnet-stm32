@@ -34,6 +34,7 @@ python -m birdnet_stm32 board-test --config config.json
 - **Model registry** (`birdnet_stm32/models/__init__.py`): `build_model(name, **kwargs)` dispatcher. Currently registers `dscnn`.
 - **Model profiler** (`birdnet_stm32/models/profiler.py`): Per-layer MACs, params, activation memory, N6 compatibility check.
 - **Quantization**: Post-training quantization (PTQ) with representative dataset calibration. Float32 I/O, INT8 internals.
+- **Training pipeline**: Cosine LR decay, early stopping, resume (`--resume`), gradient clipping (`--grad_clip`), mixed precision (`--mixed_precision`), balanced class weights (`--class_weights balanced`), LR finder utility (`birdnet_stm32/training/lr_finder.py`).
 - **Deployment**: `stedgeai generate` → `n6_loader.py` (serial flash) → `stedgeai validate` (on-device).
 
 ## Workflow
@@ -45,7 +46,8 @@ python -m birdnet_stm32 board-test --config config.json
 ## Conventions
 
 - **Dataset layout**: `data/{train,test}/<species_name>/*.wav`. Special folder names (`noise`, `silence`, `background`, `other`) get all-zero label vectors.
-- **Checkpoint outputs**: `{name}.keras`, `{name}_model_config.json`, `{name}_labels.txt`, `{name}_quantized.tflite`, `{name}_quantized_validation_data.npz`.
+- **Checkpoint outputs**: `{name}.keras`, `{name}_model_config.json`, `{name}_labels.txt`, `{name}_history.csv`, `{name}_curves.png`, `{name}_train_state.json`, `{name}_quantized.tflite`, `{name}_quantized_validation_data.npz`.
+- **Model config**: `ModelConfig` dataclass in `birdnet_stm32/training/config.py` — validated, JSON-serializable, backward-compatible with legacy configs.
 - **Config files**: `config.json` (gcc/CubeIDE paths), `config_n6l.json` (N6 loader mappings). These are machine-local — don't hardcode paths.
 - **Eval runs**: CSV results stored in `report/eval_runs/` with naming `{run_number}_{frontend}_{mag}_{alpha}_{depth}_{embed}_{batch}_{maxsamples}.csv`.
 
