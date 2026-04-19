@@ -23,6 +23,9 @@ python -m birdnet_stm32 evaluate --model_path checkpoints/best_model_quantized.t
 
 # Deploy/Test on board (requires USB-connected STM32N6570-DK + config.json)
 python -m birdnet_stm32 board-test --config config.json
+
+# Optuna hyperparameter search (pip install -e ".[tune]")
+python -m birdnet_stm32 train --data_path_train data/train --tune --n_trials 20 --epochs 30
 ```
 
 ## Architecture
@@ -34,7 +37,7 @@ python -m birdnet_stm32 board-test --config config.json
 - **Model registry** (`birdnet_stm32/models/__init__.py`): `build_model(name, **kwargs)` dispatcher. Currently registers `dscnn`.
 - **Model profiler** (`birdnet_stm32/models/profiler.py`): Per-layer MACs, params, activation memory, N6 compatibility check.
 - **Quantization**: Post-training quantization (PTQ) with representative dataset calibration. Float32 I/O, INT8 internals.
-- **Training pipeline**: Cosine LR decay, early stopping, resume (`--resume`), gradient clipping (`--grad_clip`), mixed precision (`--mixed_precision`), balanced class weights (`--class_weights balanced`), LR finder utility (`birdnet_stm32/training/lr_finder.py`).
+- **Training pipeline**: Cosine LR decay, early stopping, resume (`--resume`), gradient clipping (`--grad_clip`), mixed precision (`--mixed_precision`), balanced class weights (`--class_weights balanced`), LR finder utility (`birdnet_stm32/training/lr_finder.py`), Optuna hyperparameter tuning (`--tune`, `birdnet_stm32/training/tuner.py`).
 - **Deployment**: `stedgeai generate` → `n6_loader.py` (serial flash) → `stedgeai validate` (on-device).
 
 ## Workflow

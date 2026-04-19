@@ -264,8 +264,7 @@ Use dev dataset (or a 25 species / 500 files subset) at /home/mi/Datasets/stm32_
 - [x] **Deterministic training mode**: add `--deterministic` flag that sets all seeds + TF deterministic ops
 - [x] **Resumable training**: add `--resume` flag that loads optimizer state from checkpoint
 - [x] **Learning rate finder**: add utility to sweep LR and plot loss (one-cycle policy style)
-- [ ] **Optuna hyperparameter tuning**: add `--tune` flag that uses Optuna to search over hyperparameters
-- ~**WandB / TensorBoard integration**~: decided against — keep logging simple (CSV + stdout). Do not add wandb or tensorboard as dependencies.
+- [x] **Optuna hyperparameter tuning**: add `--tune` flag that uses Optuna to search over hyperparameters- ~**WandB / TensorBoard integration**~: decided against — keep logging simple (CSV + stdout). Do not add wandb or tensorboard as dependencies.
 - [x] **Multi-GPU / mixed precision**: add `--mixed-precision` flag (fp16 compute, fp32 accum) for faster training
 - [x] **Class weighting**: add `--class-weights` option (inverse frequency, effective number, focal loss)
 - [x] **Focal loss**: implement as alternative to cross-entropy for imbalanced datasets

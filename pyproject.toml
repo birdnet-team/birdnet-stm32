@@ -50,6 +50,9 @@ docs = [
 deploy = [
     "pyserial>=3.5",
 ]
+tune = [
+    "optuna>=3.6",
+]
 
 [project.scripts]
 birdnet-stm32 = "birdnet_stm32.__main__:main"

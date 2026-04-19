@@ -10,6 +10,8 @@ checkpoints/*_model_config.json
 checkpoints/*_train_state.json
 checkpoints/*_curves.png
 checkpoints/*_history.csv
+checkpoints/optuna_trials/
+checkpoints/optuna_best_params.json
 notes.txt
 deploy.sh
 /dev/
