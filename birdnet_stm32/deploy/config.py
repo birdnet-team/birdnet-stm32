@@ -5,13 +5,14 @@ Resolves paths to X-CUBE-AI tools, models, and project directories from
 
 Supports both JSON (``config.json``) and TOML (``config.toml``) config files.
 When a ``.toml`` file is provided, deploy-related keys are read from the
-``[deploy]`` table.
+``[deploy]`` table and n6_loader keys from ``[n6_loader]``.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import tempfile
 from dataclasses import dataclass, field
 
 
@@ -48,17 +49,17 @@ class DeployConfig:
             self.n6_loader_script = os.path.join(self.x_cube_ai_path, "scripts", "N6_scripts", "n6_loader.py")
 
 
-def _load_config_file(config_path: str) -> dict:
-    """Load a JSON or TOML config file and return a flat deploy dict.
+def _load_config_file(config_path: str) -> tuple[dict, dict]:
+    """Load a JSON or TOML config file and return deploy + n6_loader dicts.
 
     Args:
         config_path: Path to config.json or config.toml.
 
     Returns:
-        Dictionary of deploy configuration values.
+        Tuple of (deploy_config_dict, n6_loader_dict).
     """
     if not os.path.isfile(config_path):
-        return {}
+        return {}, {}
 
     if config_path.endswith(".toml"):
         import tomllib  # type: ignore[no-redef]
@@ -69,10 +70,11 @@ def _load_config_file(config_path: str) -> dict:
         flat: dict = {}
         flat.update(data.get("deploy", {}))
         flat.update(data.get("build", {}))
-        return flat
+        n6_loader = dict(data.get("n6_loader", {}))
+        return flat, n6_loader
 
     with open(config_path) as f:
-        return json.load(f)
+        return json.load(f), {}
 
 
 def resolve_deploy_config(
@@ -101,14 +103,14 @@ def resolve_deploy_config(
         Populated DeployConfig.
     """
     # Try the given path; fall back to the other format if not found
-    file_cfg = _load_config_file(config_path)
+    file_cfg, n6_loader_cfg = _load_config_file(config_path)
     if not file_cfg:
         alt = (
             config_path.replace(".json", ".toml")
             if config_path.endswith(".json")
             else config_path.replace(".toml", ".json")
         )
-        file_cfg = _load_config_file(alt)
+        file_cfg, n6_loader_cfg = _load_config_file(alt)
 
     cli_args = cli_args or {}
 
@@ -131,5 +133,13 @@ def resolve_deploy_config(
     stedgeai_override = cli_args.get("stedgeai_path") or os.environ.get("STEDGEAI_PATH", "")
     if stedgeai_override:
         cfg.stedgeai_path = stedgeai_override
+
+    # If TOML has [n6_loader] and no explicit n6_loader_config was provided,
+    # generate a temporary JSON file so n6_loader.py can consume it.
+    if n6_loader_cfg and not cli_args.get("n6_loader_config"):
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix="_n6l.json")
+        with os.fdopen(tmp_fd, "w") as tmp:
+            json.dump(n6_loader_cfg, tmp, indent=2)
+        cfg.n6_loader_config = tmp_path
 
     return cfg

@@ -197,7 +197,7 @@ birdnet_stm32/
 ### Tasks
 
 - [x] Create `birdnet_stm32/deploy/config.py` — config resolution: CLI args > env vars > `config.toml` > defaults
-- [~] Replace `config.json` and `config_n6l.json` with a single `config.toml` — **deferred**: current JSON approach works; both files are in `.gitignore` with `.example` templates shipped
+- [x] Replace `config.json` and `config_n6l.json` with a single `config.toml` — `config.toml.example` has `[deploy]`, `[build]`, and `[n6_loader]` sections; config.py auto-generates n6_loader JSON from TOML
 - [x] Add `config.toml.example` with placeholder paths and comments
 - [x] `deploy.sh` → `birdnet_stm32/cli/deploy.py` (Python, no more hardcoded paths)
 - [x] Support `XCUBEAI_PATH`, `STEDGEAI_PATH`, `CUBEIDE_PATH`, `ARM_TOOLCHAIN_PATH` env vars
@@ -308,8 +308,8 @@ Use dev dataset (or a 25 species / 500 files subset) at /home/mi/Datasets/stm32_
 - [x] **Threshold optimization**: find optimal threshold per class via PR curve (not just fixed 0.5)
 - [x] **Benchmark mode**: standardized eval on a fixed test split with multiple metrics, saved as structured JSON for experiment tracking. `--benchmark`.
 - [x] **Latency measurement**: add `--benchmark_latency` that measures per-chunk inference time (TFLite). Per-sample mean/median/p95/p99 stats.
-- [~] **Memory profiling**: report peak memory usage during inference — **deferred to v0.8**
-- [~] **Cross-validation**: add k-fold CV option for more robust metrics on small datasets — **deferred to v0.8**
+- [x] **Memory profiling**: report peak memory usage during inference. `--profile_memory` measures peak RSS and delta.
+- [~] **Cross-validation**: add k-fold CV option for more robust metrics on small datasets — **dropped**: not needed for current workflow
 - [x] **HTML report generation**: self-contained HTML report with inline CSS, metrics table, per-species AP table, and confusion matrix heatmap (base64 matplotlib). `--report_html`.
 
 ---
@@ -319,10 +319,10 @@ Use dev dataset (or a 25 species / 500 files subset) at /home/mi/Datasets/stm32_
 ### 11.1 Setup
 
 - [x] `setup.sh` — one-command setup: create venv, install deps, generate config files
-- [~] `scripts/setup_stm32.sh` — download + install X-CUBE-AI, ARM toolchain, STM32CubeProgrammer — **deferred**: hardware-dependent, users follow manual instructions in docs
-- [~] `scripts/download_data.sh` — download iNatSounds subset — **deferred**: requires data hosting/release assets
-- [~] `scripts/download_checkpoints.sh` — fetch pre-trained checkpoints — **deferred**: requires GitHub Release assets
-- [~] Docker: `Dockerfile` + `docker-compose.yml` — **deferred to v0.8**
+- [x] `scripts/setup_stm32.sh` — check/install X-CUBE-AI, ARM toolchain, STM32CubeProgrammer
+- [x] `scripts/download_data.sh` — download dataset (placeholder, requires data hosting)
+- [x] `scripts/download_checkpoints.sh` — fetch pre-trained checkpoints (placeholder, requires release assets)
+- [~] Docker: `Dockerfile` + `docker-compose.yml` — **dropped**: not needed for current workflow
 
 ### 11.2 Deploy
 
@@ -330,11 +330,11 @@ Replace `deploy.sh` (hardcoded paths) with:
 
 - [x] `birdnet_stm32/cli/deploy.py` — Python deploy command with proper arg parsing
 - [x] Auto-detect `stedgeai` from PATH or `STEDGEAI_PATH` env var
-- [~] Auto-detect board connection (`/dev/ttyACM*`) — **deferred**: requires hardware testing
-- [~] Pre-flight checks: model exists, board connected, tools installed, config valid — **partially done**: config validation exists
-- [~] Colored terminal output with progress indicators — **deferred to v0.8**
-- [~] `--dry-run` flag — **deferred to v0.8**
-- [~] `--skip-validate` to skip on-device validation step — **deferred to v0.8**
+- [x] Auto-detect board connection (`/dev/ttyACM*`) via `detect_board()`
+- [x] Pre-flight checks: model exists, board connected, tools installed, config valid
+- [x] Colored terminal output with ANSI escape codes (auto-disabled when not a tty)
+- [x] `--dry-run` flag — print commands without executing
+- [x] `--skip-validate` to skip on-device validation step
 
 ---
 
@@ -408,7 +408,7 @@ tests/
 - [x] `.github/workflows/lint.yml` — ruff check + ruff format --check
 - [x] `.github/workflows/docs.yml` — build mkdocs, deploy to GitHub Pages on push to master
 - [x] `.github/workflows/integration.yml` — integration tests (weekly schedule + manual trigger)
-- [~] `.github/workflows/release.yml` — semantic versioning, changelog generation, checkpoint upload — **deferred**: no PyPI publishing planned; manual releases for now
+- [~] `.github/workflows/release.yml` — semantic versioning, changelog generation, checkpoint upload — **dropped**: manual releases for now
 - [x] Badge integration in README
 
 ---
@@ -487,7 +487,7 @@ tests/
 
 ## Completion Summary (v0.7.0)
 
-**Status**: All core phases (1–14) are complete. The rewrite from research
+**Status**: All planned phases (1–14) are complete. The rewrite from research
 prototype to production-quality project is done.
 
 **Completed**: 14/14 sections implemented — project scaffolding, MkDocs
@@ -495,16 +495,12 @@ documentation (25+ pages), README, package structure, configuration, audio
 frontends (5 modes), model architecture (SE, inverted residuals, attention
 pooling), training pipeline (QAT, Optuna, focal loss, mixed precision),
 quantization & conversion (PTQ, QAT, ONNX, batch validation), evaluation
-(species AP, DET, benchmark, HTML reports, latency), deploy CLI, 203 unit
+(species AP, DET, benchmark, HTML reports, latency, memory profiling), deploy
+CLI (--dry-run, --skip-validate, colored output, auto-detect board), 203 unit
 & integration tests, CI/CD (3 workflows), agent docs & dev guides (5 new
-guides).
+guides), download/setup scripts, config TOML migration.
 
-**Deferred to v0.8** (nice-to-have, not blocking):
-- Memory profiling during inference
+**Dropped** (not needed for current workflow):
 - K-fold cross-validation
 - Docker environment
-- Deploy CLI: auto-detect board, --dry-run, colored output
-- Download scripts for data/checkpoints (need release assets first)
-- STM32 toolchain setup script
 - GitHub Actions release workflow
-- Config migration from JSON to TOML

@@ -69,6 +69,12 @@ def get_args() -> argparse.Namespace:
         default="",
         help="Generate a self-contained HTML evaluation report",
     )
+    parser.add_argument(
+        "--profile_memory",
+        action="store_true",
+        default=False,
+        help="Report peak memory (RSS) during inference",
+    )
     return parser.parse_args()
 
 
@@ -111,6 +117,7 @@ def main():
         batch_size=args.batch_size,
         overlap=max(0.0, min(cfg["chunk_duration"] - 0.1, args.overlap)),
         measure_latency=args.benchmark_latency,
+        profile_memory=args.profile_memory,
     )
 
     # Print summary

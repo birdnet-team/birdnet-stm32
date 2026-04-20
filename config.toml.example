@@ -14,12 +14,23 @@ model_path = "checkpoints/best_model_quantized.tflite"
 output_dir = "validation/st_ai_output"
 workspace_dir = "validation/st_ai_ws"
 
-# N6 loader config file
-n6_loader_config = "config_n6l.json"
-
 [build]
 # GCC compiler type: "gcc" or path to arm-none-eabi-gcc
 compiler_type = "gcc"
 
 # Path to STM32CubeIDE (only needed for CubeIDE builds)
 # cubeide_path = "/opt/stm32cubeide"
+
+# Path to arm-none-eabi toolchain (auto-detected if on PATH)
+# arm_toolchain_path = "/usr"
+
+[n6_loader]
+# N6 loader settings (replaces config_n6l.json).
+# When this section is present, a temporary n6_loader JSON file is
+# generated automatically during deployment.
+"network.c" = "validation/st_ai_output/network.c"
+project_path = "/path/to/X-CUBE-AI.10.2.0/Projects/STM32N6570-DK/Applications/NPU_Validation"
+project_build_conf = "N6-DK"
+skip_external_flash_programming = false
+skip_ram_data_programming = false
+objcopy_binary_path = "/usr/bin/arm-none-eabi-objcopy"
