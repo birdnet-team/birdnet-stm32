@@ -1,10 +1,12 @@
 """Batch generator and tf.data.Dataset wrapper for training and validation.
 
-Provides a Python generator that yields (inputs, one_hot_labels) batches,
-and a tf.data.Dataset wrapper with static shape signatures.
+Uses ``multiprocessing.Pool`` for true parallel audio loading and
+preprocessing, bypassing the GIL so FLAC decode, resampling, smart-crop,
+and spectrogram computation run concurrently across CPU cores.
 """
 
-from concurrent.futures import ThreadPoolExecutor
+import multiprocessing as mp
+import random
 
 import numpy as np
 import tensorflow as tf
@@ -15,191 +17,138 @@ from birdnet_stm32.audio.io import load_audio_file
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
 from birdnet_stm32.models.frontend import normalize_frontend_name
 
-# Thread pool for parallel audio I/O within batches
-_io_pool = ThreadPoolExecutor(max_workers=4)
+# ---------------------------------------------------------------------------
+# Multiprocessing worker — module-level for pickling
+# ---------------------------------------------------------------------------
+
+_worker_cfg: dict = {}
 
 
-def data_generator(
-    file_paths: list[str],
-    classes: list[str],
-    batch_size: int = 32,
-    audio_frontend: str = "hybrid",
-    sample_rate: int = 24000,
-    max_duration: int = 60,
-    chunk_duration: float = 3,
-    spec_width: int = 256,
-    mixup_alpha: float = 0.2,
-    mixup_probability: float = 0.25,
-    mel_bins: int = 64,
-    fft_length: int = 512,
-    mag_scale: str = "pwl",
-    random_offset: bool = False,
-    snr_threshold: float = 0.5,
-    spec_augment: bool = False,
-    freq_mask_max: int = 8,
-    time_mask_max: int = 25,
-    n_mfcc: int = 20,
-):
-    """Yield batches of (inputs, one_hot_labels) for training/validation.
+def _init_worker(cfg: dict) -> None:
+    """Initializer called once per worker process."""
+    global _worker_cfg  # noqa: PLW0603
+    _worker_cfg = cfg
 
-    Frontends and input shapes:
-        - precomputed/librosa: mel spectrogram -> [B, mel_bins, spec_width, 1]
-        - hybrid: linear STFT magnitude -> [B, fft_bins, spec_width, 1]
-        - raw/tf: waveform -> [B, T, 1], peak-normalized to [-1, 1]
 
-    Args:
-        file_paths: Audio file paths.
-        classes: Ordered class names for one-hot encoding.
-        batch_size: Batch size.
-        audio_frontend: 'librosa' | 'hybrid' | 'raw' (deprecated: 'precomputed', 'tf').
-        sample_rate: Sampling rate (Hz).
-        max_duration: Max duration to read per file (seconds).
-        chunk_duration: Chunk duration (seconds).
-        spec_width: Target spectrogram width (frames).
-        mixup_alpha: Mixup strength parameter.
-        mixup_probability: Fraction of the batch to apply mixup to.
-        mel_bins: Number of mel bins.
-        fft_length: FFT size.
-        mag_scale: 'pcen' | 'pwl' | 'db' | 'none'.
-        random_offset: Randomly offset chunk start within file.
-        snr_threshold: Minimum activity threshold for chunk selection.
-        spec_augment: Apply SpecAugment (freq/time masking) to spectrograms.
-        freq_mask_max: Maximum frequency mask width (bins) for SpecAugment.
-        time_mask_max: Maximum time mask width (frames) for SpecAugment.
+def _process_file(path: str):
+    """Load and preprocess one audio file in a worker process.
 
-    Yields:
-        Tuple of (inputs, labels) for a batch. Infinite generator.
+    Returns ``(sample, label)`` or ``None`` on failure / unknown class.
     """
-    audio_frontend = normalize_frontend_name(audio_frontend)
-    T = int(sample_rate * chunk_duration)
+    cfg = _worker_cfg
+    label_str = path.split("/")[-2]
 
-    def _load_one(path):
-        """Load and preprocess one audio file. Returns (sample, label_str) or None."""
-        label_str = path.split("/")[-2]
-        audio_chunks = load_audio_file(path, sample_rate, max_duration, chunk_duration, random_offset=True)
-        if len(audio_chunks) == 0:
-            audio_chunks = [np.random.uniform(-1.0, 1.0, size=(T,)).astype(np.float32)]
-            label_str = "noise"
+    # --- label ---
+    noise_labels = cfg["noise_labels"]
+    class_to_idx = cfg["class_to_idx"]
+    num_classes = cfg["num_classes"]
 
-        # For long files (multiple chunks), use smart crop to find salient
-        # segments before activity filtering.  This reduces label noise from
-        # weakly-labeled recordings where vocalizations are sparse.
-        if len(audio_chunks) > 2:
-            full_audio = np.concatenate(audio_chunks)
-            audio_chunks = smart_crop(full_audio, sample_rate, chunk_duration, max_chunks=5)
+    if label_str.lower() in noise_labels:
+        label = np.zeros(num_classes, dtype=np.float32)
+    elif label_str in class_to_idx:
+        label = np.zeros(num_classes, dtype=np.float32)
+        label[class_to_idx[label_str]] = 1.0
+    else:
+        return None  # unknown class
 
-        if audio_frontend in ("mfcc", "log_mel"):
-            specs = [
-                get_spectrogram_from_audio(
-                    chunk,
-                    sample_rate,
-                    n_fft=fft_length,
-                    mel_bins=mel_bins,
-                    spec_width=spec_width,
-                    mag_scale="none",
-                    mode=audio_frontend,
-                    n_mfcc=n_mfcc,
-                )
-                for chunk in audio_chunks
-            ]
-            pool = sort_by_activity(specs, threshold=snr_threshold) or specs
-            if len(pool) == 0:
-                return None
-            sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
-            sample = sample[0] if isinstance(sample, list) else sample
+    sr = cfg["sr"]
+    cd = cfg["cd"]
+    T = cfg["T"]
+    fft_length = cfg["fft_length"]
+    mel_bins = cfg["mel_bins"]
+    spec_width = cfg["spec_width"]
+    mag_scale = cfg["mag_scale"]
+    n_mfcc = cfg["n_mfcc"]
+    max_duration = cfg["max_duration"]
+    snr_threshold = cfg["snr_threshold"]
+    random_offset = cfg["random_offset"]
+    spec_augment = cfg["spec_augment"]
+    freq_mask_max = cfg["freq_mask_max"]
+    time_mask_max = cfg["time_mask_max"]
+    audio_frontend = cfg["audio_frontend"]
 
-        elif audio_frontend == "librosa":
-            specs = [
-                get_spectrogram_from_audio(
-                    chunk,
-                    sample_rate,
-                    n_fft=fft_length,
-                    mel_bins=mel_bins,
-                    spec_width=spec_width,
-                    mag_scale=mag_scale,
-                )
-                for chunk in audio_chunks
-            ]
-            pool = sort_by_activity(specs, threshold=snr_threshold) or specs
-            if len(pool) == 0:
-                return None
-            sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
-            sample = sample[0] if isinstance(sample, list) else sample
+    try:
+        audio_chunks = load_audio_file(path, sr, max_duration, cd, random_offset=random_offset)
+    except Exception:
+        return None
 
-        elif audio_frontend == "hybrid":
-            specs = [
-                get_spectrogram_from_audio(chunk, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=spec_width)
-                for chunk in audio_chunks
-            ]
-            pool = sort_by_activity(specs, threshold=snr_threshold) or specs
-            if len(pool) == 0:
-                return None
-            sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
-            sample = sample[0] if isinstance(sample, list) else sample
+    if len(audio_chunks) == 0:
+        audio_chunks = [np.random.uniform(-1.0, 1.0, size=(T,)).astype(np.float32)]
+        label = np.zeros(num_classes, dtype=np.float32)
 
-        elif audio_frontend == "raw":
-            pool = sort_by_activity(audio_chunks, threshold=snr_threshold) or audio_chunks
-            if len(pool) == 0:
-                return None
-            sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
-            x = sample[0] if isinstance(sample, list) else sample
-            x = x[:T]
-            if x.shape[0] < T:
-                x = np.pad(x, (0, T - x.shape[0]))
-            x = x / (np.max(np.abs(x)) + 1e-6)
-            sample = x
-        else:
-            raise ValueError(f"Invalid audio frontend: {audio_frontend}")
+    # Smart crop for long recordings
+    if len(audio_chunks) > 2:
+        full_audio = np.concatenate(audio_chunks)
+        audio_chunks = smart_crop(full_audio, sr, cd, max_chunks=5)
 
-        return sample, label_str
+    if audio_frontend in ("mfcc", "log_mel"):
+        specs = [
+            get_spectrogram_from_audio(
+                chunk,
+                sr,
+                n_fft=fft_length,
+                mel_bins=mel_bins,
+                spec_width=spec_width,
+                mag_scale="none",
+                mode=audio_frontend,
+                n_mfcc=n_mfcc,
+            )
+            for chunk in audio_chunks
+        ]
+        pool = sort_by_activity(specs, threshold=snr_threshold) or specs
+        if not pool:
+            return None
+        sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
+        sample = sample[0] if isinstance(sample, list) else sample
 
-    while True:
-        idxs = np.random.permutation(len(file_paths))
-        for batch_start in range(0, len(idxs), batch_size):
-            batch_idxs = idxs[batch_start : batch_start + batch_size]
-            batch_samples, batch_labels = [], []
+    elif audio_frontend == "librosa":
+        specs = [
+            get_spectrogram_from_audio(
+                chunk,
+                sr,
+                n_fft=fft_length,
+                mel_bins=mel_bins,
+                spec_width=spec_width,
+                mag_scale=mag_scale,
+            )
+            for chunk in audio_chunks
+        ]
+        pool = sort_by_activity(specs, threshold=snr_threshold) or specs
+        if not pool:
+            return None
+        sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
+        sample = sample[0] if isinstance(sample, list) else sample
 
-            # Parallel audio loading
-            paths = [file_paths[idx] for idx in batch_idxs]
-            results = list(_io_pool.map(_load_one, paths))
+    elif audio_frontend == "hybrid":
+        specs = [
+            get_spectrogram_from_audio(chunk, sr, n_fft=fft_length, mel_bins=-1, spec_width=spec_width)
+            for chunk in audio_chunks
+        ]
+        pool = sort_by_activity(specs, threshold=snr_threshold) or specs
+        if not pool:
+            return None
+        sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
+        sample = sample[0] if isinstance(sample, list) else sample
 
-            for result in results:
-                if result is None:
-                    continue
-                sample, label_str = result
+    elif audio_frontend == "raw":
+        pool = sort_by_activity(audio_chunks, threshold=snr_threshold) or audio_chunks
+        if not pool:
+            return None
+        sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
+        x = sample[0] if isinstance(sample, list) else sample
+        x = x[:T]
+        if x.shape[0] < T:
+            x = np.pad(x, (0, T - x.shape[0]))
+        sample = x / (np.max(np.abs(x)) + 1e-6)
+    else:
+        raise ValueError(f"Invalid audio frontend: {audio_frontend}")
 
-                # One-hot label; noise-like labels get all-zero vector
-                if label_str.lower() in ("noise", "silence", "background", "other"):
-                    one_hot_label = np.zeros(len(classes), dtype=np.float32)
-                else:
-                    if label_str not in classes:
-                        continue
-                    one_hot_label = tf.one_hot(classes.index(label_str), depth=len(classes)).numpy()
+    # SpecAugment
+    if spec_augment and audio_frontend in ("librosa", "hybrid", "mfcc", "log_mel"):
+        sample = apply_spec_augment(sample, freq_mask_max=freq_mask_max, time_mask_max=time_mask_max)
 
-                # SpecAugment (only for spectrogram-based frontends)
-                if spec_augment and audio_frontend in ("librosa", "hybrid", "mfcc", "log_mel"):
-                    sample = apply_spec_augment(
-                        sample,
-                        freq_mask_max=freq_mask_max,
-                        time_mask_max=time_mask_max,
-                    )
-
-                sample = np.expand_dims(sample, axis=-1)
-                batch_samples.append(sample.astype(np.float32))
-                batch_labels.append(one_hot_label.astype(np.float32))
-
-            if len(batch_samples) == 0:
-                continue
-            batch_samples = np.stack(batch_samples)
-            batch_labels = np.stack(batch_labels)
-
-            # Mixup (multi-source Dirichlet mixing)
-            if mixup_alpha > 0 and mixup_probability > 0:
-                batch_samples, batch_labels = apply_mixup(
-                    batch_samples, batch_labels, alpha=mixup_alpha, probability=mixup_probability
-                )
-
-            yield batch_samples, batch_labels
+    sample = np.expand_dims(sample, axis=-1).astype(np.float32)
+    return sample, label
 
 
 def load_dataset(
@@ -212,13 +161,12 @@ def load_dataset(
     num_workers: int = 8,
     **kwargs,
 ) -> tf.data.Dataset:
-    """Build a high-throughput tf.data pipeline with parallel sample loading.
+    """Build a high-throughput tf.data pipeline with multiprocessing workers.
 
-    Uses tf.data map with ``num_parallel_calls`` workers so audio decoding,
-    resampling, and preprocessing run concurrently across multiple threads
-    (released from the GIL during C-level I/O).  For very large datasets
-    this is dramatically faster than the single-threaded ``from_generator``
-    approach.
+    Uses ``multiprocessing.Pool`` so FLAC decode, resampling, smart-crop,
+    and spectrogram computation run in **separate processes**, bypassing the
+    GIL entirely.  Results stream into ``tf.data.from_generator`` for
+    batching, mixup, and GPU prefetch.
 
     Args:
         file_paths: Audio file paths.
@@ -227,7 +175,7 @@ def load_dataset(
         batch_size: Batch size.
         spec_width: Target spectrogram width.
         mel_bins: Number of mel bins.
-        num_workers: Number of parallel loading workers (0 = sequential).
+        num_workers: Number of worker processes (0 = single-process fallback).
         **kwargs: Forwarded to loading logic (sample_rate, chunk_duration, etc.).
 
     Returns:
@@ -249,9 +197,6 @@ def load_dataset(
     mixup_alpha = kwargs.get("mixup_alpha", 0.2)
     mixup_probability = kwargs.get("mixup_probability", 0.25)
 
-    # Build class lookup
-    _NOISE_LABELS = frozenset(("noise", "silence", "background", "other"))
-    class_to_idx = {c: i for i, c in enumerate(classes)}
     num_classes = len(classes)
 
     # Determine output shapes
@@ -266,119 +211,71 @@ def load_dataset(
     else:
         raise ValueError(f"Invalid audio frontend: {audio_frontend}")
 
-    T = chunk_len
+    # Worker config (picklable dict — no closures)
+    worker_cfg = {
+        "audio_frontend": audio_frontend,
+        "sr": sr,
+        "cd": cd,
+        "T": chunk_len,
+        "fft_length": fft_length,
+        "mel_bins": mel_bins,
+        "spec_width": spec_width,
+        "mag_scale": mag_scale,
+        "n_mfcc": n_mfcc,
+        "max_duration": max_duration,
+        "snr_threshold": snr_threshold,
+        "random_offset": random_offset,
+        "spec_augment": spec_augment,
+        "freq_mask_max": freq_mask_max,
+        "time_mask_max": time_mask_max,
+        "noise_labels": ("noise", "silence", "background", "other"),
+        "class_to_idx": {c: i for i, c in enumerate(classes)},
+        "num_classes": num_classes,
+    }
 
-    def _load_single(path_tensor):
-        """Load and preprocess one file. Returns (sample, label) or zeros on error."""
-        path = path_tensor.numpy().decode("utf-8")
-        label_str = path.split("/")[-2]
+    # Choose chunksize: enough to amortize IPC, small enough for fairness
+    chunksize = max(1, min(64, len(file_paths) // max(num_workers, 1) // 4))
 
-        # Label
-        if label_str.lower() in _NOISE_LABELS:
-            label = np.zeros(num_classes, dtype=np.float32)
-        elif label_str in class_to_idx:
-            label = np.zeros(num_classes, dtype=np.float32)
-            label[class_to_idx[label_str]] = 1.0
+    use_mp = num_workers > 0
+
+    def _generator():
+        """Infinite generator streaming results from the worker pool."""
+        pool = None
+        if use_mp:
+            pool = mp.Pool(num_workers, initializer=_init_worker, initargs=(worker_cfg,))
         else:
-            # Unknown class — return zeros, will be filtered
-            return np.zeros(sample_shape, dtype=np.float32), np.full(num_classes, -1.0, dtype=np.float32)
+            _init_worker(worker_cfg)
 
-        audio_chunks = load_audio_file(path, sr, max_duration, cd, random_offset=random_offset)
-        if len(audio_chunks) == 0:
-            audio_chunks = [np.random.uniform(-1.0, 1.0, size=(T,)).astype(np.float32)]
-            label = np.zeros(num_classes, dtype=np.float32)
+        try:
+            while True:
+                shuffled = list(file_paths)
+                random.shuffle(shuffled)
 
-        # Smart crop for long recordings
-        if len(audio_chunks) > 2:
-            full_audio = np.concatenate(audio_chunks)
-            audio_chunks = smart_crop(full_audio, sr, cd, max_chunks=5)
+                if pool is not None:
+                    results = pool.imap_unordered(_process_file, shuffled, chunksize=chunksize)
+                else:
+                    results = map(_process_file, shuffled)
 
-        if audio_frontend in ("mfcc", "log_mel"):
-            specs = [
-                get_spectrogram_from_audio(
-                    chunk,
-                    sr,
-                    n_fft=fft_length,
-                    mel_bins=mel_bins,
-                    spec_width=spec_width,
-                    mag_scale="none",
-                    mode=audio_frontend,
-                    n_mfcc=n_mfcc,
-                )
-                for chunk in audio_chunks
-            ]
-            pool = sort_by_activity(specs, threshold=snr_threshold) or specs
-            if not pool:
-                return np.zeros(sample_shape, dtype=np.float32), np.full(num_classes, -1.0, dtype=np.float32)
-            sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
-            sample = sample[0] if isinstance(sample, list) else sample
+                for result in results:
+                    if result is not None:
+                        yield result
+        finally:
+            if pool is not None:
+                pool.terminate()
+                pool.join()
 
-        elif audio_frontend == "librosa":
-            specs = [
-                get_spectrogram_from_audio(
-                    chunk,
-                    sr,
-                    n_fft=fft_length,
-                    mel_bins=mel_bins,
-                    spec_width=spec_width,
-                    mag_scale=mag_scale,
-                )
-                for chunk in audio_chunks
-            ]
-            pool = sort_by_activity(specs, threshold=snr_threshold) or specs
-            if not pool:
-                return np.zeros(sample_shape, dtype=np.float32), np.full(num_classes, -1.0, dtype=np.float32)
-            sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
-            sample = sample[0] if isinstance(sample, list) else sample
+    output_sig = (
+        tf.TensorSpec(shape=sample_shape, dtype=tf.float32),
+        tf.TensorSpec(shape=(num_classes,), dtype=tf.float32),
+    )
 
-        elif audio_frontend == "hybrid":
-            specs = [
-                get_spectrogram_from_audio(chunk, sr, n_fft=fft_length, mel_bins=-1, spec_width=spec_width)
-                for chunk in audio_chunks
-            ]
-            pool = sort_by_activity(specs, threshold=snr_threshold) or specs
-            if not pool:
-                return np.zeros(sample_shape, dtype=np.float32), np.full(num_classes, -1.0, dtype=np.float32)
-            sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
-            sample = sample[0] if isinstance(sample, list) else sample
+    dataset = tf.data.Dataset.from_generator(_generator, output_signature=output_sig)
+    dataset = dataset.batch(batch_size, drop_remainder=True)
 
-        elif audio_frontend == "raw":
-            pool = sort_by_activity(audio_chunks, threshold=snr_threshold) or audio_chunks
-            if not pool:
-                return np.zeros(sample_shape, dtype=np.float32), np.full(num_classes, -1.0, dtype=np.float32)
-            sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
-            x = sample[0] if isinstance(sample, list) else sample
-            x = x[:T]
-            if x.shape[0] < T:
-                x = np.pad(x, (0, T - x.shape[0]))
-            sample = x / (np.max(np.abs(x)) + 1e-6)
-        else:
-            raise ValueError(f"Invalid audio frontend: {audio_frontend}")
+    # Mixup on batches
+    if mixup_alpha > 0 and mixup_probability > 0:
 
-        # SpecAugment
-        if spec_augment and audio_frontend in ("librosa", "hybrid", "mfcc", "log_mel"):
-            sample = apply_spec_augment(sample, freq_mask_max=freq_mask_max, time_mask_max=time_mask_max)
-
-        sample = np.expand_dims(sample, axis=-1).astype(np.float32)
-        return sample, label
-
-    def _py_load(path_tensor):
-        sample, label = tf.py_function(
-            _load_single,
-            [path_tensor],
-            [tf.float32, tf.float32],
-        )
-        sample.set_shape(sample_shape)
-        label.set_shape((num_classes,))
-        return sample, label
-
-    def _filter_valid(sample, label):
-        """Drop samples with sentinel -1.0 labels (unknown class / load error)."""
-        return tf.reduce_all(label >= 0.0)
-
-    def _apply_batch_mixup(samples, labels):
-        """Apply Dirichlet mixup to a batch."""
-        if mixup_alpha > 0 and mixup_probability > 0:
+        def _apply_batch_mixup(samples, labels):
             mixed_s, mixed_l = tf.py_function(
                 lambda s, lb: apply_mixup(s.numpy(), lb.numpy(), alpha=mixup_alpha, probability=mixup_probability),
                 [samples, labels],
@@ -387,17 +284,8 @@ def load_dataset(
             mixed_s.set_shape(samples.shape)
             mixed_l.set_shape(labels.shape)
             return mixed_s, mixed_l
-        return samples, labels
 
-    parallel = num_workers if num_workers > 0 else None
+        dataset = dataset.map(_apply_batch_mixup, num_parallel_calls=1)
 
-    # Build pipeline: shuffle files -> parallel load -> filter -> batch -> mixup -> prefetch
-    dataset = tf.data.Dataset.from_tensor_slices(file_paths)
-    dataset = dataset.shuffle(len(file_paths), reshuffle_each_iteration=True)
-    dataset = dataset.map(_py_load, num_parallel_calls=parallel, deterministic=False)
-    dataset = dataset.filter(_filter_valid)
-    dataset = dataset.batch(batch_size, drop_remainder=True)
-    dataset = dataset.map(_apply_batch_mixup, num_parallel_calls=1)
-    dataset = dataset.repeat()
     dataset = dataset.prefetch(tf.data.AUTOTUNE)
     return dataset
