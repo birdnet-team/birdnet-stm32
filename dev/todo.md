@@ -485,7 +485,7 @@ tests/
 
 ---
 
-## Completion Summary (v0.7.0)
+## Completion Summary (v0.8.0)
 
 **Status**: All planned phases (1–14) are complete. The rewrite from research
 prototype to production-quality project is done.

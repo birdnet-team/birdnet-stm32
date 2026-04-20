@@ -7,8 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-04-20
+
 ### Added
 
+- **Memory profiling** (`--profile_memory`): measures peak RSS and delta during inference via `resource.getrusage`.
+- **Deploy CLI enhancements**: `--dry_run` (print commands without executing), `--skip_validate` (skip on-target validation), colored ANSI terminal output (auto-disabled when not a tty), auto-detect board on `/dev/ttyACM*`.
+- **Config TOML migration**: `config.toml.example` now has `[deploy]`, `[build]`, and `[n6_loader]` sections; config resolver auto-generates n6_loader JSON from TOML `[n6_loader]` table.
+- **Setup and download scripts**: `scripts/setup_stm32.sh` (toolchain check), `scripts/download_checkpoints.sh`, `scripts/download_data.sh` (placeholders for release assets).
+- **Deploy config tests**: 6 new tests for config resolution, TOML fallback, and board detection.
 - **Quantization-Aware Training (QAT)** (`--qat`): shadow-weight fake-quantization fine-tuning for Keras 3. Freezes BatchNorm, injects INT8 noise into kernel weights during training, maintains FP32 shadow weights with STE-like gradient transfer. No FakeQuant ops in saved model — full N6 NPU compatibility. Improves quantized model accuracy (cmAP +1.5pp, ROC-AUC +0.8pp on 10-class test set).
 - `extra_callbacks` parameter for `train_model()` to support QAT and other custom callbacks.
 - **Species-level AP report** (`--species_report`): per-species average precision with bootstrap confidence intervals (`--n_bootstrap`).
@@ -16,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Benchmark mode** (`--benchmark`): structured JSON report with all metrics, per-species AP, latency stats, and model config.
 - **Latency measurement** (`--benchmark_latency`): per-chunk inference timing with mean/median/p95/p99 statistics.
 - **HTML evaluation report** (`--report_html`): self-contained HTML with inline CSS, summary metrics table, per-species AP table, and confusion matrix heatmap (base64 matplotlib).
+- Dev guide docs: implementation notes, adding-a-frontend, adding-a-model, experiment-tracking, release-process.
+- Integration CI workflow (weekly + manual trigger).
 
 ## [0.7.0] — 2026-04-19
 
