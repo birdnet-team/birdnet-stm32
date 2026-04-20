@@ -5,4 +5,4 @@ from importlib.metadata import PackageNotFoundError, version
 try:
     __version__ = version("birdnet-stm32")
 except PackageNotFoundError:
-    __version__ = "0.8.0"  # fallback when not installed
+    __version__ = "0.9.0"  # fallback when not installed

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-04-20
+
+### Added
+
+- **Dynamic GPU memory growth**: training now calls `tf.config.experimental.set_memory_growth` so TensorFlow allocates GPU VRAM incrementally instead of grabbing the full device.
+- **Smart crop** for weakly-labeled long recordings: short-time energy (STE) analysis finds salient audio regions, reducing label noise from silent chunks (`birdnet_stm32/audio/activity.py::smart_crop`).
+- **Dirichlet multi-source mixup**: replaces Beta-distribution blending with Dirichlet sampling over 2–3 sources, realistically emulating overlapping bird vocalizations in soundscapes.
+- **Linear probing** (`--linear_probe`): freeze a pretrained backbone and train only a new classification head on custom species data (`birdnet_stm32/training/linear_probe.py`).
+
+### Changed
+
+- **Consolidated CLI defaults**: SE blocks, inverted residuals, SpecAugment, deterministic training, balanced class weights, label smoothing (0.1), and gradient clipping (1.0) are now **on by default**. Use `--no_se`, `--no_inverted_residual`, `--no_spec_augment`, `--no_class_weights` to disable. `--max_duration` raised from 30 to 60 s.
+- Removed `--deterministic` flag — training is always deterministic.
+
 ## [0.8.0] — 2026-04-20
 
 ### Added

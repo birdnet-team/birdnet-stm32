@@ -9,8 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import tensorflow as tf
 
-from birdnet_stm32.audio.activity import pick_random_samples, sort_by_activity
-from birdnet_stm32.audio.augmentation import apply_spec_augment
+from birdnet_stm32.audio.activity import pick_random_samples, smart_crop, sort_by_activity
+from birdnet_stm32.audio.augmentation import apply_mixup, apply_spec_augment
 from birdnet_stm32.audio.io import load_audio_file
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
 from birdnet_stm32.models.frontend import normalize_frontend_name
@@ -80,6 +80,13 @@ def data_generator(
         if len(audio_chunks) == 0:
             audio_chunks = [np.random.uniform(-1.0, 1.0, size=(T,)).astype(np.float32)]
             label_str = "noise"
+
+        # For long files (multiple chunks), use smart crop to find salient
+        # segments before activity filtering.  This reduces label noise from
+        # weakly-labeled recordings where vocalizations are sparse.
+        if len(audio_chunks) > 2:
+            full_audio = np.concatenate(audio_chunks)
+            audio_chunks = smart_crop(full_audio, sample_rate, chunk_duration, max_chunks=5)
 
         if audio_frontend in ("mfcc", "log_mel"):
             specs = [
@@ -186,21 +193,11 @@ def data_generator(
             batch_samples = np.stack(batch_samples)
             batch_labels = np.stack(batch_labels)
 
-            # Mixup
+            # Mixup (multi-source Dirichlet mixing)
             if mixup_alpha > 0 and mixup_probability > 0:
-                num_mix = int(batch_samples.shape[0] * mixup_probability)
-                if num_mix > 0:
-                    mix_indices = np.random.choice(batch_samples.shape[0], size=num_mix, replace=False)
-                    permuted_indices = np.random.permutation(batch_samples.shape[0])
-                    lam = np.random.uniform(mixup_alpha, 1 - mixup_alpha, size=(num_mix,))
-                    lam_inp = lam.reshape((num_mix,) + (1,) * (batch_samples.ndim - 1))
-                    batch_samples[mix_indices] = (
-                        lam_inp * batch_samples[mix_indices]
-                        + (1 - lam_inp) * batch_samples[permuted_indices[mix_indices]]
-                    )
-                    batch_labels[mix_indices] = np.maximum(
-                        batch_labels[mix_indices], batch_labels[permuted_indices[mix_indices]]
-                    )
+                batch_samples, batch_labels = apply_mixup(
+                    batch_samples, batch_labels, alpha=mixup_alpha, probability=mixup_probability
+                )
 
             yield batch_samples, batch_labels
 
