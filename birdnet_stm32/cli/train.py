@@ -44,7 +44,8 @@ def get_args() -> argparse.Namespace:
         "--audio_frontend",
         type=str,
         default="hybrid",
-        choices=["precomputed", "hybrid", "raw", "librosa", "tf", "mfcc", "log_mel"],
+        choices=["hybrid", "raw", "librosa", "mfcc", "log_mel"],
+        help="Audio frontend mode",
     )
     parser.add_argument("--mag_scale", type=str, default="pwl", choices=["pcen", "pwl", "db", "none"])
     parser.add_argument("--n_mfcc", type=int, default=20, help="Number of MFCC coefficients (mfcc frontend only)")
@@ -85,7 +86,9 @@ def get_args() -> argparse.Namespace:
     )
     parser.add_argument("--focal_gamma", type=float, default=2.0, help="Focal loss gamma (focusing parameter)")
     parser.add_argument("--val_split", type=float, default=0.2, help="Validation split ratio")
-    parser.add_argument("--checkpoint_path", type=str, default="checkpoints/best_model.keras")
+    parser.add_argument(
+        "--checkpoint_path", type=str, default="checkpoints/best_model.keras", help="Output checkpoint path (.keras)"
+    )
     parser.add_argument("--label_smoothing", type=float, default=0.1, help="Label smoothing factor (0 = off)")
     parser.add_argument("--grad_clip", type=float, default=1.0, help="Max gradient norm for clipping (0 = disabled)")
     parser.add_argument(
