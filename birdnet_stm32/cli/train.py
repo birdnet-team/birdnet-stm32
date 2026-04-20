@@ -351,25 +351,28 @@ def main():
 
     # Train
     print("Starting training...")
-    train_model(
-        model,
-        train_dataset,
-        val_dataset,
-        epochs=args.epochs,
-        learning_rate=args.learning_rate,
-        batch_size=args.batch_size,
-        checkpoint_path=args.checkpoint_path,
-        steps_per_epoch=steps_per_epoch,
-        val_steps=val_steps,
-        is_multilabel=is_multilabel,
-        optimizer=args.optimizer,
-        weight_decay=args.weight_decay,
-        loss_fn=loss_fn,
-        gradient_clip_norm=args.grad_clip,
-        class_weights=class_weights,
-        resume=args.resume,
-    )
-    print(f"Training complete. Best model saved to '{args.checkpoint_path}'.")
+    try:
+        train_model(
+            model,
+            train_dataset,
+            val_dataset,
+            epochs=args.epochs,
+            learning_rate=args.learning_rate,
+            batch_size=args.batch_size,
+            checkpoint_path=args.checkpoint_path,
+            steps_per_epoch=steps_per_epoch,
+            val_steps=val_steps,
+            is_multilabel=is_multilabel,
+            optimizer=args.optimizer,
+            weight_decay=args.weight_decay,
+            loss_fn=loss_fn,
+            gradient_clip_norm=args.grad_clip,
+            class_weights=class_weights,
+            resume=args.resume,
+        )
+        print(f"Training complete. Best model saved to '{args.checkpoint_path}'.")
+    except KeyboardInterrupt:
+        print(f"\nTraining interrupted. Best checkpoint so far: '{args.checkpoint_path}'")
 
     # Save labels
     labels_file = args.checkpoint_path.replace(".keras", "_labels.txt")
