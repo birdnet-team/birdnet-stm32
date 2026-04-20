@@ -3,6 +3,9 @@
 Uses ``multiprocessing.Pool`` for true parallel audio loading and
 preprocessing, bypassing the GIL so FLAC decode, resampling, smart-crop,
 and spectrogram computation run concurrently across CPU cores.
+
+Long files yield multiple salient chunks per open, stored in a shuffled
+in-memory reservoir to maximize I/O reuse and batch diversity.
 """
 
 import multiprocessing as mp
@@ -11,7 +14,7 @@ import random
 import numpy as np
 import tensorflow as tf
 
-from birdnet_stm32.audio.activity import pick_random_samples, smart_crop, sort_by_activity
+from birdnet_stm32.audio.activity import smart_crop, sort_by_activity
 from birdnet_stm32.audio.augmentation import apply_mixup, apply_spec_augment
 from birdnet_stm32.audio.io import load_audio_file
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
@@ -33,7 +36,9 @@ def _init_worker(cfg: dict) -> None:
 def _process_file(path: str):
     """Load and preprocess one audio file in a worker process.
 
-    Returns ``(sample, label)`` or ``None`` on failure / unknown class.
+    Returns a **list** of ``(sample, label)`` tuples (one per salient chunk),
+    or ``None`` on failure / unknown class.  The number of chunks per file is
+    controlled by ``max_chunks_per_file`` in the worker config.
     """
     cfg = _worker_cfg
     label_str = path.split("/")[-2]
@@ -66,6 +71,7 @@ def _process_file(path: str):
     freq_mask_max = cfg["freq_mask_max"]
     time_mask_max = cfg["time_mask_max"]
     audio_frontend = cfg["audio_frontend"]
+    max_chunks = cfg["max_chunks_per_file"]
 
     try:
         audio_chunks = load_audio_file(path, sr, max_duration, cd, random_offset=random_offset)
@@ -79,10 +85,11 @@ def _process_file(path: str):
     # Smart crop for long recordings
     if len(audio_chunks) > 2:
         full_audio = np.concatenate(audio_chunks)
-        audio_chunks = smart_crop(full_audio, sr, cd, max_chunks=5)
+        audio_chunks = smart_crop(full_audio, sr, cd, max_chunks=max(5, max_chunks))
 
+    # --- Compute spectrograms / raw features for all chunks ---
     if audio_frontend in ("mfcc", "log_mel"):
-        specs = [
+        features = [
             get_spectrogram_from_audio(
                 chunk,
                 sr,
@@ -95,14 +102,8 @@ def _process_file(path: str):
             )
             for chunk in audio_chunks
         ]
-        pool = sort_by_activity(specs, threshold=snr_threshold) or specs
-        if not pool:
-            return None
-        sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
-        sample = sample[0] if isinstance(sample, list) else sample
-
     elif audio_frontend == "librosa":
-        specs = [
+        features = [
             get_spectrogram_from_audio(
                 chunk,
                 sr,
@@ -113,42 +114,56 @@ def _process_file(path: str):
             )
             for chunk in audio_chunks
         ]
-        pool = sort_by_activity(specs, threshold=snr_threshold) or specs
-        if not pool:
-            return None
-        sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
-        sample = sample[0] if isinstance(sample, list) else sample
-
     elif audio_frontend == "hybrid":
-        specs = [
+        features = [
             get_spectrogram_from_audio(chunk, sr, n_fft=fft_length, mel_bins=-1, spec_width=spec_width)
             for chunk in audio_chunks
         ]
-        pool = sort_by_activity(specs, threshold=snr_threshold) or specs
-        if not pool:
-            return None
-        sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
-        sample = sample[0] if isinstance(sample, list) else sample
-
     elif audio_frontend == "raw":
-        pool = sort_by_activity(audio_chunks, threshold=snr_threshold) or audio_chunks
-        if not pool:
-            return None
-        sample = pick_random_samples(pool, num_samples=1, pick_first=random_offset)
-        x = sample[0] if isinstance(sample, list) else sample
-        x = x[:T]
-        if x.shape[0] < T:
-            x = np.pad(x, (0, T - x.shape[0]))
-        sample = x / (np.max(np.abs(x)) + 1e-6)
+        features = audio_chunks
     else:
         raise ValueError(f"Invalid audio frontend: {audio_frontend}")
 
-    # SpecAugment
-    if spec_augment and audio_frontend in ("librosa", "hybrid", "mfcc", "log_mel"):
-        sample = apply_spec_augment(sample, freq_mask_max=freq_mask_max, time_mask_max=time_mask_max)
+    # Activity-sort: most salient first
+    pool = sort_by_activity(features, threshold=snr_threshold) or features
+    if not pool:
+        return None
 
-    sample = np.expand_dims(sample, axis=-1).astype(np.float32)
-    return sample, label
+    # Take up to max_chunks salient items
+    selected = pool[:max_chunks]
+
+    results = []
+    for item in selected:
+        if audio_frontend == "raw":
+            x = item[:T]
+            if x.shape[0] < T:
+                x = np.pad(x, (0, T - x.shape[0]))
+            sample = x / (np.max(np.abs(x)) + 1e-6)
+        else:
+            sample = item
+
+        if spec_augment and audio_frontend in ("librosa", "hybrid", "mfcc", "log_mel"):
+            sample = apply_spec_augment(sample, freq_mask_max=freq_mask_max, time_mask_max=time_mask_max)
+
+        sample = np.expand_dims(sample, axis=-1).astype(np.float32)
+        results.append((sample, label))
+
+    return results if results else None
+
+
+def estimate_samples_per_epoch(n_files: int, max_chunks_per_file: int = 1) -> int:
+    """Estimate the number of samples produced per full pass over the files.
+
+    Short files produce 1 chunk, longer files up to ``max_chunks_per_file``.
+    On average we estimate ``(1 + max_chunks_per_file) / 2`` samples per file.
+    """
+    avg = (1 + max_chunks_per_file) / 2.0
+    return max(1, int(n_files * avg))
+
+
+# Default reservoir capacity — number of ready samples to buffer.
+_RESERVOIR_HIGH = 512
+_RESERVOIR_LOW = 128
 
 
 def load_dataset(
@@ -159,14 +174,19 @@ def load_dataset(
     spec_width: int = 256,
     mel_bins: int = 64,
     num_workers: int = 8,
+    max_chunks_per_file: int = 1,
     **kwargs,
 ) -> tf.data.Dataset:
     """Build a high-throughput tf.data pipeline with multiprocessing workers.
 
     Uses ``multiprocessing.Pool`` so FLAC decode, resampling, smart-crop,
     and spectrogram computation run in **separate processes**, bypassing the
-    GIL entirely.  Results stream into ``tf.data.from_generator`` for
-    batching, mixup, and GPU prefetch.
+    GIL entirely.
+
+    When ``max_chunks_per_file > 1``, each file open extracts up to that many
+    salient chunks, which are buffered in a shuffled in-memory reservoir.
+    This dramatically reduces redundant I/O for long recordings (e.g. a 60 s
+    file decoded once yields 3 usable chunks instead of 1).
 
     Args:
         file_paths: Audio file paths.
@@ -176,6 +196,7 @@ def load_dataset(
         spec_width: Target spectrogram width.
         mel_bins: Number of mel bins.
         num_workers: Number of worker processes (0 = single-process fallback).
+        max_chunks_per_file: Max salient chunks to extract per file open.
         **kwargs: Forwarded to loading logic (sample_rate, chunk_duration, etc.).
 
     Returns:
@@ -231,6 +252,7 @@ def load_dataset(
         "noise_labels": ("noise", "silence", "background", "other"),
         "class_to_idx": {c: i for i, c in enumerate(classes)},
         "num_classes": num_classes,
+        "max_chunks_per_file": max_chunks_per_file,
     }
 
     # Choose chunksize: enough to amortize IPC, small enough for fairness
@@ -238,8 +260,11 @@ def load_dataset(
 
     use_mp = num_workers > 0
 
+    reservoir_high = max(_RESERVOIR_HIGH, batch_size * 8)
+    reservoir_low = max(_RESERVOIR_LOW, batch_size * 2)
+
     def _generator():
-        """Infinite generator streaming results from the worker pool."""
+        """Infinite generator with reservoir for multi-chunk file reuse."""
         pool = None
         if use_mp:
             pool = mp.Pool(num_workers, initializer=_init_worker, initargs=(worker_cfg,))
@@ -252,13 +277,28 @@ def load_dataset(
                 random.shuffle(shuffled)
 
                 if pool is not None:
-                    results = pool.imap_unordered(_process_file, shuffled, chunksize=chunksize)
+                    results_iter = pool.imap_unordered(_process_file, shuffled, chunksize=chunksize)
                 else:
-                    results = map(_process_file, shuffled)
+                    results_iter = map(_process_file, shuffled)
 
-                for result in results:
-                    if result is not None:
-                        yield result
+                reservoir: list[tuple[np.ndarray, np.ndarray]] = []
+
+                for result in results_iter:
+                    if result is None:
+                        continue
+                    reservoir.extend(result)
+
+                    # Once reservoir is full enough, shuffle and drain
+                    if len(reservoir) >= reservoir_high:
+                        random.shuffle(reservoir)
+                        while len(reservoir) > reservoir_low:
+                            yield reservoir.pop()
+
+                # Drain remaining samples at end of epoch
+                if reservoir:
+                    random.shuffle(reservoir)
+                    while reservoir:
+                        yield reservoir.pop()
         finally:
             if pool is not None:
                 pool.terminate()

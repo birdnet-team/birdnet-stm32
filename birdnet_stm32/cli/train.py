@@ -9,7 +9,7 @@ import numpy as np
 import tensorflow as tf
 
 from birdnet_stm32.data.dataset import load_file_paths_from_directory, upsample_minority_classes
-from birdnet_stm32.data.generator import load_dataset
+from birdnet_stm32.data.generator import estimate_samples_per_epoch, load_dataset
 from birdnet_stm32.models.dscnn import build_dscnn_model
 from birdnet_stm32.models.frontend import normalize_frontend_name
 from birdnet_stm32.training.config import ModelConfig
@@ -73,6 +73,12 @@ def get_args() -> argparse.Namespace:
     # -- Training -------------------------------------------------------------
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
     parser.add_argument("--num_workers", type=int, default=8, help="Parallel data loading workers (0 = sequential)")
+    parser.add_argument(
+        "--max_chunks_per_file",
+        type=int,
+        default=3,
+        help="Max salient chunks to extract per file open (reduces redundant I/O for long recordings)",
+    )
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
     parser.add_argument("--learning_rate", type=float, default=0.001, help="Initial learning rate")
     parser.add_argument("--dropout", type=float, default=0.5, help="Dropout rate before classifier head")
@@ -220,6 +226,7 @@ def main():
         audio_frontend=args.audio_frontend,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        max_chunks_per_file=args.max_chunks_per_file,
         mixup_alpha=args.mixup_alpha,
         mixup_probability=args.mixup_probability,
         random_offset=True,
@@ -235,6 +242,7 @@ def main():
         audio_frontend=args.audio_frontend,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        max_chunks_per_file=1,
         mixup_alpha=0.0,
         mixup_probability=0.0,
         random_offset=False,
@@ -243,7 +251,9 @@ def main():
         **common_kwargs,
     )
 
-    steps_per_epoch = max(1, math.ceil(len(train_paths) / float(args.batch_size)))
+    steps_per_epoch = max(
+        1, math.ceil(estimate_samples_per_epoch(len(train_paths), args.max_chunks_per_file) / float(args.batch_size))
+    )
     val_steps = max(1, math.ceil(len(val_paths) / float(args.batch_size)))
 
     # Build model
