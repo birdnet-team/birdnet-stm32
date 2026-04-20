@@ -72,6 +72,7 @@ def get_args() -> argparse.Namespace:
 
     # -- Training -------------------------------------------------------------
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
+    parser.add_argument("--num_workers", type=int, default=8, help="Parallel data loading workers (0 = sequential)")
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
     parser.add_argument("--learning_rate", type=float, default=0.001, help="Initial learning rate")
     parser.add_argument("--dropout", type=float, default=0.5, help="Dropout rate before classifier head")
@@ -218,6 +219,7 @@ def main():
         classes,
         audio_frontend=args.audio_frontend,
         batch_size=args.batch_size,
+        num_workers=args.num_workers,
         mixup_alpha=args.mixup_alpha,
         mixup_probability=args.mixup_probability,
         random_offset=True,
@@ -232,6 +234,7 @@ def main():
         classes,
         audio_frontend=args.audio_frontend,
         batch_size=args.batch_size,
+        num_workers=args.num_workers,
         mixup_alpha=0.0,
         mixup_probability=0.0,
         random_offset=False,
