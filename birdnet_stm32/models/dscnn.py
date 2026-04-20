@@ -101,9 +101,9 @@ def build_dscnn_model(
     dropout_rate: float = 0.5,
     n_mfcc: int = 20,
     weight_decay: float = 1e-4,
-    use_se: bool = False,
+    use_se: bool = True,
     se_reduction: int = 4,
-    use_inverted_residual: bool = False,
+    use_inverted_residual: bool = True,
     expansion_factor: int = 6,
     use_attention_pooling: bool = False,
 ) -> tf.keras.Model:

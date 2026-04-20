@@ -52,7 +52,7 @@ def inverted_residual_block(
     expansion: int = 6,
     stride_f: int = 1,
     stride_t: int = 1,
-    use_se: bool = False,
+    use_se: bool = True,
     se_reduction: int = 4,
     weight_decay: float = 1e-4,
     drop_rate: float = 0.1,

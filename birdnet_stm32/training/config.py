@@ -54,9 +54,9 @@ class ModelConfig:
     embeddings_size: int = 256
     alpha: float = 1.0
     depth_multiplier: int = 1
-    use_se: bool = False
+    use_se: bool = True
     se_reduction: int = 4
-    use_inverted_residual: bool = False
+    use_inverted_residual: bool = True
     expansion_factor: int = 6
     use_attention_pooling: bool = False
     dropout_rate: float = 0.5
