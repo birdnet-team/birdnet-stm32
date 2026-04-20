@@ -8,7 +8,11 @@ import random
 import numpy as np
 import tensorflow as tf
 
-from birdnet_stm32.data.dataset import load_file_paths_from_directory, upsample_minority_classes
+from birdnet_stm32.data.dataset import (
+    get_classes_with_most_samples,
+    load_file_paths_from_directory,
+    upsample_minority_classes,
+)
 from birdnet_stm32.data.generator import estimate_samples_per_epoch, load_dataset
 from birdnet_stm32.models.dscnn import build_dscnn_model
 from birdnet_stm32.models.frontend import normalize_frontend_name
@@ -30,6 +34,7 @@ def get_args() -> argparse.Namespace:
 
     # -- Data -----------------------------------------------------------------
     parser.add_argument("--data_path_train", type=str, required=True, help="Path to train dataset")
+    parser.add_argument("--max_classes", type=int, default=None, help="Use top N classes by sample count")
     parser.add_argument("--max_samples", type=int, default=None, help="Max samples per class")
     parser.add_argument("--upsample_ratio", type=float, default=0.5, help="Upsample ratio for minority classes")
 
@@ -197,7 +202,13 @@ def main():
     hop_length = compute_hop_length(args.sample_rate, args.chunk_duration, args.spec_width)
 
     # Load file paths
-    file_paths, classes = load_file_paths_from_directory(args.data_path_train)
+    top_classes = None
+    if args.max_classes is not None:
+        top_classes = get_classes_with_most_samples(args.data_path_train, n_classes=args.max_classes)
+        print(f"Selected top {len(top_classes)} classes by sample count.")
+    file_paths, classes = load_file_paths_from_directory(
+        args.data_path_train, classes=top_classes, max_samples=args.max_samples
+    )
 
     # Train/val split
     split_idx = int(len(file_paths) * (1 - args.val_split))
