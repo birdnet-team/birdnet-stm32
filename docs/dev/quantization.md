@@ -12,21 +12,34 @@ Keras models to INT8 TFLite for the STM32N6 NPU.
 | I/O precision | Float32 | Audio inputs are continuous-valued; INT8 I/O destroys precision |
 | Calibration | Representative dataset | 1024 samples from training data |
 
-## Why not QAT?
+## QAT (quantization-aware training)
 
-Quantization-aware training (QAT) inserts fake-quantization nodes during
-training, which can improve INT8 accuracy. However:
+BirdNET-STM32 also supports **quantization-aware training (QAT)** as an
+optional fine-tuning step (`--qat`). QAT injects INT8 quantization noise into
+weights during training so the model learns to tolerate quantization error.
 
-- **N6 compatibility risk**: QAT may leave artifacts (fake-quant nodes,
-  unsupported fused ops) that prevent deployment on the STM32N6 NPU.
-- **Operator coverage**: the N6 NPU operator set is limited; fused QAT ops
-  may not be supported.
-- **PTQ is sufficient**: with PWL magnitude scaling and proper representative
-  dataset calibration, PTQ consistently achieves >0.95 cosine similarity.
+The implementation uses **shadow-weight fake-quantization**
+(`birdnet_stm32/training/qat.py`):
 
-!!! danger
-    Do not enable QAT without first verifying the resulting TFLite model with
-    `stedgeai analyze`. A model that trains fine may fail to deploy.
+1. Freeze BatchNorm layers (running statistics are kept).
+2. Before each forward pass, fake-quantize Conv2D / DepthwiseConv2D / Dense
+   kernel weights to INT8 range (per-channel).
+3. Train with a low learning rate (typically 1e-4) for a few epochs.
+4. Save the model with original float32 weights — no FakeQuant ops remain.
+
+Because no FakeQuant nodes are saved, the resulting `.keras` model is fully
+compatible with the STM32N6 NPU after standard PTQ conversion.
+
+```bash
+python -m birdnet_stm32 train --data_path_train data/train \
+  --qat --checkpoint_path checkpoints/best_model.keras \
+  --epochs 10 --learning_rate 0.0001
+```
+
+!!! tip "When to use QAT"
+    Use QAT when PTQ cosine similarity is below 0.95 despite trying PWL
+    magnitude scaling and adjusting the representative dataset. QAT typically
+    recovers 1–3% accuracy lost during quantization.
 
 ## Representative dataset
 
@@ -64,7 +77,7 @@ After conversion, always follow this sequence:
 
 ```mermaid
 flowchart LR
-    A[".keras model"] --> B["convert.py\nPTQ → .tflite"]
+    A[".keras model"] --> B["birdnet_stm32 convert\nPTQ → .tflite"]
     B --> C{"Cosine sim\n> 0.95?"}
     C -->|Yes| D["stedgeai analyze\nN6 compatibility"]
     C -->|No| E["Adjust rep dataset\nor mag scaling"]

@@ -112,6 +112,6 @@ Key constraints:
   Verify exotic ops with `stedgeai analyze`.
 - **Activation memory**: intermediate activations must fit in NPU SRAM. Large
   spatial dimensions or channel counts may exceed limits.
-- **No QAT artifacts**: quantization-aware training may leave fake-quant nodes
-  or unsupported fused ops that prevent deployment. Use PTQ unless QAT is
-  explicitly verified against the N6.
+- **QAT is safe**: the shadow-weight QAT implementation (`--qat`) does not
+  leave FakeQuant ops in the saved model, so the resulting `.keras` file is
+  fully N6-compatible after standard PTQ conversion.

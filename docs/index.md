@@ -30,15 +30,20 @@ python3.12 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
 # Train
-python train.py --data_path_train data/train --audio_frontend hybrid --mag_scale pwl
+python -m birdnet_stm32 train --data_path_train data/train \
+  --audio_frontend hybrid --mag_scale pwl
 
 # Convert to quantized TFLite
-python convert.py --checkpoint_path checkpoints/best_model.keras \
-  --model_config checkpoints/best_model_model_config.json --data_path_train data/train
+python -m birdnet_stm32 convert \
+  --checkpoint_path checkpoints/best_model.keras \
+  --model_config checkpoints/best_model_model_config.json \
+  --data_path_train data/train
 
 # Evaluate
-python test.py --model_path checkpoints/best_model_quantized.tflite \
-  --model_config checkpoints/best_model_model_config.json --data_path_test data/test
+python -m birdnet_stm32 evaluate \
+  --model_path checkpoints/best_model_quantized.tflite \
+  --model_config checkpoints/best_model_model_config.json \
+  --data_path_test data/test
 ```
 
 See the [Getting Started](getting-started.md) guide for full setup instructions
@@ -46,21 +51,45 @@ and the [Deployment](deployment.md) guide for flashing the STM32N6570-DK.
 
 ## Key features
 
-- **Three audio frontends**: precomputed mel, hybrid (STFT + learned mel
-  mixer), and raw waveform — all quantization-friendly.
-- **Scalable DS-CNN**: width (`alpha`) and depth (`depth_multiplier`) knobs for
-  accuracy/size trade-offs.
+- **Five audio frontends**: `librosa` (precomputed mel), `hybrid` (STFT +
+  learned mel mixer), `raw` (waveform → learned filterbank), `mfcc`
+  (precomputed MFCC), and `log_mel` (precomputed log-mel) — all
+  quantization-friendly. `hybrid` and `raw` are the deployment options.
+- **Scalable DS-CNN**: width (`alpha`) and depth (`depth_multiplier`) knobs,
+  optional SE attention (`--use_se`), inverted residual blocks
+  (`--use_inverted_residual`), and attention pooling
+  (`--use_attention_pooling`).
 - **Post-training quantization**: float32 I/O with INT8 internals, targeting
-  >0.95 cosine similarity vs. the float model.
+  >0.95 cosine similarity vs. the float model. Per-channel (default) or
+  per-tensor, plus dynamic range mode.
+- **Quantization-aware training (QAT)**: shadow-weight fake-quantization
+  fine-tuning via `--qat` for improved INT8 accuracy. No FakeQuant ops in the
+  saved model — N6 compatible.
+- **Optuna hyperparameter search**: `--tune --n_trials 20` for automated
+  architecture and training hyperparameter optimization.
+- **Comprehensive evaluation**: ROC-AUC, cmAP, F1, species-level AP with
+  bootstrap CI, DET curves, latency measurement, benchmark mode, and HTML
+  reports.
 - **End-to-end deployment**: `stedgeai generate` → serial flash → on-device
   validation, all from the CLI.
 
 ## Project layout
 
 ```
-train.py            # Training entry point
-convert.py          # Keras → quantized TFLite
-test.py             # Evaluation entry point
 birdnet_stm32/      # Python package (models, audio, data, deploy, ...)
+  cli/              # CLI subcommands (train, convert, evaluate, deploy, board-test)
+  models/           # DS-CNN, frontend, magnitude scaling, profiler
+  audio/            # Audio I/O, spectrogram, augmentation
+  training/         # Trainer, QAT, Optuna tuner, LR finder
+  conversion/       # PTQ, validation, ONNX export
+  evaluation/       # Metrics, pooling, reporting
+  deploy/           # stedgeai wrappers, N6 loader
+firmware/           # Standalone C firmware for STM32N6570-DK
 docs/               # This documentation
+```
+
+All commands use the unified CLI entry point:
+
+```bash
+python -m birdnet_stm32 {train,convert,evaluate,deploy,board-test}
 ```

@@ -161,9 +161,9 @@ SD card (FAT32) root/
 
 To deploy a different model on the same firmware:
 
-1. **Train and quantize** your model with the standard pipeline (`train.py` →
-   `convert.py`). The model config JSON and labels file are produced
-   automatically.
+1. **Train and quantize** your model with the standard pipeline
+   (`python -m birdnet_stm32 train` → `python -m birdnet_stm32 convert`).
+   The model config JSON and labels file are produced automatically.
 
 2. **Run `board-test`** — it reads the new model config and regenerates
    `app_config.h` and `app_labels.h` to match:

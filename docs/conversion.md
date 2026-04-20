@@ -28,8 +28,6 @@ flowchart TD
     D --> E["Validate: Keras vs. TFLite\ncosine sim, MSE, Pearson r"]
     E --> F[".tflite + .npz\nfor on-device validation"]
 ```
-6. Saves a small `.npz` file for later on-device validation with
-   `stedgeai validate`.
 
 ## Validation metrics
 

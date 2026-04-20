@@ -4,7 +4,7 @@
 
 ```mermaid
 flowchart TD
-    A["Audio (.wav)"] --> B["Audio Frontend\nlibrosa / hybrid / raw"]
+    A["Audio (.wav)"] --> B["Audio Frontend\nlibrosa / hybrid / raw / mfcc / log_mel"]
     B -->|"[B, H, W, 1]"| C["Magnitude Scaling\npwl / pcen / db / none"]
     C -->|"[B, H, W, 1]"| D["DS-CNN Body\n4 stages × depth_multiplier blocks\nchannels scaled by α"]
     D -->|"[B, H', W', C]"| E["Global Avg Pool\nDropout → Dense"]
