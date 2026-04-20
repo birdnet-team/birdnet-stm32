@@ -23,16 +23,16 @@ def data_generator(
     file_paths: list[str],
     classes: list[str],
     batch_size: int = 32,
-    audio_frontend: str = "librosa",
+    audio_frontend: str = "hybrid",
     sample_rate: int = 24000,
-    max_duration: int = 30,
+    max_duration: int = 60,
     chunk_duration: float = 3,
-    spec_width: int = 128,
+    spec_width: int = 256,
     mixup_alpha: float = 0.2,
     mixup_probability: float = 0.25,
-    mel_bins: int = 48,
+    mel_bins: int = 64,
     fft_length: int = 512,
-    mag_scale: str = "none",
+    mag_scale: str = "pwl",
     random_offset: bool = False,
     snr_threshold: float = 0.5,
     spec_augment: bool = False,
@@ -205,10 +205,10 @@ def data_generator(
 def load_dataset(
     file_paths: list[str],
     classes: list[str],
-    audio_frontend: str = "precomputed",
+    audio_frontend: str = "hybrid",
     batch_size: int = 32,
-    spec_width: int = 128,
-    mel_bins: int = 48,
+    spec_width: int = 256,
+    mel_bins: int = 64,
     **kwargs,
 ) -> tf.data.Dataset:
     """Wrap the Python generator as a tf.data.Dataset with static shapes.
@@ -226,7 +226,7 @@ def load_dataset(
         Infinite tf.data.Dataset of (inputs, labels) with prefetching.
     """
     audio_frontend = normalize_frontend_name(audio_frontend)
-    sr = kwargs.get("sample_rate", 16000)
+    sr = kwargs.get("sample_rate", 24000)
     cd = kwargs.get("chunk_duration", 3)
     fft_length = kwargs.get("fft_length", 512)
     chunk_len = int(sr * cd)
@@ -254,15 +254,15 @@ def load_dataset(
             batch_size=batch_size,
             audio_frontend=audio_frontend,
             sample_rate=sr,
-            max_duration=kwargs.get("max_duration", 30),
+            max_duration=kwargs.get("max_duration", 60),
             chunk_duration=cd,
             spec_width=spec_width,
-            mixup_alpha=kwargs.get("mixup_alpha", 0.0),
-            mixup_probability=kwargs.get("mixup_probability", 0.0),
+            mixup_alpha=kwargs.get("mixup_alpha", 0.2),
+            mixup_probability=kwargs.get("mixup_probability", 0.25),
             mel_bins=mel_bins,
             fft_length=fft_length,
             n_mfcc=n_mfcc,
-            mag_scale=kwargs.get("mag_scale", "none"),
+            mag_scale=kwargs.get("mag_scale", "pwl"),
             random_offset=kwargs.get("random_offset", False),
             spec_augment=kwargs.get("spec_augment", False),
             freq_mask_max=kwargs.get("freq_mask_max", 8),
