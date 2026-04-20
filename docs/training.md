@@ -136,6 +136,13 @@ Use `--qat` to fine-tune a pretrained model with simulated INT8 quantization
 noise. This closes the accuracy gap between the float Keras model and the
 quantized TFLite model by teaching the weights to survive quantization.
 
+!!! warning "QAT requires a pretrained model"
+    Always train normally first, then fine-tune with `--qat`. Do **not** use
+    `--qat` from scratch — the quantization noise destabilizes randomly
+    initialized weights and the model will not converge. The dataset must
+    have the same classes as the pretrained model; use `--linear_probe` to
+    adapt to a different class set first.
+
 QAT works by injecting fake-quantization noise into kernel weights during
 training while maintaining full-precision shadow copies. BatchNorm layers are
 frozen to prevent running statistics drift. No FakeQuant ops remain in the
