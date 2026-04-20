@@ -2,6 +2,7 @@
 
 import math
 import os
+import resource
 import time
 
 import numpy as np
@@ -81,6 +82,7 @@ def evaluate(
     overlap: float = 0.0,
     mep_beta: float = 10.0,
     measure_latency: bool = False,
+    profile_memory: bool = False,
 ) -> tuple[dict, list[dict], np.ndarray, np.ndarray]:
     """Run inference per chunk, pool to file-level, and compute metrics.
 
@@ -94,6 +96,7 @@ def evaluate(
         overlap: Overlap in seconds for chunking.
         mep_beta: Temperature for LME pooling.
         measure_latency: If True, measure per-chunk inference latency.
+        profile_memory: If True, report peak RSS during inference.
 
     Returns:
         Tuple of (metrics dict, per_file list, y_true array, y_scores array).
@@ -108,6 +111,8 @@ def evaluate(
     per_file: list[dict] = []
     chunk_latencies_ms: list[float] = []
     total_chunks = 0
+
+    rss_before_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss if profile_memory else 0
 
     for path in tqdm(files, total=len(files), desc="Evaluating", unit="file"):
         label_name = os.path.basename(os.path.dirname(path))
@@ -192,6 +197,12 @@ def evaluate(
         metrics["latency_p95_ms"] = float(np.percentile(lat, 95))
         metrics["latency_p99_ms"] = float(np.percentile(lat, 99))
         metrics["total_chunks"] = total_chunks
+
+    # Memory stats
+    if profile_memory:
+        rss_after_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        metrics["peak_rss_mb"] = round(rss_after_kb / 1024, 1)
+        metrics["rss_delta_mb"] = round((rss_after_kb - rss_before_kb) / 1024, 1)
 
     return metrics, per_file, y_true_arr, y_scores_arr
 

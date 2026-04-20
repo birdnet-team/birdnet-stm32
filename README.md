@@ -5,7 +5,7 @@
   <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.12%2B-blue.svg" alt="Python 3.12+"></a>
   <a href="https://birdnet-team.github.io/birdnet-stm32"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Docs"></a>
-  <a href="https://github.com/birdnet-team/birdnet-stm32/releases/tag/v0.7.0"><img src="https://img.shields.io/badge/version-0.7.0-orange.svg" alt="Version"></a>
+  <a href="https://github.com/birdnet-team/birdnet-stm32/releases/tag/v0.9.0"><img src="https://img.shields.io/badge/version-0.9.0-orange.svg" alt="Version"></a>
 </p>
 
 Bird sound classification for edge deployment on the [STM32N6570-DK](https://www.st.com/en/evaluation-tools/stm32n6570-dk.html) development board with neural processing unit (NPU).
@@ -71,10 +71,11 @@ See the [full documentation](https://birdnet-team.github.io/birdnet-stm32) for d
 
 - **Audio frontends**: `hybrid` (STFT + learned mel mixer), `raw` (waveform → learned filterbank), `librosa` (precomputed mel), `mfcc`, `log_mel`
 - **Magnitude scaling**: `pwl` (piecewise-linear, quantization-friendly), `pcen`, `db`, `none`
-- **Model**: DS-CNN with configurable width (`--alpha`) and depth (`--depth_multiplier`), optional SE attention (`--use_se`), inverted residuals (`--use_inverted_residual`), and attention pooling (`--use_attention_pooling`)
-- **Augmentation**: mixup, SpecAugment, label smoothing
-- **Optimization**: cosine LR decay, Adam/SGD/AdamW, gradient clipping, mixed precision (FP16), balanced class weights
+- **Model**: DS-CNN with configurable width (`--alpha`) and depth (`--depth_multiplier`), SE attention and inverted residuals (on by default; disable with `--no_se`, `--no_inverted_residual`), and optional attention pooling (`--use_attention_pooling`)
+- **Augmentation**: Dirichlet multi-source mixup, SpecAugment (on by default), smart crop for long recordings, label smoothing
+- **Optimization**: cosine LR decay, Adam/SGD/AdamW, gradient clipping (on by default), mixed precision (FP16), balanced class weights (on by default)
 - **QAT**: quantization-aware fine-tuning via `--qat` — shadow-weight fake-quantization, no FakeQuant ops in saved model
+- **Linear probing**: `--linear_probe` freezes a pretrained backbone and trains only the classifier head
 - **Hyperparameter tuning**: Optuna search via `--tune --n_trials N`
 
 ### Conversion

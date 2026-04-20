@@ -63,11 +63,16 @@ The DS-CNN is scaled with two knobs:
 ### Data augmentation
 
 - **Mixup**: controlled by `--mixup_alpha` (default 0.2, 0 disables) and
-  `--mixup_probability` (default 0.25). Blends pairs of training examples
-  and their labels.
-- **SpecAugment**: enable with `--spec_augment`. Applies random frequency
-  and time masking to spectrograms during training. Control mask widths with
-  `--freq_mask_max` (default 8 bins) and `--time_mask_max` (default 25 frames).
+  `--mixup_probability` (default 0.25). Uses Dirichlet multi-source mixing
+  (2–3 sources per sample) to realistically emulate overlapping bird
+  vocalizations. Labels are combined via element-wise max.
+- **SpecAugment**: enabled by default. Applies random frequency and time
+  masking to spectrograms during training. Disable with `--no_spec_augment`.
+  Control mask widths with `--freq_mask_max` (default 8 bins) and
+  `--time_mask_max` (default 25 frames).
+- **Smart crop**: long recordings (> 2 chunks) are automatically cropped to
+  salient regions using short-time energy (STE) analysis, reducing label
+  noise from silent or irrelevant segments.
 
 ### Loss function
 
@@ -90,19 +95,21 @@ Set weight decay with `--weight_decay` (default 0, only used by `adamw`).
 
 ### Deterministic mode
 
-Use `--deterministic` to set all random seeds (Python, NumPy, TensorFlow)
-and enable `TF_DETERMINISTIC_OPS`. Optionally specify `--seed` (default 42).
+Training is always deterministic — all random seeds (Python, NumPy,
+TensorFlow) are set and `TF_DETERMINISTIC_OPS` is enabled automatically.
+Use `--seed` (default 42) to change the RNG seed.
 
 ### Gradient clipping
 
-Use `--grad_clip 1.0` to clip gradients by global norm. Prevents exploding
-gradients, especially useful with large models or unstable training. Default 0
-(disabled).
+Gradient clipping by global norm is enabled by default (`--grad_clip 1.0`).
+Set to 0 to disable. Prevents exploding gradients, especially useful with
+large models or unstable training.
 
 ### Class weighting
 
-Use `--class_weights balanced` to apply inverse-frequency class weights.
-Useful for imbalanced datasets where some species have fewer training files.
+Balanced inverse-frequency class weights are enabled by default. Use
+`--no_class_weights` to disable. Useful for imbalanced datasets where some
+species have fewer training files.
 
 ### Mixed precision
 
@@ -153,6 +160,21 @@ python -m birdnet_stm32 convert \
 
 The QAT model is saved as `{name}_qat.keras` alongside the original.
 
+### Linear probing
+
+Use `--linear_probe` to freeze a pretrained backbone and train only a new
+classification head on your custom species dataset. This is useful when you
+have a pretrained model (e.g. a large BirdNET checkpoint) and want to adapt
+it to a different set of species with limited data.
+
+```bash
+python -m birdnet_stm32 train --data_path_train data/my_species \
+  --linear_probe --checkpoint_path checkpoints/pretrained.keras \
+  --epochs 20 --learning_rate 0.001
+```
+
+The probe model is saved as `{name}_probe.keras` with a new labels file.
+
 ### Learning rate
 
 Cosine decay schedule from `--learning_rate` (default 0.001) to near-zero
@@ -188,7 +210,7 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--spec_width` | 256 | Spectrogram width (frames) |
 | `--fft_length` | 512 | FFT window length |
 | `--chunk_duration` | 3 | Chunk duration (seconds) |
-| `--max_duration` | 30 | Max seconds to load per file |
+| `--max_duration` | 60 | Max seconds to load per file |
 | `--audio_frontend` | hybrid | `librosa`, `hybrid`, `raw`, `mfcc`, or `log_mel` |
 | `--mag_scale` | pwl | `pwl`, `pcen`, `db`, or `none` |
 | `--embeddings_size` | 256 | Embedding channels before head |
@@ -197,7 +219,7 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--frontend_trainable` | False | Make frontend weights trainable |
 | `--mixup_alpha` | 0.2 | Mixup alpha (0 disables) |
 | `--mixup_probability` | 0.25 | Fraction of batch to mix |
-| `--spec_augment` | False | Enable SpecAugment masking |
+| `--no_spec_augment` | False | Disable SpecAugment masking (on by default) |
 | `--freq_mask_max` | 8 | Max frequency mask width (bins) |
 | `--time_mask_max` | 25 | Max time mask width (frames) |
 | `--dropout` | 0.5 | Dropout rate before classifier head |
@@ -205,27 +227,27 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--weight_decay` | 0.0 | Weight decay (adamw only) |
 | `--loss` | auto | `auto` (BCE) or `focal` |
 | `--focal_gamma` | 2.0 | Focal loss focusing parameter |
-| `--label_smoothing` | 0.0 | Label smoothing factor (0 = off) |
-| `--use_se` | False | Add SE channel attention to each block |
+| `--label_smoothing` | 0.1 | Label smoothing factor (0 = off) |
+| `--no_se` | False | Disable SE channel attention (on by default) |
 | `--se_reduction` | 4 | SE channel reduction factor |
-| `--use_inverted_residual` | False | Use inverted residual blocks |
+| `--no_inverted_residual` | False | Use plain DS blocks (inverted residuals on by default) |
 | `--expansion_factor` | 6 | Expansion factor for inverted residuals |
 | `--use_attention_pooling` | False | Use attention pooling instead of GAP |
 | `--n_mfcc` | 20 | Number of MFCC coefficients (mfcc frontend only) |
-| `--grad_clip` | 0.0 | Max gradient norm for clipping (0 = disabled) |
-| `--class_weights` | none | `none` or `balanced` (inverse-frequency) |
+| `--grad_clip` | 1.0 | Max gradient norm for clipping (0 = disabled) |
+| `--no_class_weights` | False | Disable balanced class weighting (on by default) |
 | `--mixed_precision` | False | Enable FP16 mixed precision training |
 | `--resume` | False | Resume training from checkpoint |
-| `--deterministic` | False | Enable deterministic training |
-| `--seed` | 42 | Random seed (with `--deterministic`) |
+| `--seed` | 42 | Random seed |
 | `--batch_size` | 32 | Batch size |
 | `--epochs` | 50 | Number of epochs |
 | `--learning_rate` | 0.001 | Initial learning rate |
 | `--val_split` | 0.2 | Validation split fraction |
-| `--checkpoint_path` | *(required)* | Output path (.keras) |
+| `--checkpoint_path` | checkpoints/best_model.keras | Output path (.keras) |
 | `--tune` | False | Run Optuna hyperparameter search |
 | `--n_trials` | 20 | Number of Optuna trials |
 | `--qat` | False | Quantization-aware fine-tuning |
+| `--linear_probe` | False | Freeze backbone and train only classifier head |
 
 ## Noise classes
 

@@ -1,6 +1,7 @@
 """Data augmentation for audio and spectrograms.
 
-Implements mixup (uniform or Beta distribution) and SpecAugment (frequency/time masking).
+Implements mixup (multi-source additive mixing for soundscape realism)
+and SpecAugment (frequency/time masking).
 """
 
 import numpy as np
@@ -11,23 +12,25 @@ def apply_mixup(
     batch_labels: np.ndarray,
     alpha: float = 0.2,
     probability: float = 0.25,
-    use_beta: bool = False,
     label_smoothing: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Apply mixup augmentation to a batch of samples and labels.
+    """Apply realistic multi-source mixup to a batch of samples and labels.
 
-    A fraction of samples in the batch are mixed with random partners. Audio
-    is blended by a weighted average; labels are merged via element-wise max
-    (multi-label OR).
+    Emulates natural soundscapes with multiple birds vocalizing at the same
+    time.  Instead of a single Beta-distributed lambda that biases toward one
+    source, this draws mixing gains from a Dirichlet distribution so each
+    source contributes a meaningful proportion.  Each mixed sample blends
+    2–3 sources (randomly chosen), and labels are merged via element-wise
+    max (multi-label union) since all source species are present.
 
     Args:
         batch_samples: Input batch [B, ...].
         batch_labels: One-hot labels [B, C].
-        alpha: Mixup strength. For uniform: range [alpha, 1 - alpha].
-            For Beta: concentration parameter (Beta(alpha, alpha)).
+        alpha: Dirichlet concentration parameter.  Lower values produce more
+            varied gain distributions; higher values produce more uniform
+            mixing (all sources contribute equally).  ``alpha=0.5`` is a
+            good default for bird soundscape emulation.
         probability: Fraction of the batch to apply mixup to.
-        use_beta: If True, sample lambda from Beta(alpha, alpha) instead of
-            uniform. Beta distribution provides more diversity in mixing ratios.
         label_smoothing: If > 0, smooth labels after mixup by
             ``(1 - eps) * label + eps / C`` where ``eps = label_smoothing``.
 
@@ -37,26 +40,28 @@ def apply_mixup(
     if alpha <= 0 or probability <= 0:
         return batch_samples, batch_labels
 
-    num_mix = int(batch_samples.shape[0] * probability)
+    B = batch_samples.shape[0]
+    num_mix = int(B * probability)
     if num_mix <= 0:
         return batch_samples, batch_labels
 
-    mix_indices = np.random.choice(batch_samples.shape[0], size=num_mix, replace=False)
-    permuted_indices = np.random.permutation(batch_samples.shape[0])
+    mix_indices = np.random.choice(B, size=num_mix, replace=False)
 
-    if use_beta:
-        lam = np.random.beta(alpha, alpha, size=(num_mix,)).astype(np.float32)
-    else:
-        lam = np.random.uniform(alpha, 1 - alpha, size=(num_mix,)).astype(np.float32)
+    for idx in mix_indices:
+        # Randomly pick 2 or 3 sources (including the original)
+        n_sources = np.random.choice([2, 3])
+        partners = np.random.choice(B, size=n_sources - 1, replace=False)
+        source_indices = np.concatenate([[idx], partners])
 
-    lam_inp = lam.reshape((num_mix,) + (1,) * (batch_samples.ndim - 1))
+        # Draw mixing gains from Dirichlet distribution
+        gains = np.random.dirichlet([alpha] * n_sources).astype(np.float32)
+        gains_shaped = gains.reshape((n_sources,) + (1,) * (batch_samples.ndim - 1))
 
-    # Audio: weighted mix
-    batch_samples[mix_indices] = (
-        lam_inp * batch_samples[mix_indices] + (1 - lam_inp) * batch_samples[permuted_indices[mix_indices]]
-    )
-    # Labels: element-wise OR (multi-label union)
-    batch_labels[mix_indices] = np.maximum(batch_labels[mix_indices], batch_labels[permuted_indices[mix_indices]])
+        # Additive mix of audio
+        batch_samples[idx] = np.sum(gains_shaped * batch_samples[source_indices], axis=0)
+
+        # Labels: union of all source labels (multi-label OR)
+        batch_labels[idx] = np.maximum.reduce(batch_labels[source_indices])
 
     # Optional label smoothing
     if label_smoothing > 0 and batch_labels.shape[-1] > 1:

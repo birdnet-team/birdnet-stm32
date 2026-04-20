@@ -18,6 +18,8 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--cubeide_path", type=str, default="", help="Path to STM32CubeIDE")
     parser.add_argument("--arm_toolchain_path", type=str, default="", help="Path to arm-none-eabi toolchain")
     parser.add_argument("--config", type=str, default="config.json", help="Path to config file (JSON or TOML)")
+    parser.add_argument("--dry_run", action="store_true", help="Print commands without executing them")
+    parser.add_argument("--skip_validate", action="store_true", help="Skip on-target validation step")
     return parser.parse_args()
 
 
@@ -28,7 +30,7 @@ def main():
     cli_args = {k: v for k, v in vars(args).items() if v and k != "config"}
 
     cfg = resolve_deploy_config(cli_args=cli_args, config_path=args.config)
-    deploy_full(cfg)
+    deploy_full(cfg, dry_run=args.dry_run, skip_validate=args.skip_validate)
 
 
 if __name__ == "__main__":
