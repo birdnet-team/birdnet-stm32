@@ -8,8 +8,10 @@ Long files yield multiple salient chunks per open, stored in a shuffled
 in-memory reservoir to maximize I/O reuse and batch diversity.
 """
 
+import contextlib
 import multiprocessing as mp
 import random
+import signal
 
 import numpy as np
 import tensorflow as tf
@@ -28,7 +30,18 @@ _worker_cfg: dict = {}
 
 
 def _init_worker(cfg: dict) -> None:
-    """Initializer called once per worker process."""
+    """Initializer called once per worker process.
+
+    Ignores SIGINT so only the main process handles Ctrl+C, preventing
+    ``BrokenPipeError`` when workers try to write after the pool is torn down.
+    """
+    # Only set signal handler in actual child processes (not the main thread
+    # fallback used by num_workers=0).
+    import threading
+
+    if threading.current_thread() is threading.main_thread():
+        with contextlib.suppress(ValueError):
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
     global _worker_cfg  # noqa: PLW0603
     _worker_cfg = cfg
 
@@ -299,6 +312,8 @@ def load_dataset(
                     random.shuffle(reservoir)
                     while reservoir:
                         yield reservoir.pop()
+        except GeneratorExit:
+            pass  # tf.data tearing down the generator — normal shutdown
         finally:
             if pool is not None:
                 pool.terminate()
