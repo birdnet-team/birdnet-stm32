@@ -236,9 +236,9 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--focal_gamma` | 2.0 | Focal loss focusing parameter |
 | `--label_smoothing` | 0.1 | Label smoothing factor (0 = off) |
 | `--no_se` | False | Disable SE channel attention (on by default) |
-| `--se_reduction` | 4 | SE channel reduction factor |
+| `--se_reduction` | 8 | SE channel reduction factor |
 | `--no_inverted_residual` | False | Use plain DS blocks (inverted residuals on by default) |
-| `--expansion_factor` | 6 | Expansion factor for inverted residuals |
+| `--expansion_factor` | 2 | Expansion factor for inverted residuals |
 | `--use_attention_pooling` | False | Use attention pooling instead of GAP |
 | `--n_mfcc` | 20 | Number of MFCC coefficients (mfcc frontend only) |
 | `--grad_clip` | 1.0 | Max gradient norm for clipping (0 = disabled) |

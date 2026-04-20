@@ -50,14 +50,14 @@ def _build_search_space(trial: optuna.Trial, args: argparse.Namespace) -> dict:
     }
     # Conditional: SE reduction only matters when SE is enabled
     if hp["use_se"]:
-        hp["se_reduction"] = trial.suggest_categorical("se_reduction", [2, 4, 8])
+        hp["se_reduction"] = trial.suggest_categorical("se_reduction", [4, 8, 16])
     else:
-        hp["se_reduction"] = 4
+        hp["se_reduction"] = 8
     # Conditional: expansion factor only matters with inverted residuals
     if hp["use_inverted_residual"]:
-        hp["expansion_factor"] = trial.suggest_int("expansion_factor", 2, 6)
+        hp["expansion_factor"] = trial.suggest_int("expansion_factor", 2, 4)
     else:
-        hp["expansion_factor"] = 6
+        hp["expansion_factor"] = 2
     return hp
 
 

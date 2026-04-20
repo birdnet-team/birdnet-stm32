@@ -56,9 +56,9 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--depth_multiplier", type=int, default=1, help="Depth multiplier")
     parser.add_argument("--frontend_trainable", action="store_true", default=False)
     parser.add_argument("--no_se", action="store_true", default=False, help="Disable SE channel attention")
-    parser.add_argument("--se_reduction", type=int, default=4, help="SE channel reduction factor")
+    parser.add_argument("--se_reduction", type=int, default=8, help="SE channel reduction factor")
     parser.add_argument("--no_inverted_residual", action="store_true", default=False, help="Use plain DS blocks")
-    parser.add_argument("--expansion_factor", type=int, default=6, help="Expansion factor for inverted residuals")
+    parser.add_argument("--expansion_factor", type=int, default=2, help="Expansion factor for inverted residuals")
     parser.add_argument(
         "--use_attention_pooling", action="store_true", default=False, help="Use attention pooling instead of GAP"
     )

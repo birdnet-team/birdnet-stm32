@@ -102,9 +102,9 @@ def build_dscnn_model(
     n_mfcc: int = 20,
     weight_decay: float = 1e-4,
     use_se: bool = True,
-    se_reduction: int = 4,
+    se_reduction: int = 8,
     use_inverted_residual: bool = True,
-    expansion_factor: int = 6,
+    expansion_factor: int = 2,
     use_attention_pooling: bool = False,
 ) -> tf.keras.Model:
     """Build a DS-CNN model with a selectable audio frontend.
