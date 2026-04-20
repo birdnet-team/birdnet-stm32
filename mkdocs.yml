@@ -101,6 +101,11 @@ nav:
       - Audio Frontends: dev/audio-frontends.md
       - Model: dev/model.md
       - Quantization: dev/quantization.md
+      - Implementation Notes: dev/implementation.md
+      - Adding a Frontend: dev/adding-a-frontend.md
+      - Adding a Model: dev/adding-a-model.md
+      - Experiment Tracking: dev/experiment-tracking.md
       - Testing: dev/testing.md
       - Contributing: dev/contributing.md
+      - Release Process: dev/release-process.md
   - API Reference: reference/
