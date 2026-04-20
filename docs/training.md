@@ -73,6 +73,10 @@ The DS-CNN is scaled with two knobs:
 - **Smart crop**: long recordings (> 2 chunks) are automatically cropped to
   salient regions using short-time energy (STE) analysis, reducing label
   noise from silent or irrelevant segments.
+- **Multi-chunk I/O reuse**: long files (e.g. 60 s recordings) yield up to
+  `--max_chunks_per_file` (default 3) salient chunks per file open, stored
+  in a shuffled in-memory reservoir.  This avoids redundant FLAC decode +
+  resample for the same file across epochs.
 
 ### Loss function
 
@@ -247,6 +251,8 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--resume` | False | Resume training from checkpoint |
 | `--seed` | 42 | Random seed |
 | `--batch_size` | 32 | Batch size |
+| `--num_workers` | 8 | Parallel data loading workers (0 = sequential) |
+| `--max_chunks_per_file` | 3 | Max salient chunks per file open (reduces redundant I/O) |
 | `--epochs` | 50 | Number of epochs |
 | `--learning_rate` | 0.001 | Initial learning rate |
 | `--val_split` | 0.2 | Validation split fraction |
@@ -255,6 +261,28 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--n_trials` | 20 | Number of Optuna trials |
 | `--qat` | False | Quantization-aware fine-tuning |
 | `--linear_probe` | False | Freeze backbone and train only classifier head |
+
+## Data pipeline
+
+The training pipeline uses a **multiprocessing pool** for parallel data
+loading, bypassing the GIL so FLAC decode, resampling, smart-crop, and
+spectrogram computation run across separate CPU cores.
+
+When `--max_chunks_per_file` is greater than 1 (default 3), each file open
+extracts multiple salient chunks which are buffered in a shuffled in-memory
+**reservoir** (~135 MB for 512 samples).  This dramatically reduces I/O for
+long recordings: a 60 s file decoded once yields 3 usable chunks instead of
+re-opening the same file 3 times across epochs.
+
+The reservoir maintains batch diversity by shuffling samples from many
+different files before yielding them.  With a reservoir of 512 samples from
+~200 different files, the probability of two chunks from the same file
+landing in one batch of 32 is negligible.
+
+Tune with:
+
+- `--num_workers N` — number of worker processes (default 8, 0 = sequential)
+- `--max_chunks_per_file N` — chunks per file open (default 3, 1 = original behavior)
 
 ## Noise classes
 
