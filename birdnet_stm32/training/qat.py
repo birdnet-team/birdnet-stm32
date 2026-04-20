@@ -222,6 +222,17 @@ def run_qat(args) -> None:
 
     # --- Prepare datasets ----------------------------------------------------
     file_paths, classes = load_file_paths_from_directory(args.data_path_train)
+
+    # Validate class count matches pretrained model
+    model_num_classes = model.output_shape[-1]
+    if len(classes) != model_num_classes:
+        raise ValueError(
+            f"QAT dataset has {len(classes)} classes but the pretrained model "
+            f"outputs {model_num_classes}. QAT fine-tunes an existing model — "
+            f"the class count must match. Use --linear_probe to adapt a "
+            f"pretrained model to a different set of classes."
+        )
+
     split_idx = int(len(file_paths) * (1 - args.val_split))
     train_paths = file_paths[:split_idx]
     val_paths = file_paths[split_idx:]
