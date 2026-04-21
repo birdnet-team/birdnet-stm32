@@ -175,7 +175,7 @@ spec_buf → memcpy to NPU input → SCB_CleanDCache → LL_ATON_RT_Main()
   `AudioFrontendLayer` (hybrid mode) is baked into the TFLite graph: it applies
   the mel filter bank (1×1 Conv2D), ReLU, per-sample normalization, and
   piecewise-linear (PWL) magnitude scaling — all on the NPU.
-- **Output tensor**: `[1, NUM_CLASSES]` float32 class probabilities (softmax).
+- **Output tensor**: `[1, NUM_CLASSES]` float32 per-class probabilities (sigmoid, multi-label).
 - **Cache coherency**: The CPU must clean the DCache before the NPU reads the
   input (`SCB_CleanDCache_by_Addr`) and invalidate after the NPU writes the
   output (`SCB_InvalidateDCache_by_Addr`). Missing these calls causes stale

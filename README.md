@@ -72,7 +72,7 @@ See the [full documentation](https://birdnet-team.github.io/birdnet-stm32) for d
 - **Audio frontends**: `hybrid` (STFT + learned mel mixer), `raw` (waveform → learned filterbank), `librosa` (precomputed mel), `mfcc`, `log_mel`
 - **Magnitude scaling**: `pwl` (piecewise-linear, quantization-friendly), `pcen`, `db`, `none`
 - **Model**: DS-CNN with configurable width (`--alpha`) and depth (`--depth_multiplier`), SE attention and inverted residuals (on by default; disable with `--no_se`, `--no_inverted_residual`), and optional attention pooling (`--use_attention_pooling`)
-- **Augmentation**: Dirichlet multi-source mixup, SpecAugment (on by default), smart crop for long recordings, label smoothing
+- **Augmentation**: Dirichlet multi-source mixup with multi-label union targets for overlapping vocalizations, SpecAugment (on by default), smart crop for long recordings, label smoothing
 - **Optimization**: cosine LR decay, Adam/SGD/AdamW, gradient clipping (on by default), mixed precision (FP16), balanced class weights (on by default)
 - **QAT**: quantization-aware fine-tuning via `--qat` — shadow-weight fake-quantization, no FakeQuant ops in saved model
 - **Linear probing**: `--linear_probe` freezes a pretrained backbone and trains only the classifier head

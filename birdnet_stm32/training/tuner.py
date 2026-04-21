@@ -39,7 +39,6 @@ def _build_search_space(trial: optuna.Trial, args: argparse.Namespace) -> dict:
         "dropout": trial.suggest_float("dropout", 0.2, 0.7, step=0.1),
         "batch_size": trial.suggest_categorical("batch_size", [16, 32, 64]),
         "mixup_alpha": trial.suggest_float("mixup_alpha", 0.0, 0.4, step=0.1),
-        "label_smoothing": trial.suggest_float("label_smoothing", 0.0, 0.2, step=0.05),
         "optimizer": trial.suggest_categorical("optimizer", ["adam", "adamw"]),
         "weight_decay": trial.suggest_float("weight_decay", 1e-5, 1e-2, log=True),
         "grad_clip": trial.suggest_float("grad_clip", 0.0, 5.0, step=1.0),
@@ -94,7 +93,6 @@ def _objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
     )
-    is_multilabel = hp["mixup_alpha"] > 0
     train_dataset = load_dataset(
         train_paths,
         classes,
@@ -139,7 +137,6 @@ def _objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
         frontend_trainable=args.frontend_trainable,
-        class_activation="sigmoid" if is_multilabel else "softmax",
         dropout_rate=hp["dropout"],
         use_se=hp["use_se"],
         se_reduction=hp["se_reduction"],
@@ -150,11 +147,6 @@ def _objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
 
     # Loss
     loss_fn = None
-    if hp["label_smoothing"] > 0:
-        if is_multilabel:
-            loss_fn = tf.keras.losses.BinaryCrossentropy(label_smoothing=hp["label_smoothing"])
-        else:
-            loss_fn = tf.keras.losses.CategoricalCrossentropy(label_smoothing=hp["label_smoothing"])
 
     # Per-trial checkpoint in a subdirectory
     trial_dir = os.path.join(os.path.dirname(args.checkpoint_path), "optuna_trials")
@@ -171,7 +163,6 @@ def _objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
         checkpoint_path=trial_ckpt,
         steps_per_epoch=steps_per_epoch,
         val_steps=val_steps,
-        is_multilabel=is_multilabel,
         optimizer=hp["optimizer"],
         weight_decay=hp["weight_decay"] if hp["optimizer"] == "adamw" else 0.0,
         loss_fn=loss_fn,

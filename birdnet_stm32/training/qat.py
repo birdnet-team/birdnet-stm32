@@ -159,13 +159,9 @@ def freeze_batch_norm(model: tf.keras.Model) -> int:
 
 
 def _detect_loss(model: tf.keras.Model) -> str:
-    """Detect the appropriate loss function from the model's output activation."""
-    last_layer = model.layers[-1]
-    if isinstance(last_layer, layers.Dense):
-        activation = last_layer.get_config().get("activation", "linear")
-        if activation == "sigmoid":
-            return "binary_crossentropy"
-    return "categorical_crossentropy"
+    """Return the training loss for the model. Always binary crossentropy."""
+    del model  # The classifier head is always sigmoid + BCE.
+    return "binary_crossentropy"
 
 
 def run_qat(args) -> None:
@@ -217,8 +213,7 @@ def run_qat(args) -> None:
 
     # --- Detect loss function ------------------------------------------------
     loss_fn = _detect_loss(model)
-    is_multilabel = loss_fn == "binary_crossentropy"
-    print(f"[QAT] Loss: {loss_fn}, multilabel={is_multilabel}")
+    print(f"[QAT] Loss: {loss_fn}")
 
     # --- Prepare datasets ----------------------------------------------------
     file_paths, classes = load_file_paths_from_directory(args.data_path_train)
@@ -295,7 +290,6 @@ def run_qat(args) -> None:
         checkpoint_path=qat_path,
         steps_per_epoch=steps_per_epoch,
         val_steps=val_steps,
-        is_multilabel=is_multilabel,
         optimizer=args.optimizer,
         weight_decay=args.weight_decay,
         gradient_clip_norm=args.grad_clip,

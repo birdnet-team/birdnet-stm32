@@ -344,7 +344,7 @@ class AudioFrontendLayer(layers.Layer):
             y = tf.transpose(y, [0, 3, 2, 1])  # [B,mel,T,1]
             return y[:, :, : self.spec_width, :]
 
-        # raw: explicit symmetric pad -> VALID Conv2D -> BN -> ReLU6 -> mag -> transpose
+        # raw: explicit symmetric pad -> VALID Conv2D -> BN -> ReLU6 -> normalize -> mag -> transpose
         x = inputs[:, : int(self.sample_rate * self.chunk_duration), :]
         if self._pad_left or self._pad_right:
             x = tf.pad(x, [[0, 0], [int(self._pad_left), int(self._pad_right)], [0, 0]])
@@ -353,6 +353,8 @@ class AudioFrontendLayer(layers.Layer):
         if self.fb_bn is not None:
             y = self.fb_bn(y, training=training)
         y = self.fb_relu(y)
+        y_max = tf.reduce_max(y, axis=[1, 2, 3], keepdims=True)
+        y = y / (y_max + tf.constant(1e-6, dtype=y.dtype))
         y = self._apply_mag(y)
         y = tf.transpose(y, [0, 3, 2, 1])
         return y

@@ -30,7 +30,6 @@ tests/
 ├── test_dataset.py              # File discovery, class handling
 ├── test_dscnn.py                # DS-CNN model building and scaling
 ├── test_eval_reports.py         # Evaluation reporting (species AP, DET, HTML, benchmark)
-├── test_focal_loss.py           # Focal loss function
 ├── test_frontend_layer.py       # AudioFrontendLayer shapes and modes
 ├── test_frontend_parity.py      # Float/quantized frontend parity
 ├── test_frontend_registry.py    # Frontend name normalization and aliases

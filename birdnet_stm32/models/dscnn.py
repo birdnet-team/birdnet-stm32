@@ -97,7 +97,6 @@ def build_dscnn_model(
     fft_length: int = 512,
     mag_scale: str = "pwl",
     frontend_trainable: bool = False,
-    class_activation: str = "softmax",
     dropout_rate: float = 0.5,
     n_mfcc: int = 20,
     weight_decay: float = 1e-4,
@@ -123,7 +122,6 @@ def build_dscnn_model(
         fft_length: FFT size for hybrid/librosa paths.
         mag_scale: Magnitude scaling ('pcen' | 'pwl' | 'db' | 'none').
         frontend_trainable: Make frontend sub-layers trainable.
-        class_activation: 'softmax' or 'sigmoid' for the classifier head.
         dropout_rate: Dropout rate before the classifier head.
         n_mfcc: Number of MFCC coefficients (only used when audio_frontend='mfcc').
         weight_decay: L2 regularization weight for DS-CNN blocks.
@@ -258,5 +256,5 @@ def build_dscnn_model(
     else:
         x = layers.GlobalAveragePooling2D(name="gap")(x)
     x = layers.Dropout(dropout_rate, name="dropout")(x)
-    outputs = layers.Dense(num_classes, activation=class_activation, name="pred")(x)
+    outputs = layers.Dense(num_classes, activation="sigmoid", name="pred")(x)
     return tf.keras.models.Model(inputs, outputs, name="dscnn_audio")

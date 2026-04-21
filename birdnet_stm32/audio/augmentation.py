@@ -12,16 +12,15 @@ def apply_mixup(
     batch_labels: np.ndarray,
     alpha: float = 0.2,
     probability: float = 0.25,
-    label_smoothing: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Apply realistic multi-source mixup to a batch of samples and labels.
 
-    Emulates natural soundscapes with multiple birds vocalizing at the same
-    time.  Instead of a single Beta-distributed lambda that biases toward one
-    source, this draws mixing gains from a Dirichlet distribution so each
-    source contributes a meaningful proportion.  Each mixed sample blends
-    2–3 sources (randomly chosen), and labels are merged via element-wise
-    max (multi-label union) since all source species are present.
+        Emulates natural soundscapes with multiple birds vocalizing at the same
+        time. Instead of a single Beta-distributed lambda that biases toward one
+        source, this draws mixing gains from a Dirichlet distribution so each
+        source contributes a meaningful proportion. Each mixed sample blends
+        2–3 sources (randomly chosen), and labels are merged via element-wise
+        max so all contributing species remain active in the target.
 
     Args:
         batch_samples: Input batch [B, ...].
@@ -31,8 +30,6 @@ def apply_mixup(
             mixing (all sources contribute equally).  ``alpha=0.5`` is a
             good default for bird soundscape emulation.
         probability: Fraction of the batch to apply mixup to.
-        label_smoothing: If > 0, smooth labels after mixup by
-            ``(1 - eps) * label + eps / C`` where ``eps = label_smoothing``.
 
     Returns:
         Tuple of (mixed_samples, mixed_labels) with same shapes as inputs.
@@ -60,13 +57,7 @@ def apply_mixup(
         # Additive mix of audio
         batch_samples[idx] = np.sum(gains_shaped * batch_samples[source_indices], axis=0)
 
-        # Labels: union of all source labels (multi-label OR)
         batch_labels[idx] = np.maximum.reduce(batch_labels[source_indices])
-
-    # Optional label smoothing
-    if label_smoothing > 0 and batch_labels.shape[-1] > 1:
-        C = batch_labels.shape[-1]
-        batch_labels = (1.0 - label_smoothing) * batch_labels + label_smoothing / C
 
     return batch_samples, batch_labels
 

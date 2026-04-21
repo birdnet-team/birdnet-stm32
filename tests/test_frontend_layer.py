@@ -77,6 +77,16 @@ class TestRawMode:
         assert y.shape[0] == 2
         assert y.shape[-1] == 1
 
+    def test_pwl_output_is_normalized(self, frontend_params):
+        """Raw frontend with PWL scaling should stay in the normalized range."""
+        params = {**frontend_params, "sample_rate": 16000, "chunk_duration": 2, "mag_scale": "pwl"}
+        T = params["sample_rate"] * params["chunk_duration"]
+        layer = AudioFrontendLayer(mode="raw", **params)
+        x = tf.random.uniform((2, T, 1), minval=-1.0, maxval=1.0)
+        y = layer(x)
+        assert float(tf.reduce_min(y).numpy()) >= 0.0
+        assert float(tf.reduce_max(y).numpy()) <= 1.0
+
 
 class TestMagScaling:
     """Tests for magnitude scaling modes."""

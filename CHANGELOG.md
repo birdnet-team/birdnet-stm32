@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `representative_data_gen()` now bounds calibration reads via `cfg["max_duration"]` (or a sensible per-chunk multiple) instead of a hard-coded 30 s window.
+- Mixup is now a single co-vocalization augmentation path: additive multi-source mixing with union labels, matching the project's overlapping-species training goal.
+- **Always multi-label**: the classifier head is now hard-wired to sigmoid + binary crossentropy. Soundscape recordings are inherently multi-label even when the source label is single-class, so the softmax/categorical-crossentropy code path has been removed.
+- `tf.keras.metrics.AUC` now passes `num_labels=num_classes` (read from the model output shape) for a more accurate multi-label ROC-AUC estimate.
+
+### Removed
+
+- `BinaryFocalLoss` and the `--loss` / `--focal_gamma` CLI knobs. Focal loss over-fits weak/noisy labels by emphasising "hard" examples, which is the opposite of what we want for crowdsourced bird soundscape data.
+- `--label_smoothing` CLI knob. With ~100 sparse classes, smoothing pushes BCE toward the constant-prediction trivial minimum (AUC ≈ 0.5).
+- `--no_class_weights` and the balanced inverse-frequency class weighting. Keras `class_weight=` is single-label only; with multi-hot targets it silently `argmax`es the label and scales the whole per-sample loss, which is incorrect.
+- `class_activation` parameter from `build_dscnn_model()`; the head is always sigmoid.
+- `is_multilabel`, `class_weights`, and `loss_fn=categorical_crossentropy` defaults from `train_model()`.
 
 ### Fixed
 

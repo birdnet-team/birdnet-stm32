@@ -120,7 +120,7 @@ def run_lr_finder(
     min_lr: float = 1e-7,
     max_lr: float = 1.0,
     num_steps: int = 200,
-    loss_fn: str | tf.keras.losses.Loss = "categorical_crossentropy",
+    loss_fn: str | tf.keras.losses.Loss = "binary_crossentropy",
     plot_path: str | None = None,
 ) -> float:
     """Run an LR range test and return the suggested learning rate.

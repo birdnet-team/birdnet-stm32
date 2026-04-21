@@ -186,8 +186,8 @@ class TestBuildDscnnModel:
         )
         assert deep.count_params() > shallow.count_params()
 
-    def test_sigmoid_activation(self):
-        """Model with sigmoid activation should also build."""
+    def test_sigmoid_head(self):
+        """Classifier head is always sigmoid (multi-label)."""
         model = build_dscnn_model(
             num_mels=64,
             spec_width=256,
@@ -198,9 +198,9 @@ class TestBuildDscnnModel:
             audio_frontend="librosa",
             alpha=0.25,
             depth_multiplier=1,
-            class_activation="sigmoid",
         )
         assert model.output_shape == (None, 10)
+        assert model.layers[-1].get_config()["activation"] == "sigmoid"
 
     def test_invalid_frontend(self):
         """Invalid frontend name should raise ValueError."""

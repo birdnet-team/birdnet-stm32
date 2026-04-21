@@ -80,10 +80,9 @@ The DS-CNN is scaled with two knobs:
 
 ### Loss function
 
-- **Binary crossentropy** (default): standard multi-label loss.
-- **Focal loss**: `--loss focal` down-weights well-classified examples,
-  focusing on hard negatives. Tune with `--focal_gamma` (default 2.0).
-  Useful for imbalanced class distributions.
+The classifier head is always sigmoid + binary crossentropy. Soundscape
+recordings are inherently multi-label, so we always optimise per-class
+probabilities even when the source label is single-class.
 
 ### Optimizer
 
@@ -108,12 +107,6 @@ Use `--seed` (default 42) to change the RNG seed.
 Gradient clipping by global norm is enabled by default (`--grad_clip 1.0`).
 Set to 0 to disable. Prevents exploding gradients, especially useful with
 large models or unstable training.
-
-### Class weighting
-
-Balanced inverse-frequency class weights are enabled by default. Use
-`--no_class_weights` to disable. Useful for imbalanced datasets where some
-species have fewer training files.
 
 ### Mixed precision
 
@@ -236,9 +229,6 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--dropout` | 0.5 | Dropout rate before classifier head |
 | `--optimizer` | adam | `adam`, `sgd`, or `adamw` |
 | `--weight_decay` | 0.0 | Weight decay (adamw only) |
-| `--loss` | auto | `auto` (BCE) or `focal` |
-| `--focal_gamma` | 2.0 | Focal loss focusing parameter |
-| `--label_smoothing` | 0.1 | Label smoothing factor (0 = off) |
 | `--no_se` | False | Disable SE channel attention (on by default) |
 | `--se_reduction` | 8 | SE channel reduction factor |
 | `--no_inverted_residual` | False | Use plain DS blocks (inverted residuals on by default) |
@@ -246,7 +236,6 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--use_attention_pooling` | False | Use attention pooling instead of GAP |
 | `--n_mfcc` | 20 | Number of MFCC coefficients (mfcc frontend only) |
 | `--grad_clip` | 1.0 | Max gradient norm for clipping (0 = disabled) |
-| `--no_class_weights` | False | Disable balanced class weighting (on by default) |
 | `--mixed_precision` | False | Enable FP16 mixed precision training |
 | `--resume` | False | Resume training from checkpoint |
 | `--seed` | 42 | Random seed |
