@@ -120,6 +120,12 @@ class AdaptiveLoaderTuner(tf.keras.callbacks.Callback):
         )
 
 
+# Internal defaults: keep CLI simple while auto-balancing loader throughput
+# and memory usage at runtime.
+_LOADER_TUNE_ADJUST_EVERY = 200
+_LOADER_TARGET_FREE_GB = 8.0
+
+
 def get_args() -> argparse.Namespace:
     """Parse command-line arguments for training.
 
@@ -188,30 +194,6 @@ def get_args() -> argparse.Namespace:
         type=int,
         default=2,
         help="Loader prefetch queue depth in batches (higher = faster, but more RAM)",
-    )
-    parser.add_argument(
-        "--max_inflight_files",
-        type=int,
-        default=None,
-        help="Max file tasks kept in flight for loader workers (higher = faster, but more RAM)",
-    )
-    parser.add_argument(
-        "--auto_tune_loader",
-        action="store_true",
-        default=False,
-        help="Auto-tune loader in-flight queue using throughput and RAM headroom",
-    )
-    parser.add_argument(
-        "--loader_adjust_every",
-        type=int,
-        default=200,
-        help="Adjust loader settings every N train batches when auto-tuning",
-    )
-    parser.add_argument(
-        "--loader_target_free_gb",
-        type=float,
-        default=8.0,
-        help="Target minimum free RAM (GB) for loader auto-tuning",
     )
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
     parser.add_argument("--learning_rate", type=float, default=0.001, help="Initial learning rate")
@@ -361,22 +343,21 @@ def main():
         mag_scale=args.mag_scale,
         prefetch_batches=args.prefetch_batches,
     )
-    if args.max_inflight_files is not None:
-        common_kwargs["max_inflight_files"] = args.max_inflight_files
 
-    train_loader_control: dict | None = None
+    initial_inflight = max(256, args.num_workers * 64)
+    common_kwargs["max_inflight_files"] = initial_inflight
+
+    train_loader_control: dict | None = {"max_inflight_files": int(initial_inflight)} if args.num_workers > 0 else None
     extra_callbacks: list[tf.keras.callbacks.Callback] = []
-    if args.auto_tune_loader:
-        initial_inflight = common_kwargs.get("max_inflight_files", max(256, args.num_workers * 64))
-        train_loader_control = {"max_inflight_files": int(initial_inflight)}
+    if train_loader_control is not None:
         extra_callbacks.append(
             AdaptiveLoaderTuner(
                 control=train_loader_control,
                 batch_size=args.batch_size,
-                adjust_every=args.loader_adjust_every,
+                adjust_every=_LOADER_TUNE_ADJUST_EVERY,
                 min_inflight=max(64, args.num_workers * 8),
                 max_inflight=max(512, args.num_workers * 256),
-                target_free_gb=args.loader_target_free_gb,
+                target_free_gb=_LOADER_TARGET_FREE_GB,
             )
         )
         print(f"Loader auto-tuning enabled (initial max_inflight_files={initial_inflight}).")
