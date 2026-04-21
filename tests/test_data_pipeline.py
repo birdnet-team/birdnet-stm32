@@ -198,6 +198,42 @@ class TestProcessFile:
         assert result is not None
         assert observed == {"max_duration": 12, "random_offset": True}
 
+    def test_corrupt_file_is_skipped(self, monkeypatch, tmp_path):
+        """Unreadable audio files should be skipped instead of synthesized."""
+        paths, classes = _make_long_dataset(tmp_path, file_duration=12)
+
+        monkeypatch.setattr(
+            "birdnet_stm32.data.generator.load_audio_window",
+            lambda *args, **kwargs: np.empty((0,), dtype=np.float32),
+        )
+
+        cfg = {
+            "audio_frontend": "raw",
+            "sr": 22050,
+            "cd": 3,
+            "T": 22050 * 3,
+            "fft_length": 512,
+            "mel_bins": 64,
+            "spec_width": 256,
+            "mag_scale": "pwl",
+            "n_mfcc": 20,
+            "max_duration": 60,
+            "load_duration": 12,
+            "snr_threshold": 0.0,
+            "random_offset": False,
+            "spec_augment": False,
+            "freq_mask_max": 8,
+            "time_mask_max": 25,
+            "noise_labels": ("noise", "silence", "background", "other"),
+            "class_to_idx": {c: i for i, c in enumerate(classes)},
+            "num_classes": len(classes),
+            "max_chunks_per_file": 1,
+            "candidate_chunks_per_file": 4,
+        }
+        _init_worker(cfg)
+
+        assert _process_file(paths[0]) is None
+
 
 class TestReservoirSizing:
     """Tests for memory-aware sample buffering."""
@@ -305,3 +341,100 @@ class TestLoadDataset:
         )
         batch = next(iter(ds))
         assert batch[0].shape[0] == 1
+
+    def test_mp_scheduler_keeps_submitting_when_one_job_stalls(self, monkeypatch):
+        """A stuck worker job must not block submission of later files."""
+        classes = ["class_0"]
+        paths = [f"/tmp/class_0/sample_{idx}.wav" for idx in range(33)]
+        stuck_path = paths[0]
+        sample = np.ones((8, 1), dtype=np.float32)
+        label = np.array([1.0], dtype=np.float32)
+
+        class FakeAsyncResult:
+            def __init__(self, payload, ready_after=0):
+                self.payload = payload
+                self.ready_after = ready_after
+
+            def ready(self):
+                if self.ready_after > 0:
+                    self.ready_after -= 1
+                    return False
+                return True
+
+            def get(self):
+                return self.payload
+
+        class FakePool:
+            def __init__(self, *_args, initializer=None, initargs=(), **_kwargs):
+                if initializer is not None:
+                    initializer(*initargs)
+
+            def apply_async(self, _fn, args):
+                path = args[0]
+                if path == stuck_path:
+                    return FakeAsyncResult(None, ready_after=10_000)
+                return FakeAsyncResult([(sample.copy(), label.copy())])
+
+            def terminate(self):
+                return None
+
+            def join(self):
+                return None
+
+        monkeypatch.setattr("birdnet_stm32.data.generator.mp.Pool", FakePool)
+        monkeypatch.setattr("birdnet_stm32.data.generator.random.shuffle", lambda seq: None)
+        monkeypatch.setattr("birdnet_stm32.data.generator._POOL_POLL_INTERVAL_S", 0.0)
+
+        ds = load_dataset(
+            paths,
+            classes,
+            audio_frontend="raw",
+            batch_size=32,
+            num_workers=2,
+            max_chunks_per_file=1,
+            sample_rate=4,
+            chunk_duration=2,
+            mixup_alpha=0.0,
+            mixup_probability=0.0,
+            max_inflight_files=32,
+            file_task_timeout_s=0.0,
+        )
+
+        samples, labels = next(iter(ds))
+        assert samples.shape == (32, 8, 1)
+        assert labels.shape == (32, 1)
+
+    def test_loader_control_tracks_skipped_corrupt_file(self, monkeypatch):
+        """load_dataset should surface the last skipped unreadable file."""
+        classes = ["class_0"]
+        good_path = "/tmp/class_0/good.wav"
+        bad_path = "/tmp/class_0/bad.wav"
+        paths = [bad_path, good_path]
+        loader_control: dict[str, str] = {}
+
+        def fake_process_file(path):
+            if path == bad_path:
+                return None
+            sample = np.ones((8, 1), dtype=np.float32)
+            label = np.array([1.0], dtype=np.float32)
+            return [(sample, label)]
+
+        monkeypatch.setattr("birdnet_stm32.data.generator._process_file", fake_process_file)
+        monkeypatch.setattr("birdnet_stm32.data.generator.random.shuffle", lambda seq: None)
+
+        ds = load_dataset(
+            paths,
+            classes,
+            audio_frontend="raw",
+            batch_size=1,
+            num_workers=0,
+            max_chunks_per_file=1,
+            sample_rate=4,
+            chunk_duration=2,
+            mixup_alpha=0.0,
+            mixup_probability=0.0,
+            loader_control=loader_control,
+        )
+
+        next(iter(ds))
+        assert loader_control["last_skipped_file"] == bad_path

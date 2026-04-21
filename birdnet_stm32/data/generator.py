@@ -12,6 +12,7 @@ import contextlib
 import multiprocessing as mp
 import random
 import signal
+import time
 
 import numpy as np
 import tensorflow as tf
@@ -27,6 +28,7 @@ from birdnet_stm32.models.frontend import normalize_frontend_name
 # ---------------------------------------------------------------------------
 
 _worker_cfg: dict = {}
+_POOL_POLL_INTERVAL_S = 0.05
 
 
 def _init_worker(cfg: dict) -> None:
@@ -99,14 +101,13 @@ def _process_file(path: str):
         return None
 
     if audio.size == 0:
-        audio_chunks = [np.random.uniform(-1.0, 1.0, size=(T,)).astype(np.float32)]
-        label = np.zeros(num_classes, dtype=np.float32)
+        return None
+
+    available_chunks = estimate_num_chunks(audio.shape[0], sr, cd)
+    if available_chunks > candidate_chunks:
+        audio_chunks = smart_crop(audio, sr, cd, max_chunks=candidate_chunks)
     else:
-        available_chunks = estimate_num_chunks(audio.shape[0], sr, cd)
-        if available_chunks > candidate_chunks:
-            audio_chunks = smart_crop(audio, sr, cd, max_chunks=candidate_chunks)
-        else:
-            audio_chunks = split_audio_into_chunks(audio, sample_rate=sr, chunk_duration=cd)
+        audio_chunks = split_audio_into_chunks(audio, sample_rate=sr, chunk_duration=cd)
 
     if len(audio_chunks) == 0:
         return None
@@ -173,6 +174,23 @@ def _process_file(path: str):
         results.append((sample, label))
 
     return results if results else None
+
+
+def _create_worker_pool(num_workers: int, worker_cfg: dict) -> mp.pool.Pool:
+    """Create a worker pool with the project's standard settings."""
+    return mp.Pool(
+        num_workers,
+        initializer=_init_worker,
+        initargs=(worker_cfg,),
+        maxtasksperchild=100,
+    )
+
+
+def _terminate_worker_pool(pool: mp.pool.Pool | None) -> None:
+    """Terminate a worker pool if it exists."""
+    if pool is not None:
+        pool.terminate()
+        pool.join()
 
 
 def estimate_samples_per_epoch(n_files: int, max_chunks_per_file: int = 1) -> int:
@@ -276,6 +294,7 @@ def load_dataset(
     # unbounded during long epochs.
     max_inflight_files = int(kwargs.get("max_inflight_files", max(256, num_workers * 64)))
     loader_control = kwargs.get("loader_control")
+    file_task_timeout_s = float(kwargs.get("file_task_timeout_s", max(120.0, cd * 10.0)))
     candidate_chunks_per_file = int(kwargs.get("candidate_chunks_per_file", min(8, max(4, max_chunks_per_file * 2))))
     if random_offset:
         load_duration = max(cd, cd * candidate_chunks_per_file)
@@ -323,10 +342,6 @@ def load_dataset(
         "load_duration": load_duration,
     }
 
-    # Keep multiprocessing chunks small to avoid huge serialized payloads.
-    # Large chunks can buffer many samples in worker->parent pipes and blow RAM.
-    chunksize = 1 if audio_frontend == "raw" else 2
-
     use_mp = num_workers > 0
 
     reservoir_high, reservoir_low = _compute_reservoir_limits(
@@ -340,12 +355,7 @@ def load_dataset(
         """Infinite generator with reservoir for multi-chunk file reuse."""
         pool = None
         if use_mp:
-            pool = mp.Pool(
-                num_workers,
-                initializer=_init_worker,
-                initargs=(worker_cfg,),
-                maxtasksperchild=100,
-            )
+            pool = _create_worker_pool(num_workers, worker_cfg)
         else:
             _init_worker(worker_cfg)
 
@@ -356,31 +366,91 @@ def load_dataset(
 
                 reservoir: list[tuple[np.ndarray, np.ndarray]] = []
 
-                current_inflight = max_inflight_files
-                if isinstance(loader_control, dict):
-                    current_inflight = int(loader_control.get("max_inflight_files", max_inflight_files))
-                inflight_cap = max(
-                    32, max(batch_size * 2, num_workers * 4, (reservoir_high // max(1, max_chunks_per_file)) * 2)
-                )
-                current_inflight = max(32, min(current_inflight, inflight_cap))
-
-                for start in range(0, len(shuffled), current_inflight):
-                    window = shuffled[start : start + current_inflight]
-                    if pool is not None:
-                        results_iter = pool.imap_unordered(_process_file, window, chunksize=chunksize)
-                    else:
-                        results_iter = map(_process_file, window)
-
-                    for result in results_iter:
-                        if result is None:
-                            continue
-                        reservoir.extend(result)
-
-                        # Once reservoir is full enough, shuffle and drain.
+                if pool is None:
+                    for path in shuffled:
+                        result = _process_file(path)
+                        if result is not None:
+                            reservoir.extend(result)
+                        elif isinstance(loader_control, dict):
+                            loader_control["last_skipped_file"] = path
                         if len(reservoir) >= reservoir_high:
                             random.shuffle(reservoir)
                             while len(reservoir) > reservoir_low:
                                 yield reservoir.pop()
+                else:
+                    pending: list[dict[str, object]] = []
+                    next_index = 0
+
+                    while next_index < len(shuffled) or pending:
+                        current_inflight = max_inflight_files
+                        if isinstance(loader_control, dict):
+                            current_inflight = int(loader_control.get("max_inflight_files", max_inflight_files))
+                        inflight_cap = max(
+                            32,
+                            max(batch_size * 2, num_workers * 4, (reservoir_high // max(1, max_chunks_per_file)) * 2),
+                        )
+                        current_inflight = max(32, min(current_inflight, inflight_cap))
+
+                        while next_index < len(shuffled) and len(pending) < current_inflight:
+                            path = shuffled[next_index]
+                            next_index += 1
+                            pending.append(
+                                {
+                                    "path": path,
+                                    "started_at": time.monotonic(),
+                                    "result": pool.apply_async(_process_file, (path,)),
+                                }
+                            )
+
+                        made_progress = False
+                        recycle_pool = False
+                        timed_out_path = None
+                        now = time.monotonic()
+
+                        for idx in range(len(pending) - 1, -1, -1):
+                            job = pending[idx]
+                            async_result = job["result"]
+                            if async_result.ready():
+                                pending.pop(idx)
+                                try:
+                                    result = async_result.get()
+                                except Exception:
+                                    result = None
+                                if result is not None:
+                                    reservoir.extend(result)
+                                elif isinstance(loader_control, dict):
+                                    loader_control["last_skipped_file"] = str(job["path"])
+                                made_progress = True
+                                continue
+
+                            if file_task_timeout_s > 0 and (now - float(job["started_at"])) > file_task_timeout_s:
+                                timed_out_path = str(job["path"])
+                                recycle_pool = True
+                                break
+
+                        if recycle_pool:
+                            if isinstance(loader_control, dict):
+                                loader_control["last_loader_timeout"] = {
+                                    "path": timed_out_path,
+                                    "timeout_s": float(file_task_timeout_s),
+                                    "pending_jobs": int(len(pending)),
+                                }
+                            _terminate_worker_pool(pool)
+                            pool = _create_worker_pool(num_workers, worker_cfg)
+                            pending.clear()
+                            continue
+
+                        if len(reservoir) >= reservoir_high:
+                            random.shuffle(reservoir)
+                            while len(reservoir) > reservoir_low:
+                                yield reservoir.pop()
+                                made_progress = True
+                        elif reservoir and not made_progress:
+                            yield reservoir.pop()
+                            made_progress = True
+
+                        if not made_progress and pending:
+                            time.sleep(_POOL_POLL_INTERVAL_S)
 
                 # Drain remaining samples at end of epoch
                 if reservoir:
@@ -390,9 +460,7 @@ def load_dataset(
         except GeneratorExit:
             pass  # tf.data tearing down the generator — normal shutdown
         finally:
-            if pool is not None:
-                pool.terminate()
-                pool.join()
+            _terminate_worker_pool(pool)
 
     output_sig = (
         tf.TensorSpec(shape=sample_shape, dtype=tf.float32),
