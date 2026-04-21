@@ -4,6 +4,7 @@ import argparse
 import math
 import os
 import random
+import time
 
 import numpy as np
 import tensorflow as tf
@@ -19,6 +20,104 @@ from birdnet_stm32.models.frontend import normalize_frontend_name
 from birdnet_stm32.training.config import ModelConfig
 from birdnet_stm32.training.losses import BinaryFocalLoss
 from birdnet_stm32.training.trainer import compute_hop_length, train_model
+
+
+def _read_meminfo_gb() -> tuple[float, float]:
+    """Return (total_gb, available_gb) from /proc/meminfo."""
+    mem_total_kb = 0
+    mem_avail_kb = 0
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    mem_total_kb = int(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    mem_avail_kb = int(line.split()[1])
+    except OSError:
+        return 0.0, 0.0
+    return mem_total_kb / (1024 * 1024), mem_avail_kb / (1024 * 1024)
+
+
+class AdaptiveLoaderTuner(tf.keras.callbacks.Callback):
+    """Tune loader in-flight queue online using throughput and free RAM."""
+
+    def __init__(
+        self,
+        control: dict,
+        batch_size: int,
+        adjust_every: int = 200,
+        min_inflight: int = 128,
+        max_inflight: int = 4096,
+        target_free_gb: float = 8.0,
+    ):
+        super().__init__()
+        self.control = control
+        self.batch_size = batch_size
+        self.adjust_every = adjust_every
+        self.min_inflight = min_inflight
+        self.max_inflight = max_inflight
+        self.target_free_gb = target_free_gb
+        self._t0 = 0.0
+        self._steps = 0
+        self._durations: list[float] = []
+        self._prev_throughput: float | None = None
+        self._direction = 1
+        self._step_size = max(32, min(512, min_inflight // 2))
+
+    def on_train_batch_begin(self, batch, logs=None):
+        self._t0 = time.perf_counter()
+
+    def on_train_batch_end(self, batch, logs=None):
+        dt = time.perf_counter() - self._t0
+        self._durations.append(dt)
+        self._steps += 1
+        if self._steps % self.adjust_every != 0:
+            return
+
+        step_sec = float(np.mean(self._durations)) if self._durations else 0.0
+        self._durations.clear()
+        throughput = self.batch_size / max(step_sec, 1e-6)
+        _total_gb, avail_gb = _read_meminfo_gb()
+
+        cur = int(self.control.get("max_inflight_files", self.min_inflight))
+        new = cur
+        reason = "hold"
+
+        if avail_gb > 0 and avail_gb < self.target_free_gb:
+            new = max(self.min_inflight, int(cur * 0.8))
+            self._direction = -1
+            self._step_size = max(16, self._step_size // 2)
+            reason = "memory-pressure"
+        elif self._prev_throughput is None:
+            new = min(self.max_inflight, cur + self._step_size)
+            self._direction = 1
+            reason = "initial-probe"
+        elif throughput >= self._prev_throughput * 1.01:
+            if self._direction >= 0:
+                new = min(self.max_inflight, cur + self._step_size)
+                reason = "throughput-up"
+            else:
+                new = max(self.min_inflight, cur - self._step_size)
+                reason = "throughput-up-down-dir"
+        else:
+            self._step_size = max(16, self._step_size // 2)
+            if self._direction >= 0:
+                new = max(self.min_inflight, cur - self._step_size)
+                self._direction = -1
+                reason = "reverse-down"
+            else:
+                new = min(self.max_inflight, cur + self._step_size)
+                self._direction = 1
+                reason = "reverse-up"
+
+        self._prev_throughput = throughput
+        if new != cur:
+            self.control["max_inflight_files"] = int(new)
+        print(
+            f"[loader-tune] step={self._steps} throughput={throughput:.1f} samples/s "
+            f"avail_mem={avail_gb:.1f}GB inflight {cur}->{int(self.control.get('max_inflight_files', cur))} "
+            f"({reason})"
+        )
 
 
 def get_args() -> argparse.Namespace:
@@ -89,6 +188,30 @@ def get_args() -> argparse.Namespace:
         type=int,
         default=2,
         help="Loader prefetch queue depth in batches (higher = faster, but more RAM)",
+    )
+    parser.add_argument(
+        "--max_inflight_files",
+        type=int,
+        default=None,
+        help="Max file tasks kept in flight for loader workers (higher = faster, but more RAM)",
+    )
+    parser.add_argument(
+        "--auto_tune_loader",
+        action="store_true",
+        default=False,
+        help="Auto-tune loader in-flight queue using throughput and RAM headroom",
+    )
+    parser.add_argument(
+        "--loader_adjust_every",
+        type=int,
+        default=200,
+        help="Adjust loader settings every N train batches when auto-tuning",
+    )
+    parser.add_argument(
+        "--loader_target_free_gb",
+        type=float,
+        default=8.0,
+        help="Target minimum free RAM (GB) for loader auto-tuning",
     )
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
     parser.add_argument("--learning_rate", type=float, default=0.001, help="Initial learning rate")
@@ -238,6 +361,31 @@ def main():
         mag_scale=args.mag_scale,
         prefetch_batches=args.prefetch_batches,
     )
+    if args.max_inflight_files is not None:
+        common_kwargs["max_inflight_files"] = args.max_inflight_files
+
+    train_loader_control: dict | None = None
+    extra_callbacks: list[tf.keras.callbacks.Callback] = []
+    if args.auto_tune_loader:
+        initial_inflight = common_kwargs.get("max_inflight_files", max(256, args.num_workers * 64))
+        train_loader_control = {"max_inflight_files": int(initial_inflight)}
+        extra_callbacks.append(
+            AdaptiveLoaderTuner(
+                control=train_loader_control,
+                batch_size=args.batch_size,
+                adjust_every=args.loader_adjust_every,
+                min_inflight=max(64, args.num_workers * 8),
+                max_inflight=max(512, args.num_workers * 256),
+                target_free_gb=args.loader_target_free_gb,
+            )
+        )
+        print(f"Loader auto-tuning enabled (initial max_inflight_files={initial_inflight}).")
+
+    train_kwargs = dict(common_kwargs)
+    if train_loader_control is not None:
+        train_kwargs["loader_control"] = train_loader_control
+
+    val_kwargs = dict(common_kwargs)
     train_dataset = load_dataset(
         train_paths,
         classes,
@@ -252,7 +400,7 @@ def main():
         spec_augment=args.spec_augment,
         freq_mask_max=args.freq_mask_max,
         time_mask_max=args.time_mask_max,
-        **common_kwargs,
+        **train_kwargs,
     )
     val_dataset = load_dataset(
         val_paths,
@@ -266,7 +414,7 @@ def main():
         random_offset=False,
         snr_threshold=0.5,
         spec_augment=False,
-        **common_kwargs,
+        **val_kwargs,
     )
 
     steps_per_epoch = max(
@@ -376,6 +524,7 @@ def main():
             gradient_clip_norm=args.grad_clip,
             class_weights=class_weights,
             resume=args.resume,
+            extra_callbacks=extra_callbacks,
         )
         print(f"Training complete. Best model saved to '{args.checkpoint_path}'.")
     except KeyboardInterrupt:

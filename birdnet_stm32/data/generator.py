@@ -235,6 +235,7 @@ def load_dataset(
     # Bound in-flight multiprocessing tasks so result queues cannot grow
     # unbounded during long epochs.
     max_inflight_files = int(kwargs.get("max_inflight_files", max(256, num_workers * 64)))
+    loader_control = kwargs.get("loader_control")
 
     num_classes = len(classes)
 
@@ -302,8 +303,13 @@ def load_dataset(
 
                 reservoir: list[tuple[np.ndarray, np.ndarray]] = []
 
-                for start in range(0, len(shuffled), max_inflight_files):
-                    window = shuffled[start : start + max_inflight_files]
+                current_inflight = max_inflight_files
+                if isinstance(loader_control, dict):
+                    current_inflight = int(loader_control.get("max_inflight_files", max_inflight_files))
+                current_inflight = max(32, current_inflight)
+
+                for start in range(0, len(shuffled), current_inflight):
+                    window = shuffled[start : start + current_inflight]
                     if pool is not None:
                         results_iter = pool.imap_unordered(_process_file, window, chunksize=chunksize)
                     else:
