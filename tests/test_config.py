@@ -133,4 +133,4 @@ class TestModelConfig:
         cfg = ModelConfig.load(path)
         assert cfg.sample_rate == 22050
         assert cfg.num_classes == 10
-        assert cfg.use_se is False  # default
+        assert cfg.use_se is True  # default (on since v0.9.0)

@@ -45,9 +45,12 @@ def representative_data_gen(file_paths: list[str], cfg: dict, num_samples: int =
     if len(file_paths) == 0:
         raise ValueError("No audio files found for representative dataset generation.")
     sampled_paths = random.sample(file_paths, min(num_samples, len(file_paths)))
+    # Bound calibration read length to a few chunks per file: longer reads waste
+    # I/O and only the centre chunk is kept downstream.
+    rep_max_duration = float(cfg.get("max_duration", 0)) or max(30.0, cd * 5.0)
 
     for path in tqdm(sampled_paths, desc="Generating rep. dataset", unit="file", dynamic_ncols=True):
-        audio_chunks = load_audio_file(path, sample_rate=sr, max_duration=30, chunk_duration=cd)
+        audio_chunks = load_audio_file(path, sample_rate=sr, max_duration=rep_max_duration, chunk_duration=cd)
 
         # Pick center chunk to avoid silence-only calibration
         if isinstance(audio_chunks, list) and len(audio_chunks) > 1:

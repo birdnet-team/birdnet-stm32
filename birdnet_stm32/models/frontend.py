@@ -89,7 +89,7 @@ class AudioFrontendLayer(layers.Layer):
         mel_fmin: float = 150.0,
         mel_fmax: float | None = None,
         mel_norm: str = "slaney",
-        mag_scale: str = "none",
+        mag_scale: str = "pwl",
         name: str = "audio_frontend",
         is_trainable: bool = False,
         train_mel_scale: bool = False,

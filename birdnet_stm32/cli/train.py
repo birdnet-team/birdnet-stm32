@@ -4,17 +4,129 @@ import argparse
 import math
 import os
 import random
+import time
 
 import numpy as np
 import tensorflow as tf
 
-from birdnet_stm32.data.dataset import load_file_paths_from_directory, upsample_minority_classes
-from birdnet_stm32.data.generator import load_dataset
+from birdnet_stm32.data.dataset import (
+    get_classes_with_most_samples,
+    load_file_paths_from_directory,
+    upsample_minority_classes,
+)
+from birdnet_stm32.data.generator import estimate_samples_per_epoch, load_dataset
 from birdnet_stm32.models.dscnn import build_dscnn_model
 from birdnet_stm32.models.frontend import normalize_frontend_name
 from birdnet_stm32.training.config import ModelConfig
 from birdnet_stm32.training.losses import BinaryFocalLoss
 from birdnet_stm32.training.trainer import compute_hop_length, train_model
+
+
+def _read_meminfo_gb() -> tuple[float, float]:
+    """Return (total_gb, available_gb) from /proc/meminfo."""
+    mem_total_kb = 0
+    mem_avail_kb = 0
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    mem_total_kb = int(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    mem_avail_kb = int(line.split()[1])
+    except OSError:
+        return 0.0, 0.0
+    return mem_total_kb / (1024 * 1024), mem_avail_kb / (1024 * 1024)
+
+
+class AdaptiveLoaderTuner(tf.keras.callbacks.Callback):
+    """Tune loader in-flight queue online using throughput and free RAM."""
+
+    def __init__(
+        self,
+        control: dict,
+        batch_size: int,
+        adjust_every: int = 200,
+        min_inflight: int = 128,
+        max_inflight: int = 4096,
+        target_free_gb: float = 8.0,
+    ):
+        super().__init__()
+        self.control = control
+        self.batch_size = batch_size
+        self.adjust_every = adjust_every
+        self.min_inflight = min_inflight
+        self.max_inflight = max_inflight
+        self.target_free_gb = target_free_gb
+        self._t0 = 0.0
+        self._steps = 0
+        self._durations: list[float] = []
+        self._prev_throughput: float | None = None
+        self._direction = 1
+        self._step_size = max(32, min(512, min_inflight // 2))
+
+    def on_train_batch_begin(self, batch, logs=None):
+        self._t0 = time.perf_counter()
+
+    def on_train_batch_end(self, batch, logs=None):
+        dt = time.perf_counter() - self._t0
+        self._durations.append(dt)
+        self._steps += 1
+        if self._steps % self.adjust_every != 0:
+            return
+
+        step_sec = float(np.mean(self._durations)) if self._durations else 0.0
+        self._durations.clear()
+        throughput = self.batch_size / max(step_sec, 1e-6)
+        _total_gb, avail_gb = _read_meminfo_gb()
+
+        cur = int(self.control.get("max_inflight_files", self.min_inflight))
+        new = cur
+        reason = "hold"
+
+        if avail_gb > 0 and avail_gb < self.target_free_gb:
+            new = max(self.min_inflight, int(cur * 0.8))
+            self._direction = -1
+            self._step_size = max(16, self._step_size // 2)
+            reason = "memory-pressure"
+        elif self._prev_throughput is None:
+            new = min(self.max_inflight, cur + self._step_size)
+            self._direction = 1
+            reason = "initial-probe"
+        elif throughput >= self._prev_throughput * 1.01:
+            if self._direction >= 0:
+                new = min(self.max_inflight, cur + self._step_size)
+                reason = "throughput-up"
+            else:
+                new = max(self.min_inflight, cur - self._step_size)
+                reason = "throughput-up-down-dir"
+        else:
+            self._step_size = max(16, self._step_size // 2)
+            if self._direction >= 0:
+                new = max(self.min_inflight, cur - self._step_size)
+                self._direction = -1
+                reason = "reverse-down"
+            else:
+                new = min(self.max_inflight, cur + self._step_size)
+                self._direction = 1
+                reason = "reverse-up"
+
+        self._prev_throughput = throughput
+        if new != cur:
+            self.control["max_inflight_files"] = int(new)
+        self.control["last_tuning_event"] = {
+            "step": int(self._steps),
+            "throughput": float(throughput),
+            "available_gb": float(avail_gb),
+            "previous_inflight": int(cur),
+            "current_inflight": int(self.control.get("max_inflight_files", cur)),
+            "reason": reason,
+        }
+
+
+# Internal defaults: keep CLI simple while auto-balancing loader throughput
+# and memory usage at runtime.
+_LOADER_TUNE_ADJUST_EVERY = 200
+_LOADER_TARGET_FREE_GB = 8.0
 
 
 def get_args() -> argparse.Namespace:
@@ -30,6 +142,7 @@ def get_args() -> argparse.Namespace:
 
     # -- Data -----------------------------------------------------------------
     parser.add_argument("--data_path_train", type=str, required=True, help="Path to train dataset")
+    parser.add_argument("--max_classes", type=int, default=None, help="Use top N classes by sample count")
     parser.add_argument("--max_samples", type=int, default=None, help="Max samples per class")
     parser.add_argument("--upsample_ratio", type=float, default=0.5, help="Upsample ratio for minority classes")
 
@@ -39,7 +152,15 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--spec_width", type=int, default=256, help="Spectrogram width (frames)")
     parser.add_argument("--fft_length", type=int, default=512, help="FFT length")
     parser.add_argument("--chunk_duration", type=float, default=3, help="Audio chunk duration (seconds)")
-    parser.add_argument("--max_duration", type=int, default=60, help="Max audio duration to read (seconds)")
+    parser.add_argument(
+        "--max_duration",
+        type=int,
+        default=60,
+        help=(
+            "Maximum seconds to read per file. The loader still reads only the bytes it needs "
+            "for the candidate chunks (smart-crop bounded by --max_chunks_per_file)."
+        ),
+    )
     parser.add_argument(
         "--audio_frontend",
         type=str,
@@ -56,9 +177,9 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--depth_multiplier", type=int, default=1, help="Depth multiplier")
     parser.add_argument("--frontend_trainable", action="store_true", default=False)
     parser.add_argument("--no_se", action="store_true", default=False, help="Disable SE channel attention")
-    parser.add_argument("--se_reduction", type=int, default=4, help="SE channel reduction factor")
+    parser.add_argument("--se_reduction", type=int, default=8, help="SE channel reduction factor")
     parser.add_argument("--no_inverted_residual", action="store_true", default=False, help="Use plain DS blocks")
-    parser.add_argument("--expansion_factor", type=int, default=6, help="Expansion factor for inverted residuals")
+    parser.add_argument("--expansion_factor", type=int, default=2, help="Expansion factor for inverted residuals")
     parser.add_argument(
         "--use_attention_pooling", action="store_true", default=False, help="Use attention pooling instead of GAP"
     )
@@ -72,6 +193,19 @@ def get_args() -> argparse.Namespace:
 
     # -- Training -------------------------------------------------------------
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
+    parser.add_argument("--num_workers", type=int, default=8, help="Parallel data loading workers (0 = sequential)")
+    parser.add_argument(
+        "--max_chunks_per_file",
+        type=int,
+        default=3,
+        help="Max salient chunks to extract per file open (reduces redundant I/O for long recordings)",
+    )
+    parser.add_argument(
+        "--prefetch_batches",
+        type=int,
+        default=2,
+        help="Loader prefetch queue depth in batches (higher = faster, but more RAM)",
+    )
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
     parser.add_argument("--learning_rate", type=float, default=0.001, help="Initial learning rate")
     parser.add_argument("--dropout", type=float, default=0.5, help="Dropout rate before classifier head")
@@ -190,7 +324,13 @@ def main():
     hop_length = compute_hop_length(args.sample_rate, args.chunk_duration, args.spec_width)
 
     # Load file paths
-    file_paths, classes = load_file_paths_from_directory(args.data_path_train)
+    top_classes = None
+    if args.max_classes is not None:
+        top_classes = get_classes_with_most_samples(args.data_path_train, n_classes=args.max_classes)
+        print(f"Selected top {len(top_classes)} classes by sample count.")
+    file_paths, classes = load_file_paths_from_directory(
+        args.data_path_train, classes=top_classes, max_samples=args.max_samples
+    )
 
     # Train/val split
     split_idx = int(len(file_paths) * (1 - args.val_split))
@@ -212,12 +352,39 @@ def main():
         mel_bins=args.num_mels,
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
+        prefetch_batches=args.prefetch_batches,
     )
+
+    initial_inflight = max(256, args.num_workers * 64)
+    common_kwargs["max_inflight_files"] = initial_inflight
+
+    train_loader_control: dict | None = {"max_inflight_files": int(initial_inflight)} if args.num_workers > 0 else None
+    extra_callbacks: list[tf.keras.callbacks.Callback] = []
+    if train_loader_control is not None:
+        extra_callbacks.append(
+            AdaptiveLoaderTuner(
+                control=train_loader_control,
+                batch_size=args.batch_size,
+                adjust_every=_LOADER_TUNE_ADJUST_EVERY,
+                min_inflight=max(64, args.num_workers * 8),
+                max_inflight=max(512, args.num_workers * 256),
+                target_free_gb=_LOADER_TARGET_FREE_GB,
+            )
+        )
+        print(f"Loader auto-tuning enabled (initial max_inflight_files={initial_inflight}).")
+
+    train_kwargs = dict(common_kwargs)
+    if train_loader_control is not None:
+        train_kwargs["loader_control"] = train_loader_control
+
+    val_kwargs = dict(common_kwargs)
     train_dataset = load_dataset(
         train_paths,
         classes,
         audio_frontend=args.audio_frontend,
         batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        max_chunks_per_file=args.max_chunks_per_file,
         mixup_alpha=args.mixup_alpha,
         mixup_probability=args.mixup_probability,
         random_offset=True,
@@ -225,22 +392,26 @@ def main():
         spec_augment=args.spec_augment,
         freq_mask_max=args.freq_mask_max,
         time_mask_max=args.time_mask_max,
-        **common_kwargs,
+        **train_kwargs,
     )
     val_dataset = load_dataset(
         val_paths,
         classes,
         audio_frontend=args.audio_frontend,
         batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        max_chunks_per_file=1,
         mixup_alpha=0.0,
         mixup_probability=0.0,
         random_offset=False,
         snr_threshold=0.5,
         spec_augment=False,
-        **common_kwargs,
+        **val_kwargs,
     )
 
-    steps_per_epoch = max(1, math.ceil(len(train_paths) / float(args.batch_size)))
+    steps_per_epoch = max(
+        1, math.ceil(estimate_samples_per_epoch(len(train_paths), args.max_chunks_per_file) / float(args.batch_size))
+    )
     val_steps = max(1, math.ceil(len(val_paths) / float(args.batch_size)))
 
     # Build model
@@ -327,25 +498,29 @@ def main():
 
     # Train
     print("Starting training...")
-    train_model(
-        model,
-        train_dataset,
-        val_dataset,
-        epochs=args.epochs,
-        learning_rate=args.learning_rate,
-        batch_size=args.batch_size,
-        checkpoint_path=args.checkpoint_path,
-        steps_per_epoch=steps_per_epoch,
-        val_steps=val_steps,
-        is_multilabel=is_multilabel,
-        optimizer=args.optimizer,
-        weight_decay=args.weight_decay,
-        loss_fn=loss_fn,
-        gradient_clip_norm=args.grad_clip,
-        class_weights=class_weights,
-        resume=args.resume,
-    )
-    print(f"Training complete. Best model saved to '{args.checkpoint_path}'.")
+    try:
+        train_model(
+            model,
+            train_dataset,
+            val_dataset,
+            epochs=args.epochs,
+            learning_rate=args.learning_rate,
+            batch_size=args.batch_size,
+            checkpoint_path=args.checkpoint_path,
+            steps_per_epoch=steps_per_epoch,
+            val_steps=val_steps,
+            is_multilabel=is_multilabel,
+            optimizer=args.optimizer,
+            weight_decay=args.weight_decay,
+            loss_fn=loss_fn,
+            gradient_clip_norm=args.grad_clip,
+            class_weights=class_weights,
+            resume=args.resume,
+            extra_callbacks=extra_callbacks,
+        )
+        print(f"Training complete. Best model saved to '{args.checkpoint_path}'.")
+    except KeyboardInterrupt:
+        print(f"\nTraining interrupted. Best checkpoint so far: '{args.checkpoint_path}'")
 
     # Save labels
     labels_file = args.checkpoint_path.replace(".keras", "_labels.txt")
