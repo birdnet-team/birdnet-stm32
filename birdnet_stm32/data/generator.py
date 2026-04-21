@@ -230,6 +230,8 @@ def load_dataset(
     time_mask_max = kwargs.get("time_mask_max", 25)
     mixup_alpha = kwargs.get("mixup_alpha", 0.2)
     mixup_probability = kwargs.get("mixup_probability", 0.25)
+    # Keep prefetch bounded to avoid RAM spikes with large raw batches.
+    prefetch_batches = int(kwargs.get("prefetch_batches", 2))
 
     num_classes = len(classes)
 
@@ -268,8 +270,9 @@ def load_dataset(
         "max_chunks_per_file": max_chunks_per_file,
     }
 
-    # Choose chunksize: enough to amortize IPC, small enough for fairness
-    chunksize = max(1, min(64, len(file_paths) // max(num_workers, 1) // 4))
+    # Keep multiprocessing chunks small to avoid huge serialized payloads.
+    # Large chunks can buffer many samples in worker->parent pipes and blow RAM.
+    chunksize = 1 if audio_frontend == "raw" else 2
 
     use_mp = num_workers > 0
 
@@ -280,7 +283,12 @@ def load_dataset(
         """Infinite generator with reservoir for multi-chunk file reuse."""
         pool = None
         if use_mp:
-            pool = mp.Pool(num_workers, initializer=_init_worker, initargs=(worker_cfg,))
+            pool = mp.Pool(
+                num_workers,
+                initializer=_init_worker,
+                initargs=(worker_cfg,),
+                maxtasksperchild=500,
+            )
         else:
             _init_worker(worker_cfg)
 
@@ -342,5 +350,5 @@ def load_dataset(
 
         dataset = dataset.map(_apply_batch_mixup, num_parallel_calls=1)
 
-    dataset = dataset.prefetch(tf.data.AUTOTUNE)
+    dataset = dataset.prefetch(max(1, prefetch_batches))
     return dataset
