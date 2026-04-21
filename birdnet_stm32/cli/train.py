@@ -84,6 +84,12 @@ def get_args() -> argparse.Namespace:
         default=3,
         help="Max salient chunks to extract per file open (reduces redundant I/O for long recordings)",
     )
+    parser.add_argument(
+        "--prefetch_batches",
+        type=int,
+        default=2,
+        help="Loader prefetch queue depth in batches (higher = faster, but more RAM)",
+    )
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
     parser.add_argument("--learning_rate", type=float, default=0.001, help="Initial learning rate")
     parser.add_argument("--dropout", type=float, default=0.5, help="Dropout rate before classifier head")
@@ -230,6 +236,7 @@ def main():
         mel_bins=args.num_mels,
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
+        prefetch_batches=args.prefetch_batches,
     )
     train_dataset = load_dataset(
         train_paths,

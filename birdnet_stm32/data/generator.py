@@ -232,8 +232,6 @@ def load_dataset(
     mixup_probability = kwargs.get("mixup_probability", 0.25)
     # Keep prefetch bounded to avoid RAM spikes with large raw batches.
     prefetch_batches = int(kwargs.get("prefetch_batches", 2))
-    # Bound how many files are in flight at once through multiprocessing.
-    submit_window = int(kwargs.get("submit_window", max(32, num_workers * 8)))
 
     num_classes = len(classes)
 
@@ -301,23 +299,21 @@ def load_dataset(
 
                 reservoir: list[tuple[np.ndarray, np.ndarray]] = []
 
-                for start in range(0, len(shuffled), submit_window):
-                    window = shuffled[start : start + submit_window]
-                    if pool is not None:
-                        results = pool.map(_process_file, window, chunksize=chunksize)
-                    else:
-                        results = map(_process_file, window)
+                if pool is not None:
+                    results_iter = pool.imap_unordered(_process_file, shuffled, chunksize=chunksize)
+                else:
+                    results_iter = map(_process_file, shuffled)
 
-                    for result in results:
-                        if result is None:
-                            continue
-                        reservoir.extend(result)
+                for result in results_iter:
+                    if result is None:
+                        continue
+                    reservoir.extend(result)
 
-                        # Once reservoir is full enough, shuffle and drain.
-                        if len(reservoir) >= reservoir_high:
-                            random.shuffle(reservoir)
-                            while len(reservoir) > reservoir_low:
-                                yield reservoir.pop()
+                    # Once reservoir is full enough, shuffle and drain.
+                    if len(reservoir) >= reservoir_high:
+                        random.shuffle(reservoir)
+                        while len(reservoir) > reservoir_low:
+                            yield reservoir.pop()
 
                 # Drain remaining samples at end of epoch
                 if reservoir:
