@@ -18,7 +18,7 @@ import tensorflow as tf
 
 from birdnet_stm32.audio.activity import smart_crop, sort_by_activity
 from birdnet_stm32.audio.augmentation import apply_mixup, apply_spec_augment
-from birdnet_stm32.audio.io import load_audio_file
+from birdnet_stm32.audio.io import estimate_num_chunks, load_audio_window, split_audio_into_chunks
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
 from birdnet_stm32.models.frontend import normalize_frontend_name
 
@@ -77,7 +77,7 @@ def _process_file(path: str):
     spec_width = cfg["spec_width"]
     mag_scale = cfg["mag_scale"]
     n_mfcc = cfg["n_mfcc"]
-    max_duration = cfg["max_duration"]
+    load_duration = cfg.get("load_duration", cfg.get("max_duration"))
     snr_threshold = cfg["snr_threshold"]
     random_offset = cfg["random_offset"]
     spec_augment = cfg["spec_augment"]
@@ -85,20 +85,31 @@ def _process_file(path: str):
     time_mask_max = cfg["time_mask_max"]
     audio_frontend = cfg["audio_frontend"]
     max_chunks = cfg["max_chunks_per_file"]
+    candidate_chunks = cfg.get("candidate_chunks_per_file", min(8, max(4, max_chunks * 2)))
 
     try:
-        audio_chunks = load_audio_file(path, sr, max_duration, cd, random_offset=random_offset)
+        audio = load_audio_window(
+            path,
+            sample_rate=sr,
+            max_duration=load_duration,
+            chunk_duration=cd,
+            random_offset=random_offset,
+        )
     except Exception:
         return None
 
-    if len(audio_chunks) == 0:
+    if audio.size == 0:
         audio_chunks = [np.random.uniform(-1.0, 1.0, size=(T,)).astype(np.float32)]
         label = np.zeros(num_classes, dtype=np.float32)
+    else:
+        available_chunks = estimate_num_chunks(audio.shape[0], sr, cd)
+        if available_chunks > candidate_chunks:
+            audio_chunks = smart_crop(audio, sr, cd, max_chunks=candidate_chunks)
+        else:
+            audio_chunks = split_audio_into_chunks(audio, sample_rate=sr, chunk_duration=cd)
 
-    # Smart crop for long recordings
-    if len(audio_chunks) > 2:
-        full_audio = np.concatenate(audio_chunks)
-        audio_chunks = smart_crop(full_audio, sr, cd, max_chunks=max(5, max_chunks))
+    if len(audio_chunks) == 0:
+        return None
 
     # --- Compute spectrograms / raw features for all chunks ---
     if audio_frontend in ("mfcc", "log_mel"):
@@ -175,8 +186,36 @@ def estimate_samples_per_epoch(n_files: int, max_chunks_per_file: int = 1) -> in
 
 
 # Default reservoir capacity — number of ready samples to buffer.
-_RESERVOIR_HIGH = 512
-_RESERVOIR_LOW = 128
+_DEFAULT_BUFFER_MB = 128.0
+_MAX_RESERVOIR_SAMPLES = 1024
+
+
+def _estimate_sample_bytes(sample_shape: tuple[int, ...], num_classes: int) -> int:
+    """Estimate bytes per buffered sample, including labels."""
+    sample_elems = int(np.prod(sample_shape, dtype=np.int64))
+    return (sample_elems + int(num_classes)) * np.dtype(np.float32).itemsize
+
+
+def _compute_reservoir_limits(
+    sample_shape: tuple[int, ...],
+    num_classes: int,
+    batch_size: int,
+    loader_buffer_mb: float,
+) -> tuple[int, int]:
+    """Derive memory-aware reservoir high/low watermarks.
+
+    The target buffer is expressed in megabytes, then converted to a bounded
+    number of ready samples based on the actual tensor size for the chosen
+    frontend.
+    """
+    sample_bytes = max(1, _estimate_sample_bytes(sample_shape, num_classes))
+    min_high = max(batch_size * 4, 32)
+    target_bytes = int(max(loader_buffer_mb, 1.0) * 1024 * 1024)
+    high = max(min_high, min(_MAX_RESERVOIR_SAMPLES, target_bytes // sample_bytes))
+    low = max(batch_size * 2, high // 3)
+    if low >= high:
+        low = max(batch_size, high - batch_size)
+    return int(high), int(low)
 
 
 def load_dataset(
@@ -232,10 +271,18 @@ def load_dataset(
     mixup_probability = kwargs.get("mixup_probability", 0.25)
     # Keep prefetch bounded to avoid RAM spikes with large raw batches.
     prefetch_batches = int(kwargs.get("prefetch_batches", 2))
+    loader_buffer_mb = float(kwargs.get("loader_buffer_mb", _DEFAULT_BUFFER_MB))
     # Bound in-flight multiprocessing tasks so result queues cannot grow
     # unbounded during long epochs.
     max_inflight_files = int(kwargs.get("max_inflight_files", max(256, num_workers * 64)))
     loader_control = kwargs.get("loader_control")
+    candidate_chunks_per_file = int(kwargs.get("candidate_chunks_per_file", min(8, max(4, max_chunks_per_file * 2))))
+    if random_offset:
+        load_duration = max(cd, cd * candidate_chunks_per_file)
+        if max_duration:
+            load_duration = min(max_duration, load_duration)
+    else:
+        load_duration = max_duration
 
     num_classes = len(classes)
 
@@ -272,6 +319,8 @@ def load_dataset(
         "class_to_idx": {c: i for i, c in enumerate(classes)},
         "num_classes": num_classes,
         "max_chunks_per_file": max_chunks_per_file,
+        "candidate_chunks_per_file": candidate_chunks_per_file,
+        "load_duration": load_duration,
     }
 
     # Keep multiprocessing chunks small to avoid huge serialized payloads.
@@ -280,8 +329,12 @@ def load_dataset(
 
     use_mp = num_workers > 0
 
-    reservoir_high = max(_RESERVOIR_HIGH, batch_size * 8)
-    reservoir_low = max(_RESERVOIR_LOW, batch_size * 2)
+    reservoir_high, reservoir_low = _compute_reservoir_limits(
+        sample_shape=sample_shape,
+        num_classes=num_classes,
+        batch_size=batch_size,
+        loader_buffer_mb=loader_buffer_mb,
+    )
 
     def _generator():
         """Infinite generator with reservoir for multi-chunk file reuse."""
@@ -306,7 +359,10 @@ def load_dataset(
                 current_inflight = max_inflight_files
                 if isinstance(loader_control, dict):
                     current_inflight = int(loader_control.get("max_inflight_files", max_inflight_files))
-                current_inflight = max(32, current_inflight)
+                inflight_cap = max(
+                    32, max(batch_size * 2, num_workers * 4, (reservoir_high // max(1, max_chunks_per_file)) * 2)
+                )
+                current_inflight = max(32, min(current_inflight, inflight_cap))
 
                 for start in range(0, len(shuffled), current_inflight):
                     window = shuffled[start : start + current_inflight]

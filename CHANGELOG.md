@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Memory-aware data loader**: per-frontend reservoir sizing via `_compute_reservoir_limits()`, configurable through the new `loader_buffer_mb` kwarg (default 128 MB). Replaces fixed reservoir constants that ignored sample size.
+- **Bounded random-offset reads**: training pipeline now reads only the bytes it needs from each long file (`load_duration` capped by `candidate_chunks_per_file × chunk_duration`), instead of decoding `max_duration` and discarding most of the audio.
+- `load_audio_window()` and `split_audio_into_chunks()` helpers in `birdnet_stm32/audio/io.py` for callers that want a single-pass read followed by their own chunk selection.
+
+### Changed
+
+- `representative_data_gen()` now bounds calibration reads via `cfg["max_duration"]` (or a sensible per-chunk multiple) instead of a hard-coded 30 s window.
+
+### Fixed
+
+- Short audio files (< chunk size) now preserve the leading samples and pad once, instead of being silently dropped or zero-filled before the salient region.
+- Removed duplicate `if __name__ == "__main__"` block in `birdnet_stm32/cli/board_test.py`.
+
+### Removed
+
+- Legacy backup scripts at the repo root: `convert.py.bak`, `test.py.bak`, `train.py.bak`.
+- Unused `utils/audio.py` (superseded by `birdnet_stm32/audio/*.py`).
+
 ## [0.9.0] — 2026-04-20
 
 ### Added

@@ -4,6 +4,7 @@ import numpy as np
 import soundfile as sf
 
 from birdnet_stm32.data.generator import (
+    _compute_reservoir_limits,
     _init_worker,
     _process_file,
     estimate_samples_per_epoch,
@@ -154,6 +155,61 @@ class TestProcessFile:
 
         assert result_1 is not None and result_3 is not None
         assert len(result_3) >= len(result_1)
+
+    def test_random_offset_uses_bounded_read_window(self, monkeypatch, tmp_path):
+        """Random-offset training should read only the candidate window budget."""
+        paths, classes = _make_long_dataset(tmp_path, file_duration=30)
+        observed: dict[str, float | bool] = {}
+
+        def fake_load_audio_window(path, sample_rate, max_duration, chunk_duration, random_offset):
+            observed["max_duration"] = max_duration
+            observed["random_offset"] = random_offset
+            return np.ones(int(sample_rate * chunk_duration * 4), dtype=np.float32)
+
+        monkeypatch.setattr("birdnet_stm32.data.generator.load_audio_window", fake_load_audio_window)
+
+        cfg = {
+            "audio_frontend": "raw",
+            "sr": 22050,
+            "cd": 3,
+            "T": 22050 * 3,
+            "fft_length": 512,
+            "mel_bins": 64,
+            "spec_width": 256,
+            "mag_scale": "pwl",
+            "n_mfcc": 20,
+            "max_duration": 60,
+            "load_duration": 12,
+            "snr_threshold": 0.0,
+            "random_offset": True,
+            "spec_augment": False,
+            "freq_mask_max": 8,
+            "time_mask_max": 25,
+            "noise_labels": ("noise", "silence", "background", "other"),
+            "class_to_idx": {c: i for i, c in enumerate(classes)},
+            "num_classes": len(classes),
+            "max_chunks_per_file": 1,
+            "candidate_chunks_per_file": 4,
+        }
+        _init_worker(cfg)
+
+        result = _process_file(paths[0])
+
+        assert result is not None
+        assert observed == {"max_duration": 12, "random_offset": True}
+
+
+class TestReservoirSizing:
+    """Tests for memory-aware sample buffering."""
+
+    def test_larger_samples_reduce_reservoir_capacity(self):
+        """Bigger per-sample tensors should lower the ready-sample buffer size."""
+        mel_high, mel_low = _compute_reservoir_limits((64, 256, 1), num_classes=10, batch_size=16, loader_buffer_mb=64)
+        raw_high, raw_low = _compute_reservoir_limits((60000, 1), num_classes=10, batch_size=16, loader_buffer_mb=64)
+
+        assert raw_high < mel_high
+        assert mel_low < mel_high
+        assert raw_low < raw_high
 
 
 class TestEstimateSamplesPerEpoch:

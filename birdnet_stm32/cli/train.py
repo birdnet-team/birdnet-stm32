@@ -149,7 +149,15 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--spec_width", type=int, default=256, help="Spectrogram width (frames)")
     parser.add_argument("--fft_length", type=int, default=512, help="FFT length")
     parser.add_argument("--chunk_duration", type=float, default=3, help="Audio chunk duration (seconds)")
-    parser.add_argument("--max_duration", type=int, default=60, help="Max audio duration to read (seconds)")
+    parser.add_argument(
+        "--max_duration",
+        type=int,
+        default=60,
+        help=(
+            "Maximum seconds to read per file. The loader still reads only the bytes it needs "
+            "for the candidate chunks (smart-crop bounded by --max_chunks_per_file)."
+        ),
+    )
     parser.add_argument(
         "--audio_frontend",
         type=str,
