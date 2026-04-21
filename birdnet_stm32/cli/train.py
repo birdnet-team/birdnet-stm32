@@ -113,11 +113,14 @@ class AdaptiveLoaderTuner(tf.keras.callbacks.Callback):
         self._prev_throughput = throughput
         if new != cur:
             self.control["max_inflight_files"] = int(new)
-        print(
-            f"[loader-tune] step={self._steps} throughput={throughput:.1f} samples/s "
-            f"avail_mem={avail_gb:.1f}GB inflight {cur}->{int(self.control.get('max_inflight_files', cur))} "
-            f"({reason})"
-        )
+        self.control["last_tuning_event"] = {
+            "step": int(self._steps),
+            "throughput": float(throughput),
+            "available_gb": float(avail_gb),
+            "previous_inflight": int(cur),
+            "current_inflight": int(self.control.get("max_inflight_files", cur)),
+            "reason": reason,
+        }
 
 
 # Internal defaults: keep CLI simple while auto-balancing loader throughput
