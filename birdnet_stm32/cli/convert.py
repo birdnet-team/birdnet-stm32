@@ -151,6 +151,15 @@ def main():
     convert_to_tflite(model, rep_data_gen, args.output_path, quantization=args.quantization, per_tensor=args.per_tensor)
     print(f"TFLite model saved to {args.output_path}")
 
+    # Save labels alongside the converted model so consumers don't need the
+    # full Keras model config to interpret the output tensor.
+    if cfg.get("class_names"):
+        labels_path = os.path.splitext(args.output_path)[0] + "_labels.txt"
+        with open(labels_path, "w") as f:
+            for name in cfg["class_names"]:
+                f.write(f"{name}\n")
+        print(f"Labels saved to {labels_path}")
+
     # Validate (single run or batch)
     report: dict = {"output_path": args.output_path, "quantization": args.quantization, "per_tensor": args.per_tensor}
 

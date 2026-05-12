@@ -7,11 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-12
+
 ### Added
 
 - **Memory-aware data loader**: per-frontend reservoir sizing via `_compute_reservoir_limits()`, configurable through the new `loader_buffer_mb` kwarg (default 128 MB). Replaces fixed reservoir constants that ignored sample size.
 - **Bounded random-offset reads**: training pipeline now reads only the bytes it needs from each long file (`load_duration` capped by `candidate_chunks_per_file × chunk_duration`), instead of decoding `max_duration` and discarding most of the audio.
 - `load_audio_window()` and `split_audio_into_chunks()` helpers in `birdnet_stm32/audio/io.py` for callers that want a single-pass read followed by their own chunk selection.
+- `convert` CLI now writes a `{output_path_stem}_labels.txt` file alongside the converted TFLite model so downstream consumers can interpret the output tensor without the full Keras model config.
 
 ### Changed
 

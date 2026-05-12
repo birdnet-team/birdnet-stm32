@@ -158,3 +158,4 @@ firmware/network.h
 # Legacy script backups
 *.py.bak
 checkpoints/*_conversion_report.json
+checkpoints/*_config.json
