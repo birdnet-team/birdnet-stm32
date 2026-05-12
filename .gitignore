@@ -1,17 +1,9 @@
 # Custom
 *.wav
 samples/
-checkpoints/*.keras
-checkpoints/*.csv
-checkpoints/*.npz
-checkpoints/*.tflite
-checkpoints/*_labels.txt
-checkpoints/*_model_config.json
-checkpoints/*_train_state.json
-checkpoints/*_curves.png
-checkpoints/*_history.csv
-checkpoints/optuna_trials/
-checkpoints/optuna_best_params.json
+checkpoints/
+!checkpoints/release/
+!checkpoints/release/**
 notes.txt
 deploy.sh
 /dev/
@@ -157,5 +149,3 @@ firmware/network.h
 
 # Legacy script backups
 *.py.bak
-checkpoints/*_conversion_report.json
-checkpoints/*_config.json
