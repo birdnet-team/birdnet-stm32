@@ -30,15 +30,14 @@ python -m birdnet_stm32 train --data_path_train data/train --tune --n_trials 20 
 
 ## Architecture
 
-- **Audio frontend** (`birdnet_stm32/models/frontend.py`): Five modes — `librosa` (precomputed mel), `hybrid` (offline STFT + learned mel mixer), `raw` (waveform → learned filterbank), `mfcc` (precomputed MFCC), `log_mel` (precomputed log-mel). `hybrid` or `raw` are the deployment options (`raw` achieves 0ms STFT overhead but uses more NPU).
+- **Audio frontend** (`birdnet_stm32/models/frontend.py`): Five modes — `librosa` (precomputed mel), `hybrid` (linear STFT + learned mel mixer), `raw` (waveform → learned Gabor quadrature filterbank), `mfcc` (precomputed MFCC), `log_mel` (precomputed log-mel). The firmware supports `raw`, `hybrid`, and `librosa`; `mfcc` and `log_mel` remain host-preprocessed paths.
 - **Magnitude scaling**: `pwl` (piecewise-linear, default, quantization-friendly), `pcen`, `db` (avoid — poor quantization). Decoupled in `birdnet_stm32/models/magnitude.py`.
 - **Model**: DS-CNN (depthwise-separable CNN) with 4 stages, ReLU6, global avg pool → dropout → dense. Scaled via `alpha` (channel multiplier) and `depth_multiplier` (block repeats). SE channel attention and inverted residual blocks are on by default (disable with `--no_se`, `--no_inverted_residual`). Optional attention pooling (`--use_attention_pooling`).
 - **Building blocks** (`birdnet_stm32/models/blocks.py`): SE block, inverted residual block, attention pooling — all NPU-compatible.
-- **Model registry** (`birdnet_stm32/models/__init__.py`): `build_model(name, **kwargs)` dispatcher. Currently registers `dscnn`.
-- **Model profiler** (`birdnet_stm32/models/profiler.py`): Per-layer MACs, params, activation memory, N6 compatibility check.
+- **Model profiler** (`birdnet_stm32/models/profiler.py`): Per-layer MACs, params, activation memory, N6 compatibility check. Printed by `train` in place of `model.summary()`.
 - **Quantization**: Post-training quantization (PTQ) with representative dataset calibration (stratified sampling + SNR filtering). Float32 I/O, INT8 internals. Per-channel (default) or per-tensor (`--per_tensor`). Dynamic range mode (`--quantization dynamic`). Batch validation (`--batch_validate N`). ONNX export (`--export_onnx`). JSON conversion report (`--report_json`).
 - **QAT**: Quantization-aware training via shadow-weight fake-quantization (`--qat`). Freezes BN, injects INT8 noise into kernels during fine-tuning. No FakeQuant ops in saved model — N6 compatible. Implemented in `birdnet_stm32/training/qat.py`.
-- **Training pipeline**: Always-multi-label sigmoid + binary crossentropy head. Cosine LR decay, early stopping, resume (`--resume`), gradient clipping (`--grad_clip`, default 1.0), mixed precision (`--mixed_precision`), Dirichlet multi-source mixup, smart crop for long recordings, LR finder utility (`birdnet_stm32/training/lr_finder.py`), Optuna hyperparameter tuning (`--tune`, `birdnet_stm32/training/tuner.py`), linear probing (`--linear_probe`, `birdnet_stm32/training/linear_probe.py`).
+- **Training pipeline**: Always-multi-label sigmoid + binary crossentropy head. Linear warmup into cosine LR decay, checkpoint/early-stopping on val ROC-AUC, resume (`--resume`), gradient clipping (`--grad_clip`, default 1.0), mixed precision (`--mixed_precision`), Dirichlet multi-source mixup, smart crop for long recordings, Optuna hyperparameter tuning (`--tune`, `birdnet_stm32/training/tuner.py`), linear probing (`--linear_probe`, `birdnet_stm32/training/linear_probe.py`).
 - **Data pipeline** (`birdnet_stm32/data/generator.py`): Multiprocessing pool (`--num_workers`, default 8) bypasses GIL for parallel FLAC decode + resample + spectrogram. Multi-chunk extraction (`--max_chunks_per_file`, default 3) reuses long file opens by extracting multiple salient chunks per decode, buffered in a shuffled in-memory reservoir (~135 MB) for batch diversity.
 - **Deployment**: `stedgeai generate` → `n6_loader.py` (serial flash) → `stedgeai validate` (on-device).
 
@@ -61,8 +60,9 @@ python -m birdnet_stm32 train --data_path_train data/train --tune --n_trials 20 
 ## Pitfalls
 
 - **N6 compatibility is the absolute priority.** Every model, layer, and quantization decision must be verified against the STM32N6 NPU operator set. Verify via `stedgeai analyze` / `stedgeai generate`.
-- **Raw frontend sizes**: The N6 limits standard input arrays dynamically transferring from M55 to 65536 samples (16-bit size limit). E.g., `24kHz × 2.0s` is safe. Exceeding (like `22kHz × 3s`) requires falling back to `hybrid` / `librosa` or shorter chunks.
+- **Raw frontend sizes**: The N6 limits standard input arrays dynamically transferring from M55 to 65536 samples (16-bit size limit). E.g., `24kHz × 2.5s` is safe. Exceeding (like `24kHz × 3s`) requires falling back to `hybrid` / `librosa` or shorter chunks.
+- **NPU conv strides**: measured with `stedgeai analyze`, the N6 runs convolutions with stride > 2 in **software**. Any large-hop "learned STFT" must be expressed as a folded stride-2 convolution (see `raw_filterbank_geometry`), or the whole filterbank lands on the Cortex-M55.
 - **Quantization similarity**: Overly diverse representative datasets widen INT8 ranges → worse cosine similarity. Target > 0.95 cosine sim in `convert.py` output.
 - **Channel alignment**: Keep channel counts as multiples of 8 for NPU vectorization.
 - **On-device validation**: Requires physical USB at 921600 baud to STM32N6570-DK.
-- **Board test firmware must be standalone.** The `board-test` command must deploy real firmware that does all processing on the board: read WAV from SD card → compute STFT on Cortex-M55 → run NPU inference → write results to SD card + serial. Do NOT precompute spectrograms on the host — that defeats the purpose of an integration test.
+- **Board test firmware must be standalone.** The `board-test` command deploys real firmware that reads WAV from SD, applies frontend-specific preprocessing on the board, runs NPU inference, and streams results over UART. Do not precompute test inputs on the host.

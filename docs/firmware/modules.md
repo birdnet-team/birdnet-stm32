@@ -1,14 +1,14 @@
 # Source Modules
 
-Detailed reference for every firmware C source file. The firmware is intentionally
-compact — ~700 lines of application code across 5 files, plus a 230-line FFT.
+Detailed reference for the firmware application modules.
 
 ## `main.c` — Orchestrator
 
-**Location:** `firmware/Src/main.c` (~310 lines)
+**Location:** `firmware/Src/main.c`
 
 The entry point. Initializes the board, mounts the SD card, loops over WAV
-files, and coordinates the STFT → NPU → output pipeline.
+files, applies frontend-specific preprocessing, and coordinates NPU inference
+and UART output.
 
 ### Key Sections
 
@@ -33,7 +33,7 @@ int __io_putchar(int ch)
 1. Query input/output buffer addresses from LL_ATON.
 2. `memcpy` data into the NPU input buffer. Depending on `APP_AUDIO_FRONTEND`:
    - **Hybrid:** `spec_buf` (STFT spectrogram)
-   - **Raw:** `audio_buf` (raw waveform directly)
+   - **Raw:** `audio_buf` after peak normalization
    - **Precomputed:** `mel_buf` (STFT + Mel filterbank)
 3. `SCB_CleanDCache_by_Addr()` — flush CPU cache so the NPU sees fresh data.
 4. `LL_ATON_RT_Main()` — run inference (blocking).
@@ -52,7 +52,7 @@ read, STFT, NPU. Per-file `[BENCH]` lines and an aggregate summary at the end.
 | Function | Signature | Purpose |
 |---|---|---|
 | `main()` | `int main(void)` | Entry point: init + processing loop |
-| `run_inference()` | `bool run_inference(const float *, float *)` | Copy spec to NPU, run, copy scores back |
+| `run_inference()` | `bool run_inference(const float *, float *)` | Copy frontend data to NPU, run, copy scores back |
 | `print_top_k()` | `void print_top_k(const char *, const float *, int)` | Print top-K over UART |
 | `__io_putchar()` | `int __io_putchar(int)` | UART printf redirect |
 | `aiValidationInit()` | `static void aiValidationInit(void)` | GDB breakpoint stub (**do not remove**) |
@@ -63,7 +63,7 @@ read, STFT, NPU. Per-file `[BENCH]` lines and an aggregate summary at the end.
 
 ## `wav_reader.c` — WAV File Parser
 
-**Location:** `firmware/Src/wav_reader.c` (~130 lines)
+**Location:** `firmware/Src/wav_reader.c`
 
 Parses standard RIFF/WAVE files with PCM encoding.
 
@@ -110,7 +110,7 @@ typedef struct {
 
 ## `audio_stft.c` — STFT Engine
 
-**Location:** `firmware/Src/audio_stft.c` (~68 lines)
+**Location:** `firmware/Src/audio_stft.c`
 
 Computes a Hann-windowed magnitude STFT using `fft.c`.
 
@@ -129,14 +129,15 @@ void stft_magnitude(const float *audio, uint32_t num_samples,
    - Extract `fft_length` samples starting at `frame × hop_length`.
    - Multiply by the Hann window.
    - Call `fft_512_real()` for the FFT.
-   - Compute magnitude: `sqrt(re² + im²)` for each of 257 bins.
+   - Compute magnitude for bins 0–255 and omit Nyquist, matching the model input.
    - Store in output as `out[freq_bin * spec_width + frame]`
      (frequency-major).
 3. Zero-fill if the audio is shorter than expected.
 
-**Output layout:** `[filters, spec_width]` — frequency-major (each row is one
-frequency bin across all time frames). This matches the expected layout layout 
-`[B, filters, spec_width, 1]` for both the hybrid and precomputed frontends.
+**Output layout:** `[fft_bins, spec_width]` — frequency-major (each row is one
+frequency bin across all time frames). This matches the expected layout
+`[B, fft_bins, spec_width, 1]` for the hybrid frontend and feeds the mel stage
+for the librosa frontend.
 
 !!! note "Why frequency-major?"
     The TFLite model's first layer expects input shaped `[B, filters, T, 1]`.
@@ -154,18 +155,23 @@ Working buffers are stack-allocated:
 
 ## `audio_mel.c` — Mel Filterbank
 
-**Location:** `firmware/Src/audio_mel.c` (~80 lines)
+**Location:** `firmware/Src/audio_mel.c`
 
-Computes a triangular Mel-frequency filterbank. Only compiled and used if `APP_AUDIO_FRONTEND == APP_FRONTEND_PRECOMPUTED`.
+Computes a triangular mel-frequency filterbank. It is compiled and used for
+the `librosa` frontend (`APP_FRONTEND_PRECOMPUTED` in the C enum).
 
 ### `mel_filterbank()`
 ```c
-void mel_filterbank(const float *spect, uint32_t spec_width, float *out);
+void mel_filterbank(const float *stft_mag, uint32_t fft_bins,
+                    uint32_t spec_width, uint32_t num_mels,
+                    float *mel_out);
 ```
 **Algorithm:**
-1. A 1D array of pre-calculated `APP_NUM_MELS` triangular weights is generated once during startup by `mel_init()`.
-2. The `mel_filterbank()` applies that matrix over the frequency-major `[APP_FFT_BINS, spec_width]` spectrogram.
-3. Produces a compacted `[APP_NUM_MELS, spec_width]` output array.
+1. `mel_init()` builds a dense Slaney-normalized triangular weight matrix once
+   during startup.
+2. `mel_filterbank()` applies it to the frequency-major
+   `[APP_FFT_BINS, spec_width]` spectrogram.
+3. It produces an `[APP_NUM_MELS, spec_width]` output array.
 
 This reproduces librosa's Slaney-normalized mel weight matrices natively on the Cortex-M55 CPU.
 
@@ -173,7 +179,7 @@ This reproduces librosa's Slaney-normalized mel weight matrices natively on the 
 
 ## `fft.c` — 512-Point Real FFT
 
-**Location:** `firmware/Src/fft.c` (~230 lines)
+**Location:** `firmware/Src/fft.c`
 
 A self-contained radix-2 Decimation-in-Time (DIT) FFT with **zero external
 dependencies**.
@@ -182,9 +188,9 @@ dependencies**.
 
 The CMSIS-DSP `arm_rfft_fast_f32` requires linking `libarm_cortexM55l_math.a`,
 which adds ~200 KB to the binary and complicates the Makefile. Our custom
-512-point FFT is 230 lines of plain C, has no dependencies, and runs in ~0.05 ms
-per frame at 800 MHz. For a 256-frame spectrogram the entire STFT takes
-~25–35 ms — negligible compared to the 3 s audio chunk.
+512-point FFT is plain C and has no external dependencies. In the verified
+hybrid board run, the complete 256-frame STFT took about 58 ms at the default
+clock configuration.
 
 ### Algorithm
 
@@ -211,8 +217,8 @@ CMSIS-DSP compatible layout:
 
 | Metric | Value |
 |---|---|
-| Per-frame time | ~0.05 ms @ 800 MHz |
-| 256 frames | ~13 ms (FFT only, excludes windowing and magnitude) |
+| Per-frame time | Model/clock dependent |
+| 256-frame STFT | ~58 ms measured, including windowing and magnitude |
 | Table init | One-time, first call only |
 | Static memory | ~4 KB (twiddle + bit-reversal tables) |
 
@@ -226,7 +232,7 @@ other FFT sizes, the code would need generalization or conditional compilation.
 
 ## `sd_handler.c` — SD Card + FatFs
 
-**Location:** `firmware/Src/sd_handler.c` (~120 lines)
+**Location:** `firmware/Src/sd_handler.c`
 
 Manages the SD card via BSP_SD (SDMMC2) and FatFs filesystem.
 
@@ -239,6 +245,10 @@ Manages the SD card via BSP_SD (SDMMC2) and FatFs filesystem.
 | `sd_scan_audio_dir(dir, list)` | Enumerate up to 512 `.wav` files in `dir` |
 | `sd_write_header(path, classes, n)` | Write TSV header row to results file |
 | `sd_append_result(path, name, scores, n)` | Append one TSV row with all class scores |
+
+The current `main.c` uses the mount and scan functions only. Result writer
+helpers remain available for experiments, but the board-test workflow reports
+predictions over UART.
 
 ### `sd_scan_audio_dir()`
 

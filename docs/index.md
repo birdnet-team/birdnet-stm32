@@ -6,19 +6,19 @@ development board with neural processing unit (NPU).
 
 ## Overview
 
-BirdNET-STM32 trains a compact depthwise-separable CNN (DS-CNN) on mel
-spectrograms, quantizes it to INT8 via post-training quantization, and deploys
-the resulting TFLite model to the STM32N6570-DK using ST's X-CUBE-AI toolchain.
+BirdNET-STM32 trains a compact depthwise-separable CNN (DS-CNN) on raw
+waveforms or spectral features, quantizes it to INT8 via post-training
+quantization, and deploys the resulting TFLite model to the STM32N6570-DK
+using ST's X-CUBE-AI toolchain.
 
 ```mermaid
 flowchart LR
     A["Train\nDS-CNN"] --> B["Quantize\nINT8 TFLite"] --> C["Deploy\nSTM32N6 NPU"]
 ```
 
-Depending on the chosen audio frontend, a single inference on a 2-3 second 
-audio chunk takes approximately **10-14 ms** end-to-end on the board:
-- **Hybrid (STFT on CPU):** ~45ms STFT + ~12ms NPU
-- **Raw (Waveform to NPU):** 0ms STFT + ~10ms NPU
+Performance depends on the frontend and model. The verified 24 kHz,
+2.5-second raw configuration averages **12–13 ms NPU time** and **84 ms total**
+including SD-card reads—about 30× faster than real time.
 
 ## Quick start
 
@@ -51,13 +51,14 @@ and the [Deployment](deployment.md) guide for flashing the STM32N6570-DK.
 
 ## Key features
 
-- **Five audio frontends**: `librosa` (precomputed mel), `hybrid` (STFT +
+- **Five audio frontends**: `librosa` (precomputed mel), `hybrid` (linear STFT +
   learned mel mixer), `raw` (waveform → learned filterbank), `mfcc`
   (precomputed MFCC), and `log_mel` (precomputed log-mel) — all
-  quantization-friendly. `hybrid` and `raw` are the deployment options.
+  quantization-friendly. The firmware supports `raw`, `hybrid`, and `librosa`;
+  `mfcc` and `log_mel` remain host-preprocessed paths.
 - **Scalable DS-CNN**: width (`alpha`) and depth (`depth_multiplier`) knobs,
-  optional SE attention (`--use_se`), inverted residual blocks
-  (`--use_inverted_residual`), and attention pooling
+  SE attention and inverted residual blocks by default (disable with
+  `--no_se` / `--no_inverted_residual`), plus optional attention pooling
   (`--use_attention_pooling`).
 - **Post-training quantization**: float32 I/O with INT8 internals, targeting
   >0.95 cosine similarity vs. the float model. Per-channel (default) or
@@ -80,7 +81,7 @@ birdnet_stm32/      # Python package (models, audio, data, deploy, ...)
   cli/              # CLI subcommands (train, convert, evaluate, deploy, board-test)
   models/           # DS-CNN, frontend, magnitude scaling, profiler
   audio/            # Audio I/O, spectrogram, augmentation
-  training/         # Trainer, QAT, Optuna tuner, LR finder
+  training/         # Trainer, QAT, Optuna tuner, linear probing
   conversion/       # PTQ, validation, ONNX export
   evaluation/       # Metrics, pooling, reporting
   deploy/           # stedgeai wrappers, N6 loader

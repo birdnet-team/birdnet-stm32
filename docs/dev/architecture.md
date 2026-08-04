@@ -65,8 +65,8 @@ flowchart LR
   lose meaningful precision. Only internal weights/activations are quantized.
 - **PWL over PCEN/dB**: Piecewise-linear magnitude scaling quantizes cleanly
   (no log ops, no running statistics). PCEN is acceptable; dB should be avoided.
-- **Hybrid as default frontend**: Keeps the STFT offline (cheaper) while
-  learning the mel projection in-graph, giving the TFLite model a complete
-  mel-to-prediction path.
+- **Hybrid as default frontend**: Keeps the STFT outside the model graph while
+  learning the mel projection in-graph. Training/evaluation compute STFT on
+  the host; standalone firmware computes it on the Cortex-M55.
 - **Channel alignment to 8**: The N6 NPU vectorizes in groups of 8. Misaligned
   channels waste compute cycles or fail compilation.

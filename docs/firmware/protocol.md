@@ -12,33 +12,34 @@ A complete run produces output in this order:
 [INIT] Setting vector table...
 [INIT] HAL and clocks configured
 [INIT] Enabling caches...
-[INIT] Switching to overdrive...
+[INIT] No overdrive (CPU @ 600 MHz, NPU @ 800 MHz)...
 [INIT] Configuring UART...
 [INIT] Configuring external memories...
 [OK] External memories mapped
 [INIT] Configuring NPU...
 
 === BirdNET-STM32 SD Card Inference ===
-[INFO] Sample rate: 24000 Hz, chunk: 3s, FFT: 512, hop: 281, spec: 257x256, classes: 10
+[INFO] Frontend: raw (waveform → NPU)
+[INFO] Sample rate: 24000 Hz, chunk: 2.500s (60000 samples), classes: 25
 [INIT] Initialising NPU network...
-[OK] NPU input:  "..."  263168 bytes
-[OK] NPU output: "..."  40 bytes
+[OK] NPU input:  "..."  240000 bytes
+[OK] NPU output: "..."  100 bytes
 [INIT] Mounting SD card (SDMMC2)...
 [OK] SD card mounted
-[OK] 10 class labels compiled in
+[OK] 25 class labels compiled in
 [INIT] Scanning /audio/ for .wav files...
 [OK] Found 8 audio files
 
 [1/8] recording_001.wav
   [WAV] 24000 Hz, 16-bit, 1 ch, 72000 samples
-  [BENCH] read=12ms stft=28ms npu=4ms total=44ms
+  [BENCH] read=72ms stft=0ms npu=13ms total=85ms
   recording_001.wav:
     [1] Common Chiffchaff: 72.3%
     [2] Eurasian Blue Tit: 15.1%
 
 [2/8] recording_002.wav
   [WAV] 24000 Hz, 16-bit, 1 ch, 72000 samples
-  [BENCH] read=11ms stft=27ms npu=3ms total=41ms
+  [BENCH] read=72ms stft=0ms npu=13ms total=85ms
   recording_002.wav:
     [1] Great Tit: 89.1%
 
@@ -46,7 +47,7 @@ A complete run produces output in this order:
 
 === DONE ===
 Processed: 8 / 8 files (0 errors)
-Benchmark: read=96ms stft=224ms npu=32ms total=352ms (avg read=12ms stft=28ms npu=4ms total=44ms)
+Benchmark: read=576ms stft=0ms npu=104ms total=680ms (avg read=72ms stft=0ms npu=13ms total=85ms)
 [OK] SD card unmounted. Halting.
 ```
 
@@ -78,12 +79,12 @@ Parsed sample rate, bit depth, channels, and total samples.
 
 **Benchmark:**
 ```
-  [BENCH] read=12ms stft=28ms npu=4ms total=44ms
+  [BENCH] read=72ms stft=0ms npu=13ms total=85ms
 ```
 Per-file timing in milliseconds (1 ms resolution from `HAL_GetTick()`):
 
 - `read` — SD card I/O (FatFs `f_read` + PCM16→float32 conversion)
-- `stft` — STFT computation on Cortex-M55
+- `stft` — frontend CPU time (STFT for hybrid/librosa; zero for raw)
 - `npu` — NPU inference (including cache flush/invalidate and memcpy)
 - `total` — sum of the above
 
@@ -120,7 +121,7 @@ Processed: 8 / 8 files (0 errors)
 
 **Aggregate benchmark:**
 ```
-Benchmark: read=96ms stft=224ms npu=32ms total=352ms (avg read=12ms stft=28ms npu=4ms total=44ms)
+Benchmark: read=576ms stft=0ms npu=104ms total=680ms (avg read=72ms stft=0ms npu=13ms total=85ms)
 ```
 Cumulative timing and per-file averages. Only printed if `processed > 0`.
 
@@ -162,16 +163,14 @@ The parser produces a dictionary:
 
 ```python
 {
-    "files": [
+    "results": [
         {
-            "index": 1,
-            "filename": "recording_001.wav",
+            "file": "recording_001.wav",
             "detections": [
-                {"rank": 1, "label": "Common Chiffchaff", "score": 72.3},
-                {"rank": 2, "label": "Eurasian Blue Tit", "score": 15.1},
+                {"label": "Common Chiffchaff", "score": 0.723},
+                {"label": "Eurasian Blue Tit", "score": 0.151},
             ],
-            "bench": {"read_ms": 12, "stft_ms": 28, "npu_ms": 4, "total_ms": 44},
-            "error": None,
+            "bench": {"read_ms": 72, "stft_ms": 0, "npu_ms": 13, "total_ms": 85},
         },
         # ...
     ],
@@ -179,8 +178,7 @@ The parser produces a dictionary:
     "total": 8,
     "errors": 0,
     "benchmark": {
-        "read_ms": 96, "stft_ms": 224, "npu_ms": 32, "total_ms": 352,
-        "avg_read_ms": 12, "avg_stft_ms": 28, "avg_npu_ms": 4, "avg_total_ms": 44,
+        "avg_read_ms": 72, "avg_stft_ms": 0, "avg_npu_ms": 13, "avg_total_ms": 85,
     },
 }
 ```
@@ -190,11 +188,11 @@ The parser produces a dictionary:
 The host displays a **real-time factor** (RTF) after the run:
 
 ```
-Real-time factor: 68.2x (3.0s audio processed in 44ms avg)
+Real-time factor: 0.0340x (29x faster than real-time)
 ```
 
-RTF = `chunk_duration / avg_total_ms × 1000`. Values > 1 mean faster than
-real-time. Typical values are 50–75× for a 3 s chunk.
+RTF = `avg_total_ms / (chunk_duration × 1000)`. Values below 1 mean faster than
+real time; the host prints the reciprocal as the speedup.
 
 ## Timeout Behavior
 
@@ -203,7 +201,7 @@ The host waits for the `=== DONE ===` marker or a configurable timeout
 
 - Partial results are still parsed and displayed.
 - A warning is printed indicating incomplete processing.
-- Exit code is non-zero.
+- The command returns the partial parsed result after printing a warning.
 
 Common causes of timeout: firmware crash (bus fault, assertion), SD card not
 inserted, wrong serial port, baud rate mismatch.

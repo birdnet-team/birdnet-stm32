@@ -12,7 +12,12 @@ Bird sound classification for edge deployment on the [STM32N6570-DK](https://www
 
 <img src="https://my.avnet.com/wcm/connect/c651fc2f-a5b2-489c-9d63-d3f064753690/STMicroelectronics+STM32N6570-DK.jpg?MOD=AJPERES&CACHEID=ROOTWORKSPACE-c651fc2f-a5b2-489c-9d63-d3f064753690-phBdXih" alt="STM32N6570-DK board" style="width: 100%;" />
 
-A compact DS-CNN trained on audio waveforms or mel spectrograms, quantized to INT8 via post-training quantization, and deployed using ST's X-CUBE-AI toolchain. Depending on the chosen audio frontend, a 2-3 second audio chunk takes approximately **10-14 ms** to infer directly on the NPU (0ms STFT overhead for the **raw** audio frontend, eliminating CPU cycles).
+A compact DS-CNN trained on raw waveforms or spectral features, quantized to
+INT8 via post-training quantization, and deployed using ST's X-CUBE-AI
+toolchain. The standalone firmware supports raw waveform, hybrid STFT, and
+precomputed-mel deployment paths. In the verified 24 kHz, 2.5-second raw
+configuration, inference takes **12–13 ms on the NPU** and about **84 ms total**
+including SD-card input.
 
 ## Quick start
 
@@ -49,11 +54,11 @@ python -m birdnet_stm32 board-test
 
 ### SD card preparation for board-test
 
-The `board-test` command runs inference entirely on the STM32N6570-DK: it reads WAV
-files from the SD card, computes the STFT on the Cortex-M55, and runs the model on the
-NPU. **WAV files on the SD card must match the model's sample rate** (printed in the
-`_model_config.json` file, e.g. 24000 Hz). Files with a mismatched sample rate are
-skipped as errors.
+The `board-test` command runs inference entirely on the STM32N6570-DK. It reads
+WAV files from the SD card, applies the model-specific preprocessing on the
+board (peak normalization for `raw`, STFT for `hybrid`, or STFT + mel for
+`librosa`), and runs the model on the NPU. **WAV files must match the model's
+sample rate**, recorded in `_model_config.json`; mismatches are skipped.
 
 Prepare the SD card as follows:
 
@@ -69,11 +74,11 @@ See the [full documentation](https://birdnet-team.github.io/birdnet-stm32) for d
 
 ### Training
 
-- **Audio frontends**: `hybrid` (STFT + learned mel mixer), `raw` (waveform → learned filterbank), `librosa` (precomputed mel), `mfcc`, `log_mel`
+- **Audio frontends**: `hybrid` (linear STFT + learned mel mixer), `raw` (waveform → learned Gabor quadrature filterbank), `librosa` (precomputed mel), `mfcc`, and `log_mel`. The standalone firmware supports `raw`, `hybrid`, and `librosa`.
 - **Magnitude scaling**: `pwl` (piecewise-linear, quantization-friendly), `pcen`, `db`, `none`
 - **Model**: DS-CNN with configurable width (`--alpha`) and depth (`--depth_multiplier`), SE attention and inverted residuals (on by default; disable with `--no_se`, `--no_inverted_residual`), and optional attention pooling (`--use_attention_pooling`)
-- **Augmentation**: Dirichlet multi-source mixup with multi-label union targets for overlapping vocalizations, SpecAugment (on by default), smart crop for long recordings, label smoothing
-- **Optimization**: cosine LR decay, Adam/SGD/AdamW, gradient clipping (on by default), mixed precision (FP16), balanced class weights (on by default)
+- **Augmentation**: Dirichlet multi-source mixup with multi-label union targets for overlapping vocalizations, SpecAugment (on by default), smart crop for long recordings
+- **Optimization**: linear warmup into cosine LR decay, Adam/SGD/AdamW, gradient clipping (on by default), mixed precision (FP16). Best checkpoint and early stopping track validation ROC-AUC
 - **QAT**: quantization-aware fine-tuning via `--qat` — shadow-weight fake-quantization, no FakeQuant ops in saved model
 - **Linear probing**: `--linear_probe` freezes a pretrained backbone and trains only the classifier head
 - **Hyperparameter tuning**: Optuna search via `--tune --n_trials N`
@@ -99,7 +104,7 @@ See the [full documentation](https://birdnet-team.github.io/birdnet-stm32) for d
 ### Deployment
 
 - **X-CUBE-AI / stedgeai**: generate → flash → validate pipeline
-- **Board test**: standalone on-device inference (`board-test`) — reads WAV from SD card, STFT on Cortex-M55, inference on NPU
+- **Board test**: standalone on-device inference (`board-test`) — reads WAV from SD, performs frontend-specific preprocessing, runs the NPU, and captures results over UART
 
 
 ## License
@@ -138,7 +143,6 @@ Without these partnerships, this project would not have been possible.
 Thank you!
 
 ![Logos of all partners](https://tuc.cloud/index.php/s/KSdWfX5CnSRpRgQ/download/box_logos.png)
-
 
 
 

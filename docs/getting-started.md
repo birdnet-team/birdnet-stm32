@@ -93,10 +93,7 @@ the STM32N6570-DK.
 
 ## Pre-trained model
 
-This repository includes a pre-trained checkpoint
-(`checkpoints/birdnet_stm32n6_100.tflite`) trained on the 100 most common
-species of the northeastern US, central Europe, and Brazil. It achieves a
-ROC-AUC of 0.84 on iNatSounds test data and runs inference in ~3.3 ms per
-3-second chunk on the STM32N6570-DK.
-
-See `birdnet_stm32n6_100_model_config.json` for full model parameters.
+The tracked release bundle lives in `checkpoints/release/` and contains the
+Keras checkpoint, quantized TFLite model, ordered labels, and model config for
+the 100-class reference model. Treat those four files as one versioned unit:
+the config and labels define the TFLite input and output contract.

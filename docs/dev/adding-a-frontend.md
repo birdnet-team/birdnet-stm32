@@ -23,7 +23,7 @@ VALID_FRONTENDS = ("librosa", "hybrid", "raw", "mfcc", "log_mel", "your_frontend
 In the `AudioFrontendLayer.call()` method, add a branch for your frontend:
 
 ```python
-elif self.frontend_mode == "your_frontend":
+elif self.mode == "your_frontend":
     x = self._your_frontend_ops(inputs)
 ```
 
@@ -47,9 +47,9 @@ x = self.mag_layer(x)  # PWL/PCEN/dB/none
 
 ### 5. Update the data pipeline
 
-In `birdnet_stm32/data/dataset.py`, add the preprocessing logic for your
-frontend. The data generator must produce inputs in the shape your frontend
-expects.
+Add preprocessing in `birdnet_stm32/data/generator.py` and, when appropriate,
+the reusable feature implementation in `birdnet_stm32/audio/spectrogram.py`.
+The data generator must produce inputs in the exact shape the model expects.
 
 ### 6. N6 compatibility checklist
 

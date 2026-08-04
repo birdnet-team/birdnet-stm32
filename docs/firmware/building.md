@@ -148,16 +148,15 @@ The firmware's `main()` function initializes the board in a specific order that
 | 3 | `SystemClock_Config_ResetClocks()` | Reset all clock domains to known state |
 | 4 | `system_init_post()` | Post-reset cleanup (clear pending interrupts) |
 | 5 | `SCB_EnableICache()` / `SCB_EnableDCache()` | Enable CPU caches |
-| 6 | `upscale_vddcore_level()` | Raise VDD core to allow 800 MHz |
-| 7 | `SystemClock_Config_HSI_overdrive()` | Switch to HSI @ 800 MHz (overdrive) |
-| 8 | `fuse_vddio()` | Configure IO voltage rails for XSPI interfaces |
-| 9 | `UART_Config()` | USART1 at 921,600 baud (ST-LINK VCP) |
-| 10 | `BSP_XSPI_RAM_Init()` + `BSP_XSPI_NOR_Init()` | Memory-map external HyperRAM and NOR flash |
-| 11 | `NPU_Config()` + `RISAF_Config()` | NPU clocks, register interface, security attributes |
-| 12 | `aiValidationInit()` | GDB breakpoint stub (NOR flash happens here) |
+| 6 | Clock configuration | Default: `SystemClock_Config_HSI_no_overdrive()` at 600 MHz; optional overdrive first raises VDD core and selects the 800 MHz clock path |
+| 7 | `fuse_vddio()` | Configure IO voltage rails for XSPI interfaces |
+| 8 | `UART_Config()` | USART1 at 921,600 baud (ST-LINK VCP) |
+| 9 | `BSP_XSPI_RAM_Init()` + `BSP_XSPI_NOR_Init()` | Memory-map external HyperRAM and NOR flash |
+| 10 | `NPU_Config()` + `RISAF_Config()` | NPU clocks, register interface, security attributes |
+| 11 | `aiValidationInit()` | GDB breakpoint stub (NOR flash happens here) |
 
 !!! warning "XSPI before NPU"
-    External memory init (step 10) **must** happen before NPU init (step 11)
+    External memory init (step 9) **must** happen before NPU init (step 10)
     because NPU weights live in NOR flash. If NOR isn't memory-mapped when the
     NPU reads weights, you get a bus fault. See
     [Troubleshooting](troubleshooting.md#xspi-initialization-order).

@@ -2,10 +2,9 @@
 
 The BirdNET-STM32 firmware is a **standalone bare-metal application** for the
 [STM32N6570-DK](https://www.st.com/en/evaluation-tools/stm32n6570-dk.html)
-development board. It reads WAV files from an SD card, computes audio features 
-(depending on the selected frontend, e.g. STFT + Mel on the Cortex-M55 CPU, or passing the 
-raw waveform directly), runs neural-network inference on the dedicated NPU, and 
-reports bird species detections over UART and back to the SD card.
+development board. It reads WAV files from an SD card, applies the selected
+frontend on-board, runs neural-network inference on the dedicated NPU, and
+reports bird species detections over UART.
 
 !!! info "Design principle"
     The firmware is a self-contained integration test **and** demo. Everything
@@ -20,8 +19,8 @@ reports bird species detections over UART and back to the SD card.
 | Language | C11 (ARM GCC 13+) |
 | RTOS | None (bare-metal, single-threaded `while(1)` loop) |
 | Board | STM32N6570-DK |
-| CPU | Arm Cortex-M55 @ 800 MHz |
-| NPU | ST Neural-ART, 1.2 TOPS INT8 |
+| CPU | Arm Cortex-M55 @ 600 MHz by default (800 MHz overdrive) |
+| NPU | ST Neural-ART @ 800 MHz by default (1 GHz overdrive) |
 | Build system | Overlay on ST's NPU_Validation Makefile |
 | Flash method | GDB via `n6_loader.py` (part of X-CUBE-AI) |
 
@@ -31,33 +30,31 @@ reports bird species detections over UART and back to the SD card.
 flowchart LR
     SD["SD card<br/>WAV files"] --> WAV["wav_reader.c<br/>PCM16 → float32"]
     WAV --> |Hybrid / Precomputed| STFT["audio_stft.c<br/>Hann + 512-pt FFT"]
-    WAV --> |Raw Mode| NPU
+    WAV --> |Raw| NORM["Peak normalize"] --> NPU
     STFT --> |Precomputed| Mel["audio_mel.c<br/>Mel Filterbank"]
     STFT --> |Hybrid| NPU["NPU (LL_ATON)<br/>DS-CNN inference"]
     Mel --> NPU
     NPU --> UART["UART output<br/>top-K predictions"]
-    NPU --> RES["SD card<br/>results.txt"]
 ```
 
 For each `.wav` file on the SD card:
 
 1. **Read** — parse RIFF/WAVE header, load the first chunk (2-3 seconds) as float32.
 2. **Audio Frontend** — depends on `APP_AUDIO_FRONTEND`:
-   - **Hybrid**: 512-point Hann-windowed STFT → `[257, frames]` magnitude spectrogram.
+   - **Hybrid**: 512-point Hann-windowed STFT → `[256, frames]` magnitude spectrogram (Nyquist omitted).
    - **Precomputed**: STFT followed by an explicitly mapped Mel filterbank → `[64, frames]`.
-   - **Raw**: Bypass CPU processing entirely! The raw PCM float array goes straight to the NPU.
+   - **Raw**: Peak-normalize the PCM waveform, then pass it to the in-model Gabor frontend.
 3. **NPU inference** — copy features to NPU input, run the full DS-CNN (handling mel/PWL mappings intrinsically if required), read class scores.
-4. **Output** — print top-K species over UART; optionally write TSV results to
-   the SD card.
+4. **Output** — print top-K species and timing over UART for host-side parsing.
 
 ## Typical Performance
 
-| Stage | Default Hybrid (24kHz x 3.0s) | Raw Waveform (24kHz x 2.0s) | Notes |
+| Stage | Hybrid (24 kHz, 3.0 s) | Raw (24 kHz, 2.5 s) | Notes |
 |---|---|---|---|
-| SD read | 15–20 ms | ~56 ms | Reads PCM16 blocks, limits vary with chunk length |
-| STFT | ~45 ms | **0 ms** | 512-pt FFT on Cortex-M55 @ 800 MHz (Raw skips this) |
-| NPU inference | ~12 ms | ~10–11 ms | INT8 DS-CNN. Raw frontend runs 400x filters directly. |
-| **Total** | **~75 ms** | **~67 ms** | **~50–75× faster than real-time** |
+| SD read | ~86 ms | ~71 ms | Depends on card and chunk length |
+| STFT | ~58 ms | **0 ms** | Raw skips the FFT path |
+| NPU inference | ~15 ms | ~12–13 ms | Model-dependent |
+| **Total** | **~159 ms** | **~84 ms** | Both comfortably faster than real time |
 
 ## Source Layout
 

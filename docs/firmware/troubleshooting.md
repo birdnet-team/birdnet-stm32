@@ -31,7 +31,7 @@ manage the cache:
 
 ```c
 // Correct pattern — from run_inference() in main.c
-memcpy(input_ptr, spect, input_bytes);
+memcpy(input_ptr, input, input_bytes);
 SCB_CleanDCache_by_Addr((uint32_t *)input_ptr, (int32_t)input_bytes);  // (1)
 
 LL_ATON_RT_Main(&NN_Instance_Default);
@@ -171,8 +171,8 @@ If you need a different FFT size:
 - **Arbitrary size:** Would require a fully general FFT implementation (e.g.,
   mixed-radix or split-radix).
 
-For now, the model and firmware are locked to 512-point FFT. This provides
-257 frequency bins and works well for the 24 kHz → 64-mel hybrid frontend.
+For now, the spectral firmware paths are locked to a 512-point FFT. This
+provides 256 frequency bins (Nyquist omitted). Raw models bypass the FFT.
 
 ## `assert_failed()` and `Error_Handler()`
 
@@ -220,7 +220,7 @@ Useful breakpoints:
 - `Error_Handler` — catches HAL errors
 - `assert_failed` — catches HAL assertion failures
 - `HardFault_Handler` — catches memory access violations
-- `run_inference` — inspect spectrogram and scores
+- `run_inference` — inspect the frontend buffer and scores
 
 ## Third-Party Components
 
