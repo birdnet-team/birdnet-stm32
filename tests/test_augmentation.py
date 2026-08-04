@@ -31,7 +31,6 @@ class TestApplyMixup:
         )
         np.random.seed(0)
         _, out_labels = apply_mixup(samples.copy(), labels.copy(), alpha=0.2, probability=1.0)
-        # After mixup with OR, any mixed sample should have >= as many 1s as original
         for i in range(4):
             assert out_labels[i].sum() >= labels[i].sum() or np.allclose(out_labels[i], labels[i])
 

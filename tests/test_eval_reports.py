@@ -411,3 +411,48 @@ class TestLatencyMeasurement:
 
         metrics, _, _, _ = evaluate(FakeRunner(), files, classes, cfg, pooling="avg")
         assert "latency_mean_ms" not in metrics
+
+
+class TestDetCurveEquivalence:
+    """The vectorized DET curve must match the per-threshold definition."""
+
+    @staticmethod
+    def _reference(y_true, y_scores):
+        """Direct O(n_thresholds * n) implementation of the DET definition."""
+        y_t = y_true.ravel().astype(np.float64)
+        y_s = y_scores.ravel().astype(np.float64)
+        total_pos = y_t.sum()
+        total_neg = len(y_t) - total_pos
+        far, frr, thr = [], [], []
+        for t in np.unique(y_s)[::-1]:
+            pred = y_s >= t
+            tp = y_t[pred].sum()
+            fp = (1 - y_t[pred]).sum()
+            far.append(fp / total_neg)
+            frr.append((total_pos - tp) / total_pos)
+            thr.append(float(t))
+        return np.array(far), np.array(frr), np.array(thr)
+
+    def test_matches_reference(self):
+        """Vectorized output equals the naive definition, ties included."""
+        rng = np.random.default_rng(0)
+        y_true = (rng.random((40, 3)) > 0.7).astype(np.float32)
+        y_scores = np.round(rng.random((40, 3)), 2).astype(np.float32)  # forces ties
+
+        far, frr, thr = compute_det_curve(y_true, y_scores)
+        ref_far, ref_frr, ref_thr = self._reference(y_true, y_scores)
+
+        np.testing.assert_allclose(far, ref_far)
+        np.testing.assert_allclose(frr, ref_frr)
+        np.testing.assert_allclose(thr, ref_thr)
+
+    def test_does_not_mutate_inputs(self):
+        """Scoring must leave the caller's arrays untouched."""
+        y_true = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        y_scores = np.array([[0.9, 0.1], [0.2, 0.8]], dtype=np.float32)
+        before_t, before_s = y_true.copy(), y_scores.copy()
+
+        compute_det_curve(y_true, y_scores)
+
+        np.testing.assert_array_equal(y_true, before_t)
+        np.testing.assert_array_equal(y_scores, before_s)

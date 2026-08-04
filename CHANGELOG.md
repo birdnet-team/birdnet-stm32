@@ -7,15 +7,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Audio frontend rewrite
+
+The raw frontend is rebuilt around a learned **Gabor quadrature filterbank**, and
+both in-model frontends drop the per-sample normalization. Measured with
+`stedgeai analyze` on the reference 100-class model (24 kHz, 2.5 s, `raw`,
+`pwl`): **software epochs 11 → 3**, and the filterbank convolutions moved off the
+Cortex-M55 onto the NPU. MACC rises 93.2M → 108.4M, which buys a filterbank that
+reads the whole signal instead of 5.7% of it.
+
+- **The old raw filterbank skipped most of the audio.** It used a fixed 16-tap
+  kernel against a hop of `ceil(T / spec_width)` — 282 samples at 24 kHz × 3 s —
+  so each frame saw 0.67 ms of audio and **94% of every waveform was never read**.
+  The window is now tied to the hop (`window = 2 × hop`), so every input sample
+  reaches at least one frame. Covered by `test_responds_to_every_region_of_the_input`.
+- **A single real-valued filter cannot measure magnitude.** Its output oscillates
+  with the carrier, and sampling that at the frame rate aliases. The bank is now a
+  cosine/sine quadrature pair combined as `max(|re|,|im|) + 0.4·min(|re|,|im|)` —
+  within ~4% of the true modulus, against ~17% ripple for `|re| + |im|`, and it
+  keeps INT8 range far better than `sqrt(re² + im²)`.
+- **Filters are seeded from mel-spaced Gabor atoms.** Untrained, the bank already
+  reproduces a librosa mel spectrogram (Pearson r ≈ 0.89 on real recordings);
+  training refines it rather than starting from noise.
+- **Per-band temporal lowpass after the modulus** (learnable 5-tap depthwise,
+  Hann-initialized), the standard fix for envelope fluctuation in a Gabor
+  filterbank. Raises per-band agreement with librosa mel from ~0.43 to ~0.69 for
+  ~82k MACs.
+- **The waveform is folded into `hop/2` interleaved channels** before the
+  convolution. Free — NHWC memory is contiguous, so `[T, 1]` and `[T/fold, fold]`
+  are the same bytes. This is what keeps the filterbank on the NPU: measured,
+  **the N6 runs convolutions with stride > 2 in software**, so the natural
+  large-hop "learned STFT" formulation executes entirely on the Cortex-M55.
+  `raw_filterbank_geometry()` derives a layout with folded stride 2 and a fold
+  that is a multiple of 8.
+- **Per-sample max normalization removed** from the raw and hybrid paths. It cost
+  a `ReduceMax` and a `Div` — both software epochs, each dragging a
+  quantize/dequantize pair with it — and it was a data-dependent gain: one loud
+  transient rescaled the whole spectrogram, so the same call at a different
+  distance produced different features. Per-band calibration is now learned
+  (BatchNorm plus an always-trainable magnitude-scaling layer).
+- **`ReLU6` after the filterbank replaced with `ReLU`.** The upper clip emitted a
+  `MINIMUM` against a constant, which the N6 ran in software.
+- **Hybrid input drops the Nyquist bin**: `fft_bins` is now `fft_length // 2`
+  (256 rather than 257), a multiple of 8. This removes the runtime `FILL` +
+  `CONCATENATION` pair that padded the channel axis on every inference.
+  `hybrid_fft_bins()` is the single source of truth; the spectrogram producer,
+  data pipeline, evaluation and calibration paths all use it.
+
+### Changed
+
+- **Best-checkpoint selection now tracks validation ROC-AUC** instead of `val_loss`. With long-tail class priors, `val_loss` keeps improving after ranking quality has peaked, so the saved checkpoint was not the best detector. Early stopping follows the same metric.
+- **Learning rate now warms up linearly for 2 epochs** before cosine decay (`WarmupCosineDecay` in `birdnet_stm32/training/trainer.py`).
+- `--resume` continues along the original LR schedule. Previously the cosine schedule restarted from step 0 while `initial_epoch` jumped ahead, so a resumed run trained its remaining epochs at close to the peak learning rate.
+- The classifier head is pinned to `dtype="float32"` so `--mixed_precision` does not run the sigmoid in float16.
+- `train` prints the per-layer MAC/N6-compatibility profile instead of `model.summary()`. The profiler was previously documented but unreachable.
+- `MagnitudeScalingLayer` accepts `pcen_pool_width` (default 3) controlling the width of each PCEN smoothing stage.
+
+### Fixed
+
+- **PCEN was a no-op.** Its smoothing stages used `pool_size=(1, 1)`, making the AGC branch an identity, which silently reduced `--mag_scale pcen` to a fixed affine rescale. Smoothing now runs over the time axis.
+- **QAT simulated the wrong quantization grid.** `fake_quantize_weights()` used an asymmetric min/max (uint8-style) grid, while TFLite quantizes kernels symmetrically with zero-point 0 — so fine-tuning hardened the model against a quantizer conversion never applies. It is now symmetric.
+- **QAT per-channel quantization was per-tensor.** The reduction axes were computed by comparing a non-negative axis index against a negative `channel_axis`, which never matched, so every axis was reduced. Negative axes are now normalized.
+- **`--frontend_trainable` did nothing for the hybrid frontend.** The mel mixer was hard-wired to `trainable=False` and never saw `is_trainable`.
+- `compute_det_curve()` ran one full pass per distinct score, which is intractable on multi-class evaluation sets (hundreds of thousands of distinct scores). It now uses a single sort plus cumulative counts, and no longer contains a dead indexing statement.
+- `validate_models()` shares the `TFLiteRunner` code path instead of driving its own interpreter.
+
+### Removed
+
+- `birdnet_stm32/training/lr_finder.py` and `birdnet_stm32/training/distillation.py` — never imported or reachable from any CLI.
+- `birdnet_stm32/models/registry.py` (frontend registry) — only its own test referenced it; `normalize_frontend_name()` is the mechanism actually in use.
+- `build_model()` / `register_model()` / `list_models()` from `birdnet_stm32/models/__init__.py`. There is one architecture and the CLI calls `build_dscnn_model()` directly.
+- Deprecated frontend aliases `precomputed` → `librosa` and `tf` → `raw`; the canonical names are now the only accepted values.
+- Dead `train_mel_scale` learnable-mel-breakpoint branch in `AudioFrontendLayer` (permanently disabled by the constructor).
+- Unused `sort_by_s2n()`, `get_s2n_from_spectrogram()`, `get_s2n_from_audio()` (the pipeline uses `sort_by_activity()`) and `save_wav()`.
+
+## [0.4.0] — 2026-05-12
+
 ### Added
 
 - **Memory-aware data loader**: per-frontend reservoir sizing via `_compute_reservoir_limits()`, configurable through the new `loader_buffer_mb` kwarg (default 128 MB). Replaces fixed reservoir constants that ignored sample size.
 - **Bounded random-offset reads**: training pipeline now reads only the bytes it needs from each long file (`load_duration` capped by `candidate_chunks_per_file × chunk_duration`), instead of decoding `max_duration` and discarding most of the audio.
 - `load_audio_window()` and `split_audio_into_chunks()` helpers in `birdnet_stm32/audio/io.py` for callers that want a single-pass read followed by their own chunk selection.
+- `convert` CLI now writes a `{output_path_stem}_labels.txt` file alongside the converted TFLite model so downstream consumers can interpret the output tensor without the full Keras model config.
 
 ### Changed
 
 - `representative_data_gen()` now bounds calibration reads via `cfg["max_duration"]` (or a sensible per-chunk multiple) instead of a hard-coded 30 s window.
+- Mixup is now a single co-vocalization augmentation path: additive multi-source mixing with union labels, matching the project's overlapping-species training goal.
+- **Always multi-label**: the classifier head is now hard-wired to sigmoid + binary crossentropy. Soundscape recordings are inherently multi-label even when the source label is single-class, so the softmax/categorical-crossentropy code path has been removed.
+- `tf.keras.metrics.AUC` now passes `num_labels=num_classes` (read from the model output shape) for a more accurate multi-label ROC-AUC estimate.
+
+### Removed
+
+- `BinaryFocalLoss` and the `--loss` / `--focal_gamma` CLI knobs. Focal loss over-fits weak/noisy labels by emphasising "hard" examples, which is the opposite of what we want for crowdsourced bird soundscape data.
+- `--label_smoothing` CLI knob. With ~100 sparse classes, smoothing pushes BCE toward the constant-prediction trivial minimum (AUC ≈ 0.5).
+- `--no_class_weights` and the balanced inverse-frequency class weighting. Keras `class_weight=` is single-label only; with multi-hot targets it silently `argmax`es the label and scales the whole per-sample loss, which is incorrect.
+- `class_activation` parameter from `build_dscnn_model()`; the head is always sigmoid.
+- `is_multilabel`, `class_weights`, and `loss_fn=categorical_crossentropy` defaults from `train_model()`.
 
 ### Fixed
 

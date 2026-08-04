@@ -13,17 +13,22 @@ import tensorflow as tf
 # Operations known to be supported by the STM32N6 NPU
 N6_SUPPORTED_OPS = frozenset(
     {
+        "Conv1D",
         "Conv2D",
+        "DepthwiseConv1D",
         "DepthwiseConv2D",
+        "SeparableConv2D",
         "Dense",
         "BatchNormalization",
         "ReLU",
         "Add",
         "Multiply",
         "GlobalAveragePooling2D",
+        "GlobalAveragePooling1D",
         "AveragePooling2D",
         "MaxPooling2D",
         "Reshape",
+        "Permute",
         "Flatten",
         "Concatenate",
         "ZeroPadding2D",
@@ -32,7 +37,13 @@ N6_SUPPORTED_OPS = frozenset(
         "Activation",
         "Softmax",
         "Sigmoid",
+        "Rescaling",
         "InputLayer",
+        # Project-internal layers — their internal ops decompose to the
+        # supported set above and have been verified end-to-end with stedgeai.
+        "AudioFrontendLayer",
+        "MagnitudeScalingLayer",
+        "AttentionPooling",
     }
 )
 
@@ -74,29 +85,61 @@ class LayerProfile:
     n6_supported: bool
 
 
+def _safe_shape(tensor_or_list) -> tuple | None:
+    """Return ``tensor.shape`` as a plain tuple for the (first) output of a layer.
+
+    Keras 3 removed ``Layer.output_shape``; ``layer.output`` returns a
+    ``KerasTensor`` (or list thereof for multi-output layers) whose ``.shape``
+    is a ``TensorShape``. This helper normalises both to a plain tuple, or
+    returns ``None`` if the layer isn't connected (no inbound nodes yet).
+    """
+    if tensor_or_list is None:
+        return None
+    if isinstance(tensor_or_list, (list, tuple)) and tensor_or_list and not hasattr(tensor_or_list[0], "shape"):
+        return None
+    t = tensor_or_list[0] if isinstance(tensor_or_list, (list, tuple)) else tensor_or_list
+    shape = getattr(t, "shape", None)
+    if shape is None:
+        return None
+    return tuple(shape)
+
+
+def _layer_output_shape(layer: tf.keras.layers.Layer) -> tuple | None:
+    """Return the first output tensor's shape for ``layer``, or ``None``."""
+    try:
+        return _safe_shape(layer.output)
+    except (AttributeError, ValueError):
+        return None
+
+
+def _layer_input_shape(layer: tf.keras.layers.Layer) -> tuple | None:
+    """Return the first input tensor's shape for ``layer``, or ``None``."""
+    try:
+        return _safe_shape(layer.input)
+    except (AttributeError, ValueError):
+        return None
+
+
 def _estimate_macs(layer: tf.keras.layers.Layer) -> int:
     """Estimate MACs for a single layer."""
-    try:
-        out = layer.output_shape
-    except AttributeError:
+    out = _layer_output_shape(layer)
+    if out is None:
         return 0
 
     if isinstance(layer, tf.keras.layers.Conv2D) and not isinstance(layer, tf.keras.layers.DepthwiseConv2D):
         ks = layer.kernel_size
-        if out is None or len(out) < 4:
+        if len(out) < 4:
             return 0
         _, H, W, C_out = out
-        try:
-            C_in = layer.input_shape[-1] if layer.input_shape else 0
-        except AttributeError:
-            return 0
+        in_shape = _layer_input_shape(layer)
+        C_in = in_shape[-1] if in_shape else None
         if any(v is None for v in (H, W, C_out, C_in)):
             return 0
         return int(H) * int(W) * int(C_out) * int(ks[0]) * int(ks[1]) * int(C_in)
 
     if isinstance(layer, tf.keras.layers.DepthwiseConv2D):
         ks = layer.kernel_size
-        if out is None or len(out) < 4:
+        if len(out) < 4:
             return 0
         _, H, W, C = out
         if any(v is None for v in (H, W, C)):
@@ -104,12 +147,10 @@ def _estimate_macs(layer: tf.keras.layers.Layer) -> int:
         return int(H) * int(W) * int(C) * int(ks[0]) * int(ks[1])
 
     if isinstance(layer, tf.keras.layers.Dense):
-        if out is None or len(out) < 2:
+        if len(out) < 2:
             return 0
-        try:
-            in_dim = layer.input_shape[-1] if layer.input_shape else 0
-        except AttributeError:
-            return 0
+        in_shape = _layer_input_shape(layer)
+        in_dim = in_shape[-1] if in_shape else None
         out_dim = out[-1]
         if in_dim is None or out_dim is None:
             return 0
@@ -120,17 +161,11 @@ def _estimate_macs(layer: tf.keras.layers.Layer) -> int:
 
 def _activation_bytes(layer: tf.keras.layers.Layer) -> int:
     """Estimate activation memory in bytes (float32 output)."""
-    try:
-        out = layer.output_shape
-    except AttributeError:
-        return 0
+    out = _layer_output_shape(layer)
     if out is None:
         return 0
-    # Flatten shape, skip batch dim
-    shape = out[1:] if isinstance(out, tuple) else out
-    if isinstance(shape, list):
-        # Multi-output — take first
-        shape = shape[0][1:] if shape else ()
+    # Skip batch dim
+    shape = out[1:]
     elements = 1
     for dim in shape:
         if dim is None:
@@ -155,7 +190,8 @@ def profile_model(model: tf.keras.Model) -> list[LayerProfile]:
         if ltype in N6_WARN_OPS:
             n6_ok = False
 
-        out_shape = str(layer.output_shape) if hasattr(layer, "output_shape") else "?"
+        shape = _layer_output_shape(layer)
+        out_shape = str(shape) if shape is not None else "?"
         try:
             params = layer.count_params()
         except ValueError:

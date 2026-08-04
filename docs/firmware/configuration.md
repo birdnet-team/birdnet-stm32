@@ -28,14 +28,14 @@ The `board-test` command calls the same generator automatically.
 
 | Define | Example | Description |
 |---|---|---|
-| `APP_SAMPLE_RATE` | `24000` | Audio sample rate in Hz. **Must match** the model's training rate. WAV files with a different rate are skipped. |
+| `APP_SAMPLE_RATE` | `22050` | Audio sample rate in Hz. **Must match** the model's training rate. WAV files with a different rate are skipped. |
 | `APP_CHUNK_DURATION` | `2.9` | Chunk length in seconds. Can be fractional. |
 | `APP_CHUNK_SAMPLES` | `63945` | Total samples per chunk (`int(SR × duration)`). Computed as an integer literal — avoids truncation from integer-only C macros. |
 | `APP_FFT_LENGTH` | `512` | FFT window size. **Must be 512** — the FFT implementation is hardcoded for this size. |
-| `APP_FFT_BINS` | `257` | Frequency bins (`FFT_LENGTH / 2 + 1`). Derived, do not set independently. |
-| `APP_HOP_LENGTH` | `281` | STFT hop in samples. Controls how many time frames fit in one chunk. |
+| `APP_FFT_BINS` | `256` | Frequency bins (`FFT_LENGTH / 2`, Nyquist omitted). Derived, do not set independently. |
+| `APP_HOP_LENGTH` | `172` | STFT hop in samples. Controls how many time frames fit in one chunk. |
 | `APP_SPEC_WIDTH` | `256` | Number of STFT time frames. **Must match** the model's expected input width. |
-| `APP_NUM_MELS` | `64` | Number of mel bands for the `precomputed` frontend. |
+| `APP_NUM_MELS` | `64` | Number of mel bands for the `librosa` frontend. |
 | `APP_AUDIO_FRONTEND` | `0` | Frontend mode: `APP_FRONTEND_HYBRID` (0), `APP_FRONTEND_RAW` (1), or `APP_FRONTEND_PRECOMPUTED` (2). |
 | `APP_NUM_CLASSES` | `10` | Number of output classes. **Must match** the model's output dimension. |
 | `APP_TOP_K` | `5` | Number of top predictions printed per file. |
@@ -69,8 +69,8 @@ Controls which clock configuration is used at startup:
 | `1` | 800 MHz | 1 GHz | Upscaled via SMPS/I2C |
 
 Overdrive provides maximum throughput but draws more power and requires VDD
-core upscaling. The default non-overdrive configuration is sufficient for
-real-time inference (the NPU finishes a 3 s chunk in ~4 ms at 800 MHz).
+core upscaling. The default non-overdrive configuration is already comfortably
+real-time; exact latency depends on the frontend and model topology.
 
 !!! tip "Consistency is critical"
     If `app_config.h` values don't match the TFLite model's expectations, the
@@ -85,7 +85,7 @@ real-time inference (the NPU finishes a 3 s chunk in ~4 ms at 800 MHz).
 ```json
 {
     "sample_rate": 24000,
-    "chunk_duration": 3,
+    "chunk_duration": 2.9,
     "fft_length": 512,
     "spec_width": 256,
     "num_mels": 64,
@@ -95,8 +95,8 @@ real-time inference (the NPU finishes a 3 s chunk in ~4 ms at 800 MHz).
 
 And computes:
 ```
-APP_CHUNK_SAMPLES = int(sample_rate × chunk_duration)   # 63945
-APP_FFT_BINS      = fft_length / 2 + 1
+APP_CHUNK_SAMPLES = int(sample_rate × chunk_duration)   # 69600
+APP_FFT_BINS      = fft_length / 2
 APP_HOP_LENGTH    = from model config (or fft_length // 2 + 2)
 ```
 
@@ -127,11 +127,10 @@ match the model's output indices exactly.
 
 ```
 SD card (FAT32) root/
-├── audio/                    ← Put test WAV files here
+└── audio/                    ← Put test WAV files here
 │   ├── recording_001.wav
 │   ├── recording_002.wav
 │   └── ...
-└── results.txt               ← Written by firmware after processing
 ```
 
 ### WAV File Requirements

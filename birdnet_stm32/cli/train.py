@@ -17,8 +17,8 @@ from birdnet_stm32.data.dataset import (
 from birdnet_stm32.data.generator import estimate_samples_per_epoch, load_dataset
 from birdnet_stm32.models.dscnn import build_dscnn_model
 from birdnet_stm32.models.frontend import normalize_frontend_name
+from birdnet_stm32.models.profiler import print_profile
 from birdnet_stm32.training.config import ModelConfig
-from birdnet_stm32.training.losses import BinaryFocalLoss
 from birdnet_stm32.training.trainer import compute_hop_length, train_model
 
 
@@ -134,9 +134,9 @@ def get_args() -> argparse.Namespace:
 
     Sensible defaults are chosen so that most users only need to specify
     ``--data_path_train``.  Architecture features that improve accuracy
-    (SE attention, inverted residuals, SpecAugment, balanced class weights,
-    deterministic seeding, gradient clipping, label smoothing) are **on by
-    default** and can be disabled with ``--no_*`` flags when experimenting.
+    (SE attention, inverted residuals, SpecAugment, deterministic seeding,
+    gradient clipping) are **on by default** and can be disabled with
+    ``--no_*`` flags when experimenting.
     """
     parser = argparse.ArgumentParser(description="Train STM32N6 audio classifier")
 
@@ -211,26 +211,11 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.5, help="Dropout rate before classifier head")
     parser.add_argument("--optimizer", type=str, default="adam", choices=["adam", "sgd", "adamw"], help="Optimizer")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay (adamw only)")
-    parser.add_argument(
-        "--loss",
-        type=str,
-        default="auto",
-        choices=["auto", "focal"],
-        help="Loss function. 'auto' selects based on mixup; 'focal' uses focal loss.",
-    )
-    parser.add_argument("--focal_gamma", type=float, default=2.0, help="Focal loss gamma (focusing parameter)")
     parser.add_argument("--val_split", type=float, default=0.2, help="Validation split ratio")
     parser.add_argument(
         "--checkpoint_path", type=str, default="checkpoints/best_model.keras", help="Output checkpoint path (.keras)"
     )
-    parser.add_argument("--label_smoothing", type=float, default=0.1, help="Label smoothing factor (0 = off)")
     parser.add_argument("--grad_clip", type=float, default=1.0, help="Max gradient norm for clipping (0 = disabled)")
-    parser.add_argument(
-        "--no_class_weights",
-        action="store_true",
-        default=False,
-        help="Disable balanced inverse-frequency class weighting",
-    )
     parser.add_argument(
         "--mixed_precision", action="store_true", default=False, help="Enable FP16 mixed precision training"
     )
@@ -263,7 +248,6 @@ def get_args() -> argparse.Namespace:
     args.use_se = not args.no_se
     args.use_inverted_residual = not args.no_inverted_residual
     args.spec_augment = not args.no_spec_augment
-    args.class_weights = "none" if args.no_class_weights else "balanced"
     args.deterministic = True  # always deterministic
 
     return args
@@ -429,7 +413,6 @@ def main():
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
         frontend_trainable=args.frontend_trainable,
-        class_activation="sigmoid" if args.mixup_probability > 0 else "softmax",
         dropout_rate=args.dropout,
         use_se=args.use_se,
         se_reduction=args.se_reduction,
@@ -437,7 +420,10 @@ def main():
         expansion_factor=args.expansion_factor,
         use_attention_pooling=args.use_attention_pooling,
     )
-    model.summary()
+    # Per-layer MACs and N6 compatibility, rather than a plain Keras summary:
+    # on this target the MAC budget and op support decide whether the model is
+    # deployable at all.
+    print_profile(model)
 
     # Save model config
     cfg = ModelConfig(
@@ -467,35 +453,6 @@ def main():
     cfg.save(cfg_path)
     print(f"Saved model config to '{cfg_path}'")
 
-    # Resolve loss function
-    is_multilabel = args.mixup_probability > 0
-    loss_fn = None
-    if args.loss == "focal":
-        loss_fn = BinaryFocalLoss(gamma=args.focal_gamma)
-    elif args.label_smoothing > 0:
-        if is_multilabel:
-            loss_fn = tf.keras.losses.BinaryCrossentropy(label_smoothing=args.label_smoothing)
-        else:
-            loss_fn = tf.keras.losses.CategoricalCrossentropy(label_smoothing=args.label_smoothing)
-
-    # Class weights
-    class_weights = None
-    if args.class_weights == "balanced":
-        from collections import Counter
-
-        label_counts = Counter()
-        for p in train_paths:
-            label_str = p.split("/")[-2]
-            if label_str in classes:
-                label_counts[classes.index(label_str)] += 1
-        if label_counts:
-            total = sum(label_counts.values())
-            n_classes = len(classes)
-            class_weights = {i: total / (n_classes * label_counts.get(i, 1)) for i in range(n_classes)}
-            print(
-                f"Balanced class weights: min={min(class_weights.values()):.2f}, max={max(class_weights.values()):.2f}"
-            )
-
     # Train
     print("Starting training...")
     try:
@@ -509,12 +466,9 @@ def main():
             checkpoint_path=args.checkpoint_path,
             steps_per_epoch=steps_per_epoch,
             val_steps=val_steps,
-            is_multilabel=is_multilabel,
             optimizer=args.optimizer,
             weight_decay=args.weight_decay,
-            loss_fn=loss_fn,
             gradient_clip_norm=args.grad_clip,
-            class_weights=class_weights,
             resume=args.resume,
             extra_callbacks=extra_callbacks,
         )

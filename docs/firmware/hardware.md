@@ -7,7 +7,7 @@ is ST's first discovery kit with a hardware Neural Processing Unit (NPU).
 
 | Feature | Detail |
 |---|---|
-| **MCU** | STM32N657X0H3QU — Arm Cortex-M55 @ 800 MHz |
+| **MCU** | STM32N657X0H3QU — Arm Cortex-M55 @ 600 MHz by default (800 MHz overdrive) |
 | **NPU** | ST Neural-ART accelerator, 1.2 TOPS (INT8) |
 | **Internal SRAM** | 4.2 MB total (cpuRAM1/2/3, npuRAM1–6, flexRAM) |
 | **External RAM** | 256 Mbit octal HyperRAM (XSPI port 1) |
@@ -77,19 +77,23 @@ sequence (see [Building & Flashing — Init Sequence](building.md#init-sequence)
 | Buffer | Size | Alignment | Notes |
 |---|---|---|---|
 | `audio_buf` | `CHUNK_SAMPLES × 4` bytes | 32 B (DCache line) | e.g. 72,000 × 4 = 288 KB @ 24 kHz × 3 s |
-| `spec_buf` | `FFT_BINS × SPEC_WIDTH × 4` bytes | 32 B | e.g. 257 × 256 × 4 = 263 KB |
+| `spec_buf` | `FFT_BINS × SPEC_WIDTH × 4` bytes | 32 B | Hybrid/librosa builds only; e.g. 256 × 256 × 4 = 256 KB |
+| `mel_buf` | `NUM_MELS × SPEC_WIDTH × 4` bytes | 32 B | Librosa builds only; e.g. 64 × 256 × 4 = 64 KB |
 | `file_list` | `SD_MAX_FILES × SD_MAX_PATH` bytes | .bss | 512 × 256 = 128 KB |
 | `scores` | `NUM_CLASSES × 4` bytes | stack | Tiny (40 B for 10 classes) |
-| **Total** | **~680 KB** | | Fits comfortably in the 4.2 MB internal SRAM |
+
+The frontend buffers are selected at compile time: raw builds allocate neither
+`spec_buf` nor `mel_buf`, hybrid builds allocate `spec_buf`, and librosa builds
+allocate both. Consequently there is no single application-RAM total.
 
 ### NPU Memory
 
-| Region | Typical Size | Location |
+| Region | Size | Location |
 |---|---|---|
-| NPU input | ~263 KB | npuRAM (auto-placed by LL_ATON) |
-| NPU output | 40 bytes | npuRAM |
-| NPU activations | ~320 KB | npuRAM |
-| NPU weights | ~200–300 KB | External NOR flash (read-only) |
+| NPU input | Model-dependent | npuRAM (auto-placed by LL_ATON) |
+| NPU output | `NUM_CLASSES × 4` bytes | npuRAM |
+| NPU activations | Model-dependent | npuRAM |
+| NPU weights | Model-dependent | External NOR flash (read-only) |
 
 The exact sizes depend on the model and are reported by `stedgeai analyze`:
 

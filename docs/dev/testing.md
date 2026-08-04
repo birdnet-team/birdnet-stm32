@@ -27,13 +27,13 @@ tests/
 ├── test_augmentation.py         # Audio augmentation pipeline
 ├── test_config.py               # ModelConfig serialization
 ├── test_conversion.py           # TFLite conversion pipeline
+├── test_data_pipeline.py        # Frontend-aware generator and calibration data
 ├── test_dataset.py              # File discovery, class handling
+├── test_deploy_config.py        # Deployment configuration and firmware headers
 ├── test_dscnn.py                # DS-CNN model building and scaling
 ├── test_eval_reports.py         # Evaluation reporting (species AP, DET, HTML, benchmark)
-├── test_focal_loss.py           # Focal loss function
 ├── test_frontend_layer.py       # AudioFrontendLayer shapes and modes
 ├── test_frontend_parity.py      # Float/quantized frontend parity
-├── test_frontend_registry.py    # Frontend name normalization and aliases
 ├── test_magnitude.py            # Magnitude scaling modes (pwl, pcen, db)
 ├── test_metrics.py              # ROC-AUC, cmAP, F1 computation
 ├── test_optimizer.py            # Optimizer configuration

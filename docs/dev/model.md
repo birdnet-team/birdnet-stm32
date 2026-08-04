@@ -4,8 +4,7 @@
 
 The backbone is a depthwise-separable convolutional neural network (DS-CNN)
 with 4 stages, inspired by MobileNetV1. All variants are built by the single
-`build_dscnn_model()` function in `birdnet_stm32/models/dscnn.py` and
-registered via the model registry (`build_model("dscnn", ...)`).
+`build_dscnn_model()` function in `birdnet_stm32/models/dscnn.py`.
 
 ### Block structure
 
@@ -27,26 +26,27 @@ flowchart TD
 When `stride=1` and input/output channels match, a **residual skip connection**
 is added.
 
-#### Inverted residual blocks (`--use_inverted_residual`)
+#### Inverted residual blocks (default; disable with `--no_inverted_residual`)
 
 When enabled, each DS block is replaced by an inverted residual block
 (MobileNetV2-style): expand → depthwise 3×3 → project, with ReLU6
 activations and a residual skip when stride=1 and channels match. Controlled
-by `--expansion_factor` (default 4).
+by `--expansion_factor` (default 2).
 
-#### SE channel attention (`--use_se`)
+#### SE channel attention (default; disable with `--no_se`)
 
 Adds a squeeze-and-excitation block after each DS or inverted residual block.
-The SE ratio is set via `--se_reduction` (default 4).
+The SE ratio is set via `--se_reduction` (default 8).
 
 ### Stage configuration
 
-| Stage | Output channels | Stride | Repeats |
+| Stage | Base output channels | Stride | Base repeats |
 |---|---|---|---|
-| 1 | 64 × alpha | 2 | 1 × depth_multiplier |
-| 2 | 128 × alpha | 2 | 1 × depth_multiplier |
-| 3 | 256 × alpha | 2 | 1 × depth_multiplier |
-| 4 | 512 × alpha | 2 | 1 × depth_multiplier |
+| Stem | 16 × alpha | (1, 2) | 1 |
+| 1 | 32 × alpha | (2, 2) | 2 × depth_multiplier |
+| 2 | 64 × alpha | (2, 2) | 3 × depth_multiplier |
+| 3 | 128 × alpha | (2, 2) | 4 × depth_multiplier |
+| 4 | 256 × alpha | (2, 2) | 2 × depth_multiplier |
 
 All channel counts are rounded to the nearest multiple of 8 via
 `_make_divisible(channels, 8)` (defined in `birdnet_stm32/models/blocks.py`).
@@ -79,10 +79,10 @@ Scales channel counts across all stages. Default 1.0.
 
 | alpha | Stage 1 | Stage 2 | Stage 3 | Stage 4 | Relative params |
 |---|---|---|---|---|---|
-| 0.25 | 16 | 32 | 64 | 128 | ~6% |
-| 0.5 | 32 | 64 | 128 | 256 | ~25% |
-| 1.0 | 64 | 128 | 256 | 512 | 100% |
-| 1.5 | 96 | 192 | 384 | 768 | ~225% |
+| 0.25 | 8 | 16 | 32 | 64 | ~6% |
+| 0.5 | 16 | 32 | 64 | 128 | ~25% |
+| 1.0 | 32 | 64 | 128 | 256 | 100% |
+| 1.5 | 48 | 96 | 192 | 384 | ~225% |
 
 ### `depth_multiplier` (block repeats)
 

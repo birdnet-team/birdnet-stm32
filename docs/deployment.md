@@ -269,9 +269,10 @@ python -m birdnet_stm32 board-test --config config.json
 
 !!! warning "Board test is standalone"
     The board-test command deploys real firmware that does all processing on
-    the board: read WAV from SD card → compute STFT on Cortex-M55 → run NPU
-    inference → write results to SD card + serial. Do NOT precompute
-    spectrograms on the host — that defeats the purpose of an integration test.
+    the board: read WAV from SD card → apply frontend-specific preprocessing
+    (`raw` normalization, `hybrid` STFT, or `librosa` STFT + mel) → run NPU
+    inference → stream results over UART. Do not precompute test inputs on the
+    host; that would bypass the integration path being tested.
 
 ## Firmware documentation
 

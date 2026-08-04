@@ -11,7 +11,7 @@
 #include <string.h>
 
 /* Maximum supported dimensions.  Keep small to fit in static RAM. */
-#define MAX_FFT_BINS   257
+#define MAX_FFT_BINS   256
 #define MAX_MEL_BINS   128
 
 /* Mel weight matrix: mel_weights[m * MAX_FFT_BINS + f] = weight for
@@ -63,7 +63,8 @@ void mel_init(uint32_t fft_bins, uint32_t num_mels,
     uint32_t n_points = num_mels + 2;
     float mel_points[MAX_MEL_BINS + 2];
     float hz_points[MAX_MEL_BINS + 2];
-    float fft_freqs_step = (float)sample_rate / (float)((fft_bins - 1) * 2);
+    /* fft_bins is N/2 because the STFT omits Nyquist; recover N here. */
+    float fft_freqs_step = (float)sample_rate / (float)(fft_bins * 2);
 
     for (uint32_t i = 0; i < n_points; i++) {
         mel_points[i] = mel_min + (mel_max - mel_min) * (float)i / (float)(n_points - 1);

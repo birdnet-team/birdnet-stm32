@@ -12,8 +12,8 @@ def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run standalone inference on the STM32N6570-DK: firmware reads WAV "
-            "from SD card, computes STFT on Cortex-M55, runs NPU inference, "
-            "and streams results over UART."
+            "from SD card, applies frontend-specific preprocessing, runs NPU "
+            "inference, and streams results over UART."
         ),
     )
     parser.add_argument(

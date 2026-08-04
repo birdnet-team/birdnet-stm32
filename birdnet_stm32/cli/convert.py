@@ -12,7 +12,7 @@ from birdnet_stm32.audio.activity import pick_random_samples
 from birdnet_stm32.conversion.quantize import convert_to_tflite, representative_data_gen
 from birdnet_stm32.conversion.validate import validate_models
 from birdnet_stm32.data.dataset import load_file_paths_from_directory
-from birdnet_stm32.models.frontend import AudioFrontendLayer, normalize_frontend_name
+from birdnet_stm32.models.frontend import AudioFrontendLayer, hybrid_fft_bins, normalize_frontend_name
 from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
 from birdnet_stm32.training.config import ModelConfig
 
@@ -92,7 +92,10 @@ def main():
 
     # Build representative dataset generator
     if os.path.isdir(args.data_path_train):
-        file_paths, classes = load_file_paths_from_directory(args.data_path_train)
+        configured_classes = cfg.get("class_names") or None
+        file_paths, classes = load_file_paths_from_directory(args.data_path_train, classes=configured_classes)
+        if not file_paths:
+            raise ValueError("No training audio found for the classes in the model config.")
 
         # Stratified sampling: balance classes in representative dataset
         from collections import defaultdict
@@ -131,7 +134,7 @@ def main():
             n_fft = int(cfg["fft_length"])
             frontend = normalize_frontend_name(cfg["audio_frontend"])
             num_mels = int(cfg["num_mels"])
-            fft_bins = n_fft // 2 + 1
+            fft_bins = hybrid_fft_bins(n_fft)
             for _ in tqdm(range(num_samples), desc="Random samples", unit="sample"):
                 if frontend == "librosa":
                     yield [np.random.rand(1, num_mels, spec_width, 1).astype(np.float32)]
@@ -150,6 +153,15 @@ def main():
     # Convert
     convert_to_tflite(model, rep_data_gen, args.output_path, quantization=args.quantization, per_tensor=args.per_tensor)
     print(f"TFLite model saved to {args.output_path}")
+
+    # Save labels alongside the converted model so consumers don't need the
+    # full Keras model config to interpret the output tensor.
+    if cfg.get("class_names"):
+        labels_path = os.path.splitext(args.output_path)[0] + "_labels.txt"
+        with open(labels_path, "w") as f:
+            for name in cfg["class_names"]:
+                f.write(f"{name}\n")
+        print(f"Labels saved to {labels_path}")
 
     # Validate (single run or batch)
     report: dict = {"output_path": args.output_path, "quantization": args.quantization, "per_tensor": args.per_tensor}

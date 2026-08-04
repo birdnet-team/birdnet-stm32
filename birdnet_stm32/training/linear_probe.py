@@ -72,8 +72,7 @@ def run_linear_probe(args) -> None:
     # Build new model: backbone (frozen) → dropout → new dense head
     backbone_output = embedding_layer.output
     x = tf.keras.layers.Dropout(args.dropout, name="probe_dropout")(backbone_output)
-    activation = "sigmoid" if args.mixup_probability > 0 else "softmax"
-    outputs = tf.keras.layers.Dense(len(classes), activation=activation, name="probe_pred")(x)
+    outputs = tf.keras.layers.Dense(len(classes), activation="sigmoid", name="probe_pred")(x)
     model = tf.keras.Model(inputs=base_model.input, outputs=outputs, name="linear_probe")
 
     # Freeze all layers except the new head
@@ -139,8 +138,6 @@ def run_linear_probe(args) -> None:
     steps_per_epoch = max(1, math.ceil(len(train_paths) / float(args.batch_size)))
     val_steps = max(1, math.ceil(len(val_paths) / float(args.batch_size)))
 
-    is_multilabel = args.mixup_probability > 0
-
     # Save updated model config for the new classes
     new_cfg = ModelConfig(
         sample_rate=old_cfg.sample_rate,
@@ -183,7 +180,6 @@ def run_linear_probe(args) -> None:
         checkpoint_path=out_checkpoint,
         steps_per_epoch=steps_per_epoch,
         val_steps=val_steps,
-        is_multilabel=is_multilabel,
         optimizer=args.optimizer,
         weight_decay=args.weight_decay,
         gradient_clip_norm=args.grad_clip,

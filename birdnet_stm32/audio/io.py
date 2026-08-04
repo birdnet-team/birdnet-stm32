@@ -211,14 +211,3 @@ def load_audio_file(
         chunk_duration=chunk_duration,
         chunk_overlap=chunk_overlap,
     )
-
-
-def save_wav(audio: np.ndarray, path: str, sample_rate: int = 24000) -> None:
-    """Save an audio signal to a WAV file.
-
-    Args:
-        audio: 1D audio array (mono).
-        path: Output file path (.wav).
-        sample_rate: Sampling rate (Hz).
-    """
-    sf.write(path, audio, sample_rate)

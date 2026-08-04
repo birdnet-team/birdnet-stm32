@@ -61,20 +61,24 @@ def validate_models(keras_model: tf.keras.Model, tflite_model_path: str, rep_dat
     Returns:
         Dict with keys 'cosine_mean', 'mse_mean', 'mae_mean', 'pearson_mean'.
     """
-    interpreter = tf.lite.Interpreter(model_path=tflite_model_path, experimental_delegates=None, num_threads=1)
-    interpreter.allocate_tensors()
-    in_det = interpreter.get_input_details()[0]
-    out_det = interpreter.get_output_details()[0]
+    # Go through the shared runner so INT8-I/O models are quantized/dequantized
+    # exactly the way evaluation and deployment will do it.
+    from birdnet_stm32.models.runners import TFLiteRunner
 
-    print(f"TFLite input shape: {in_det['shape']}, output shape: {out_det['shape']}")
+    runner = TFLiteRunner(tflite_model_path)
+    in_det = runner.interpreter.get_input_details()[0]
+    out_det = runner.interpreter.get_output_details()[0]
+
+    print(
+        f"TFLite input shape: {in_det['shape']} ({np.dtype(in_det['dtype']).name}), "
+        f"output shape: {out_det['shape']} ({np.dtype(out_det['dtype']).name})"
+    )
 
     cos_list, mse_list, mae_list, pcc_list = [], [], [], []
 
     for sample in rep_data_gen():
         yk = keras_model(sample[0], training=False).numpy()
-        interpreter.set_tensor(in_det["index"], sample[0].astype(np.float32))
-        interpreter.invoke()
-        yt = interpreter.get_tensor(out_det["index"])
+        yt = runner.predict(np.asarray(sample[0], dtype=np.float32))
 
         a = yk.reshape(-1).astype(np.float64)
         b = yt.reshape(-1).astype(np.float64)

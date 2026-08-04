@@ -4,9 +4,9 @@ Step-by-step guide to adding a new model architecture to BirdNET-STM32.
 
 ## Overview
 
-Models are registered via the model registry in
-`birdnet_stm32/models/__init__.py`. The registry maps architecture names
-(e.g., `"dscnn"`) to builder functions that return a compiled Keras model.
+A model is a builder function that returns an uncompiled Keras model.
+`birdnet_stm32/models/dscnn.py` is the reference implementation; the training
+CLI calls its builder directly.
 
 ## Steps
 
@@ -37,7 +37,7 @@ def build_your_model(
         alpha: Width multiplier for channel counts.
 
     Returns:
-        Compiled Keras model.
+        Uncompiled Keras model.
     """
     inputs = layers.Input(shape=input_shape)
     # ... your architecture ...
@@ -45,17 +45,19 @@ def build_your_model(
     return Model(inputs, outputs, name="your_model")
 ```
 
-### 2. Register the model
+### 2. Wire the builder into an entry point
 
-In `birdnet_stm32/models/__init__.py`, register your builder:
+There is intentionally no model registry: BirdNET-STM32 currently exposes one
+architecture and `birdnet_stm32/cli/train.py` calls `build_dscnn_model()`
+directly. For an experiment, call your builder from a dedicated script. To add
+a supported architecture, introduce an explicit CLI choice and dispatch at the
+call site in `train.py`, then mirror that choice in the saved `ModelConfig`.
 
 ```python
 from birdnet_stm32.models.your_model import build_your_model
 
-_MODEL_REGISTRY["your_model"] = build_your_model
+model = build_your_model(input_shape=(64, 256, 1), num_classes=len(classes))
 ```
-
-Now `build_model("your_model", ...)` will dispatch to your builder.
 
 ### 3. N6 compatibility constraints
 
@@ -102,7 +104,6 @@ Create `tests/test_your_model.py` with:
 ### 7. Update documentation
 
 - Add a section to `docs/dev/model.md`
-- Add the model to the registry table in the API reference
 - Update `docs/index.md` if the model is a significant addition
 
 ## Reference: DS-CNN builder
@@ -112,6 +113,7 @@ patterns to follow:
 
 - Use `_make_divisible()` for all channel computations
 - Support residual connections when stride=1 and channels match
-- Use `ReLU6` activation (better quantization than unbounded ReLU)
+- Prefer simple NPU-supported activations such as ReLU or ReLU6; verify the
+  generated graph because an upper clip can become a software `MINIMUM` epoch
 - Add `BatchNormalization` after every convolution
 - Use `GlobalAveragePooling2D` → `Dropout` → `Dense(sigmoid)` as the head

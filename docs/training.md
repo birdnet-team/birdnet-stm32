@@ -25,16 +25,16 @@ The script saves these files alongside the checkpoint:
 |---|---|---|
 | `hybrid` (default) | Linear magnitude STFT | Model applies a learned mel mixer and magnitude scaling. Best for deployment. |
 | `librosa` | Mel spectrogram | Spectrogram computed offline with librosa. Simplest, but frontend is not in the graph. |
-| `raw` | Raw waveform | Model learns the filterbank from scratch via Conv2D. Most flexible, highest memory. |
+| `raw` | Peak-normalized waveform | Model applies a mel-seeded, trainable Gabor quadrature filterbank. Most flexible, highest input memory. |
+| `mfcc` | MFCC features | Host-precomputed compact representation. |
+| `log_mel` | Log-mel spectrogram | Host-precomputed log-scaled mel features. |
 
-!!! note "Deprecated aliases"
-    `precomputed` (now `librosa`) and `tf` (now `raw`) still work but emit
-    deprecation warnings and will be removed in a future release.
+Only the canonical names above are accepted; the former `precomputed` and `tf`
+aliases have been removed.
 
 !!! warning "Raw frontend memory limit"
-    At 22 kHz × 3 s the raw input exceeds 65,536 samples (the 16-bit activation
-    size limit on the N6 NPU). Use `hybrid` or `librosa` for deployment, or
-    reduce sample rate / chunk duration.
+    The raw input must contain fewer than 65,536 samples. At 24 kHz, use a
+    chunk no longer than about 2.7 seconds; 2.5 seconds is the tested setting.
 
 ## Magnitude scaling
 
@@ -75,15 +75,14 @@ The DS-CNN is scaled with two knobs:
   noise from silent or irrelevant segments.
 - **Multi-chunk I/O reuse**: long files (e.g. 60 s recordings) yield up to
   `--max_chunks_per_file` (default 3) salient chunks per file open, stored
-  in a shuffled in-memory reservoir.  This avoids redundant FLAC decode +
+  in a memory-bounded shuffled reservoir. This avoids redundant FLAC decode +
   resample for the same file across epochs.
 
 ### Loss function
 
-- **Binary crossentropy** (default): standard multi-label loss.
-- **Focal loss**: `--loss focal` down-weights well-classified examples,
-  focusing on hard negatives. Tune with `--focal_gamma` (default 2.0).
-  Useful for imbalanced class distributions.
+The classifier head is always sigmoid + binary crossentropy. Soundscape
+recordings are inherently multi-label, so we always optimise per-class
+probabilities even when the source label is single-class.
 
 ### Optimizer
 
@@ -108,12 +107,6 @@ Use `--seed` (default 42) to change the RNG seed.
 Gradient clipping by global norm is enabled by default (`--grad_clip 1.0`).
 Set to 0 to disable. Prevents exploding gradients, especially useful with
 large models or unstable training.
-
-### Class weighting
-
-Balanced inverse-frequency class weights are enabled by default. Use
-`--no_class_weights` to disable. Useful for imbalanced datasets where some
-species have fewer training files.
 
 ### Mixed precision
 
@@ -188,16 +181,16 @@ The probe model is saved as `{name}_probe.keras` with a new labels file.
 
 ### Learning rate
 
-Cosine decay schedule from `--learning_rate` (default 0.001) to near-zero
-over `--epochs` (default 50). Early stopping on validation loss with patience
-of 10 epochs.
+A two-epoch linear warmup reaches `--learning_rate` (default 0.001), followed
+by cosine decay to near-zero over `--epochs` (default 50). Best-checkpoint
+selection and early stopping monitor validation ROC-AUC with patience 10.
 
 ### Hyperparameter tuning with Optuna
 
 Use `--tune` to run an automated hyperparameter search using Optuna (requires
 `pip install -e ".[tune]"`). The tuner explores alpha, depth_multiplier,
-embeddings_size, learning_rate, dropout, batch_size, mixup_alpha,
-label_smoothing, optimizer, weight_decay, grad_clip, use_se,
+embeddings_size, learning_rate, dropout, batch_size, mixup_alpha, optimizer,
+weight_decay, grad_clip, use_se,
 use_inverted_residual, use_attention_pooling, se_reduction, and
 expansion_factor. It maximizes `val_roc_auc` with MedianPruner.
 
@@ -214,6 +207,7 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | Argument | Default | Description |
 |---|---|---|
 | `--data_path_train` | *(required)* | Path to training data |
+| `--max_classes` | None | Use only the N most populated classes |
 | `--max_samples` | None | Max files per class |
 | `--upsample_ratio` | 0.5 | Minority class upsample ratio |
 | `--sample_rate` | 24000 | Audio sample rate (Hz) |
@@ -236,9 +230,6 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--dropout` | 0.5 | Dropout rate before classifier head |
 | `--optimizer` | adam | `adam`, `sgd`, or `adamw` |
 | `--weight_decay` | 0.0 | Weight decay (adamw only) |
-| `--loss` | auto | `auto` (BCE) or `focal` |
-| `--focal_gamma` | 2.0 | Focal loss focusing parameter |
-| `--label_smoothing` | 0.1 | Label smoothing factor (0 = off) |
 | `--no_se` | False | Disable SE channel attention (on by default) |
 | `--se_reduction` | 8 | SE channel reduction factor |
 | `--no_inverted_residual` | False | Use plain DS blocks (inverted residuals on by default) |
@@ -246,13 +237,13 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--use_attention_pooling` | False | Use attention pooling instead of GAP |
 | `--n_mfcc` | 20 | Number of MFCC coefficients (mfcc frontend only) |
 | `--grad_clip` | 1.0 | Max gradient norm for clipping (0 = disabled) |
-| `--no_class_weights` | False | Disable balanced class weighting (on by default) |
 | `--mixed_precision` | False | Enable FP16 mixed precision training |
 | `--resume` | False | Resume training from checkpoint |
 | `--seed` | 42 | Random seed |
 | `--batch_size` | 32 | Batch size |
 | `--num_workers` | 8 | Parallel data loading workers (0 = sequential) |
 | `--max_chunks_per_file` | 3 | Max salient chunks per file open (reduces redundant I/O) |
+| `--prefetch_batches` | 2 | Loader prefetch depth in batches |
 | `--epochs` | 50 | Number of epochs |
 | `--learning_rate` | 0.001 | Initial learning rate |
 | `--val_split` | 0.2 | Validation split fraction |
@@ -270,19 +261,19 @@ spectrogram computation run across separate CPU cores.
 
 When `--max_chunks_per_file` is greater than 1 (default 3), each file open
 extracts multiple salient chunks which are buffered in a shuffled in-memory
-**reservoir** (~135 MB for 512 samples).  This dramatically reduces I/O for
+**reservoir** sized from the sample representation and the loader's memory
+budget. This dramatically reduces I/O for
 long recordings: a 60 s file decoded once yields 3 usable chunks instead of
 re-opening the same file 3 times across epochs.
 
 The reservoir maintains batch diversity by shuffling samples from many
-different files before yielding them.  With a reservoir of 512 samples from
-~200 different files, the probability of two chunks from the same file
-landing in one batch of 32 is negligible.
+different files before yielding them.
 
 Tune with:
 
 - `--num_workers N` — number of worker processes (default 8, 0 = sequential)
 - `--max_chunks_per_file N` — chunks per file open (default 3, 1 = original behavior)
+- `--prefetch_batches N` — queued batches (default 2; higher uses more RAM)
 
 ## Noise classes
 

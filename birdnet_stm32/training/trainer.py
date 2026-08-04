@@ -7,6 +7,70 @@ import tensorflow as tf
 
 VALID_OPTIMIZERS = ("adam", "sgd", "adamw")
 
+# Internal training defaults: keep the CLI small and pick the values that are
+# right for imbalanced multi-label bioacoustics.
+#
+# Ranking quality, not loss, is what a detector is judged on, and with long-tail
+# class priors val_loss keeps improving after val ranking has peaked — so
+# checkpointing and early stopping track val ROC-AUC (higher is better).
+_MONITOR = "val_roc_auc"
+_MONITOR_MODE = "max"
+# A short linear ramp before cosine decay; the frontend and BN statistics are
+# still settling in the first epochs and a full-rate Adam step there is wasteful.
+_WARMUP_EPOCHS = 2
+
+
+class WarmupCosineDecay(tf.keras.optimizers.schedules.LearningRateSchedule):
+    """Linear warmup followed by cosine decay to zero.
+
+    Also carries a step offset so a resumed run continues along the same
+    schedule instead of jumping back to the peak learning rate.
+
+    Args:
+        initial_learning_rate: Peak learning rate reached at the end of warmup.
+        decay_steps: Total number of steps in the full run (warmup included).
+        warmup_steps: Number of steps spent ramping up linearly from ~0.
+        offset_steps: Steps already completed by a previous run.
+    """
+
+    def __init__(
+        self,
+        initial_learning_rate: float,
+        decay_steps: int,
+        warmup_steps: int = 0,
+        offset_steps: int = 0,
+    ):
+        super().__init__()
+        self.initial_learning_rate = float(initial_learning_rate)
+        self.decay_steps = max(1, int(decay_steps))
+        self.warmup_steps = max(0, int(warmup_steps))
+        self.offset_steps = max(0, int(offset_steps))
+
+    def __call__(self, step):
+        step = tf.cast(step, tf.float32) + float(self.offset_steps)
+        peak = tf.constant(self.initial_learning_rate, tf.float32)
+        warmup = tf.constant(float(self.warmup_steps), tf.float32)
+        total = tf.constant(float(self.decay_steps), tf.float32)
+
+        warmup_lr = peak * (step + 1.0) / tf.maximum(warmup, 1.0)
+
+        progress = (step - warmup) / tf.maximum(total - warmup, 1.0)
+        progress = tf.clip_by_value(progress, 0.0, 1.0)
+        cosine_lr = peak * 0.5 * (1.0 + tf.cos(tf.constant(3.14159265, tf.float32) * progress))
+
+        if self.warmup_steps == 0:
+            return cosine_lr
+        return tf.where(step < warmup, warmup_lr, cosine_lr)
+
+    def get_config(self) -> dict:
+        """Return a serializable configuration dict."""
+        return {
+            "initial_learning_rate": self.initial_learning_rate,
+            "decay_steps": self.decay_steps,
+            "warmup_steps": self.warmup_steps,
+            "offset_steps": self.offset_steps,
+        }
+
 
 def _build_optimizer(
     name: str,
@@ -50,18 +114,21 @@ def train_model(
     checkpoint_path: str = "checkpoints/best_model.keras",
     steps_per_epoch: int | None = None,
     val_steps: int | None = None,
-    is_multilabel: bool = False,
     optimizer: str = "adam",
     weight_decay: float = 0.0,
     loss_fn: str | tf.keras.losses.Loss | None = None,
     gradient_clip_norm: float = 1.0,
-    class_weights: dict[int, float] | None = None,
     resume: bool = False,
     extra_callbacks: list[tf.keras.callbacks.Callback] | None = None,
 ) -> tf.keras.callbacks.History:
     """Train a model with cosine LR schedule, early stopping, and checkpointing.
 
-    Monitors val_loss (min). Best model is saved as a full .keras file.
+    The classifier head is always sigmoid + binary crossentropy (multi-label).
+    Soundscape recordings are inherently multi-label even when the source
+    label is a single species, so we always optimise per-class probabilities.
+
+    Checkpointing and early stopping track validation ROC-AUC; the best model
+    is saved as a full .keras file.
 
     Args:
         model: Model to train.
@@ -74,17 +141,19 @@ def train_model(
         checkpoint_path: Path to save the best .keras model.
         steps_per_epoch: Training steps per epoch (> 0 required).
         val_steps: Validation steps per epoch (defaults to 1 if <= 0).
-        is_multilabel: If True, uses binary_crossentropy; else categorical_crossentropy.
         optimizer: Optimizer name ('adam', 'sgd', or 'adamw').
         weight_decay: Weight decay factor (only used by 'adamw').
-        loss_fn: Optional custom loss function. Overrides is_multilabel default.
+        loss_fn: Optional custom loss function. Defaults to ``binary_crossentropy``.
         gradient_clip_norm: Max gradient norm for clipping (0 = disabled).
-        class_weights: Optional class index → weight mapping for imbalanced data.
-        resume: If True, load optimizer state from a previous run and continue.
+        resume: If True, reload the model from the checkpoint and continue from
+            the recorded epoch (the learning-rate schedule is advanced to match).
         extra_callbacks: Additional Keras callbacks (e.g. QAT callback).
 
     Returns:
         Keras training history.
+
+    Raises:
+        ValueError: If ``steps_per_epoch`` is not positive.
     """
     if steps_per_epoch is None or steps_per_epoch <= 0:
         raise ValueError("steps_per_epoch must be > 0")
@@ -115,21 +184,37 @@ def train_model(
             initial_epoch = state.get("epoch", 0)
             print(f"[resume] Resuming from epoch {initial_epoch}")
 
-    lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
+    warmup_steps = _WARMUP_EPOCHS * steps_per_epoch
+    lr_schedule = WarmupCosineDecay(
         initial_learning_rate=learning_rate,
         decay_steps=epochs * steps_per_epoch,
-        alpha=0.0,
+        warmup_steps=warmup_steps,
+        offset_steps=initial_epoch * steps_per_epoch,
     )
+    print(f"LR schedule: {_WARMUP_EPOCHS} warmup epoch(s) -> cosine decay over {epochs} epochs.")
 
     opt = _build_optimizer(optimizer, lr_schedule, weight_decay, gradient_clip_norm)
 
     if loss_fn is None:
-        loss_fn = "binary_crossentropy" if is_multilabel else "categorical_crossentropy"
+        loss_fn = "binary_crossentropy"
+
+    num_labels = None
+    try:
+        num_labels = int(model.output_shape[-1])
+    except (TypeError, IndexError):
+        num_labels = None
+
+    auc_metric = tf.keras.metrics.AUC(
+        curve="ROC",
+        multi_label=True,
+        num_labels=num_labels,
+        name="roc_auc",
+    )
 
     model.compile(
         optimizer=opt,
         loss=loss_fn,
-        metrics=[tf.keras.metrics.AUC(curve="ROC", multi_label=True, name="roc_auc")],
+        metrics=[auc_metric],
     )
 
     class _SaveTrainState(tf.keras.callbacks.Callback):
@@ -164,9 +249,11 @@ def train_model(
     csv_path = checkpoint_path.replace(".keras", "_history.csv")
 
     callbacks = [
-        tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=patience, restore_best_weights=True, mode="min"),
+        tf.keras.callbacks.EarlyStopping(
+            monitor=_MONITOR, patience=patience, restore_best_weights=True, mode=_MONITOR_MODE
+        ),
         tf.keras.callbacks.ModelCheckpoint(
-            checkpoint_path, monitor="val_loss", save_best_only=True, mode="min", save_weights_only=False
+            checkpoint_path, monitor=_MONITOR, save_best_only=True, mode=_MONITOR_MODE, save_weights_only=False
         ),
         _SaveTrainState(),
         _CSVHistoryLogger(csv_path),
@@ -181,7 +268,6 @@ def train_model(
         steps_per_epoch=steps_per_epoch,
         validation_steps=val_steps,
         callbacks=callbacks,
-        class_weight=class_weights,
     )
 
     # Save training curves as PNG

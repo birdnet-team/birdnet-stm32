@@ -24,6 +24,10 @@ class MagnitudeScalingLayer(layers.Layer):
         method: 'none' | 'pwl' | 'pcen' | 'db'.
         channels: Number of input channels (typically mel_bins).
         pcen_K: Number of average-pooling stages for PCEN smoothing.
+        pcen_pool_width: Width (in time frames) of each PCEN smoothing stage.
+            Stacking ``pcen_K`` stages of this width gives an effective
+            smoothing support of ``pcen_K * (pcen_pool_width - 1) + 1`` frames,
+            which is what stands in for PCEN's IIR envelope follower.
         is_trainable: Whether sub-layer weights are trainable.
         name: Layer name.
     """
@@ -33,6 +37,7 @@ class MagnitudeScalingLayer(layers.Layer):
         method: str = "none",
         channels: int = 64,
         pcen_K: int = 8,
+        pcen_pool_width: int = 3,
         is_trainable: bool = False,
         name: str = "mag_scale",
         **kwargs,
@@ -43,6 +48,7 @@ class MagnitudeScalingLayer(layers.Layer):
         self.method = method
         self.channels = int(channels)
         self.pcen_K = int(pcen_K)
+        self.pcen_pool_width = max(1, int(pcen_pool_width))
         self.is_trainable = bool(is_trainable)
 
         # DB constants
@@ -51,8 +57,16 @@ class MagnitudeScalingLayer(layers.Layer):
 
         # PCEN sublayers
         if self.method == "pcen":
+            # Smoothing runs along the time axis (W). The frontend feeds this
+            # layer as [B, 1, T, C], so pooling over W is pooling over frames;
+            # a unit pool would make the whole AGC branch an identity.
             self._pcen_pools = [
-                layers.AveragePooling2D(pool_size=(1, 1), strides=(1, 1), padding="same", name=f"{name}_pcen_ema{k}")
+                layers.AveragePooling2D(
+                    pool_size=(1, self.pcen_pool_width),
+                    strides=(1, 1),
+                    padding="same",
+                    name=f"{name}_pcen_ema{k}",
+                )
                 for k in range(self.pcen_K)
             ]
             self._pcen_agc_dw = layers.DepthwiseConv2D(
@@ -211,6 +225,7 @@ class MagnitudeScalingLayer(layers.Layer):
                 "method": self.method,
                 "channels": self.channels,
                 "pcen_K": self.pcen_K,
+                "pcen_pool_width": self.pcen_pool_width,
                 "is_trainable": self.is_trainable,
             }
         )
