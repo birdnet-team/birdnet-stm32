@@ -156,6 +156,7 @@ def evaluate(
     y_scores_arr = np.asarray(y_scores, dtype=np.float32)
 
     metrics: dict = {}
+    metrics["total_files"] = len(per_file)
 
     # ROC-AUC
     try:

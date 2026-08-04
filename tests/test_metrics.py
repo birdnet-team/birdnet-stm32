@@ -73,6 +73,7 @@ class TestEvaluateMetrics:
         assert "cmAP" in metrics
         assert metrics["f1"] > 0.0
         assert len(per_file) == len(files)
+        assert metrics["total_files"] == len(files)
         assert y_true.shape[0] == len(files)
         assert y_scores.shape[0] == len(files)
 
@@ -82,7 +83,7 @@ class TestEvaluateMetrics:
         scores = np.array([[0.5, 0.5]], dtype=np.float32)
         runner = FakeRunner(scores)
         metrics, _, _, _ = evaluate(runner, files, classes, cfg, pooling="avg")
-        for key in ("roc-auc", "f1", "precision", "recall", "cmAP", "mAP", "ap_per_class"):
+        for key in ("total_files", "roc-auc", "f1", "precision", "recall", "cmAP", "mAP", "ap_per_class"):
             assert key in metrics, f"Missing metric key: {key}"
 
     def test_noise_folder_is_evaluated_as_all_zero(self, tmp_path):
