@@ -10,6 +10,20 @@ python -m birdnet_stm32 train \
   --checkpoint_path checkpoints/my_model.keras
 ```
 
+For a leakage-safe precomputed validation split and stable output order, pass a
+separate validation root and a one-label-per-line classes file:
+
+```bash
+python -m birdnet_stm32 train \
+  --data_path_train data/train \
+  --data_path_val data/validation \
+  --classes_file data/labels.txt
+```
+
+The class file controls model-output order. Folders named `noise`, `silence`,
+`background`, or `other` are still loaded as all-zero examples and must not be
+listed as outputs. When `--data_path_val` is present, `--val_split` is ignored.
+
 The script saves these files alongside the checkpoint:
 
 - `my_model.keras` — trained Keras model
@@ -207,6 +221,8 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | Argument | Default | Description |
 |---|---|---|
 | `--data_path_train` | *(required)* | Path to training data |
+| `--data_path_val` | None | Separate validation root; disables random validation splitting |
+| `--classes_file` | None | Ordered one-label-per-line output schema |
 | `--max_classes` | None | Use only the N most populated classes |
 | `--max_samples` | None | Max files per class |
 | `--upsample_ratio` | 0.5 | Minority class upsample ratio |
@@ -246,7 +262,7 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--prefetch_batches` | 2 | Loader prefetch depth in batches |
 | `--epochs` | 50 | Number of epochs |
 | `--learning_rate` | 0.001 | Initial learning rate |
-| `--val_split` | 0.2 | Validation split fraction |
+| `--val_split` | 0.2 | Validation split fraction when `--data_path_val` is not supplied |
 | `--checkpoint_path` | checkpoints/best_model.keras | Output path (.keras) |
 | `--tune` | False | Run Optuna hyperparameter search |
 | `--n_trials` | 20 | Number of Optuna trials |

@@ -59,7 +59,13 @@ During training, the data pipeline:
 4. **Chunks** each file into fixed-length segments (`--chunk_duration`,
    default 3 seconds) up to `--max_duration` (default 30 seconds).
 5. **Computes spectrograms** according to the selected `--audio_frontend`.
-6. **Splits** into train/validation (`--val_split`, default 0.2).
+6. **Splits** randomly into train/validation (`--val_split`, default 0.2), or
+   loads a fixed validation root with `--data_path_val`. Prefer the fixed root
+   when recordings must remain grouped by source, recordist, site, or session.
+
+Use `--classes_file` to preserve an explicit model-output order across training
+runs. Noise-like folders remain all-zero examples and are not listed as output
+classes.
 
 ## Tips
 

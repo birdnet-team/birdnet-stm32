@@ -11,6 +11,7 @@ import tensorflow as tf
 
 from birdnet_stm32.data.dataset import (
     get_classes_with_most_samples,
+    load_classes_file,
     load_file_paths_from_directory,
     upsample_minority_classes,
 )
@@ -142,6 +143,18 @@ def get_args() -> argparse.Namespace:
 
     # -- Data -----------------------------------------------------------------
     parser.add_argument("--data_path_train", type=str, required=True, help="Path to train dataset")
+    parser.add_argument(
+        "--data_path_val",
+        type=str,
+        default=None,
+        help="Separate validation dataset root; disables the random --val_split",
+    )
+    parser.add_argument(
+        "--classes_file",
+        type=str,
+        default=None,
+        help="Ordered one-label-per-line output schema; noise remains an all-zero folder",
+    )
     parser.add_argument("--max_classes", type=int, default=None, help="Use top N classes by sample count")
     parser.add_argument("--max_samples", type=int, default=None, help="Max samples per class")
     parser.add_argument("--upsample_ratio", type=float, default=0.5, help="Upsample ratio for minority classes")
@@ -308,18 +321,33 @@ def main():
     hop_length = compute_hop_length(args.sample_rate, args.chunk_duration, args.spec_width)
 
     # Load file paths
-    top_classes = None
+    top_classes = load_classes_file(args.classes_file) if args.classes_file else None
+    if top_classes is not None and args.max_classes is not None:
+        raise ValueError("--classes_file and --max_classes are mutually exclusive")
     if args.max_classes is not None:
         top_classes = get_classes_with_most_samples(args.data_path_train, n_classes=args.max_classes)
         print(f"Selected top {len(top_classes)} classes by sample count.")
     file_paths, classes = load_file_paths_from_directory(
         args.data_path_train, classes=top_classes, max_samples=args.max_samples
     )
+    if top_classes is not None and classes != top_classes:
+        missing = [class_name for class_name in top_classes if class_name not in classes]
+        raise ValueError(f"Training dataset is missing configured classes: {missing}")
 
     # Train/val split
-    split_idx = int(len(file_paths) * (1 - args.val_split))
-    train_paths = file_paths[:split_idx]
-    val_paths = file_paths[split_idx:]
+    if args.data_path_val:
+        train_paths = file_paths
+        val_paths, val_classes = load_file_paths_from_directory(
+            args.data_path_val, classes=classes, max_samples=args.max_samples
+        )
+        if val_classes != classes:
+            missing = [class_name for class_name in classes if class_name not in val_classes]
+            raise ValueError(f"Validation dataset is missing configured classes: {missing}")
+        print("Using separate validation root; --val_split is ignored.")
+    else:
+        split_idx = int(len(file_paths) * (1 - args.val_split))
+        train_paths = file_paths[:split_idx]
+        val_paths = file_paths[split_idx:]
     print(f"Training on {len(train_paths)} files, validating on {len(val_paths)} files.")
 
     # Upsample
