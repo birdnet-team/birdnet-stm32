@@ -21,7 +21,7 @@ from birdnet_stm32.audio.activity import smart_crop, sort_by_activity
 from birdnet_stm32.audio.augmentation import apply_mixup, apply_spec_augment
 from birdnet_stm32.audio.io import estimate_num_chunks, load_audio_window, split_audio_into_chunks
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
-from birdnet_stm32.models.frontend import normalize_frontend_name
+from birdnet_stm32.models.frontend import hybrid_fft_bins, normalize_frontend_name
 
 # ---------------------------------------------------------------------------
 # Multiprocessing worker — module-level for pickling
@@ -311,7 +311,7 @@ def load_dataset(
     elif audio_frontend in ("librosa", "log_mel"):
         sample_shape = (mel_bins, spec_width, 1)
     elif audio_frontend == "hybrid":
-        sample_shape = (fft_length // 2 + 1, spec_width, 1)
+        sample_shape = (hybrid_fft_bins(fft_length), spec_width, 1)
     elif audio_frontend == "raw":
         sample_shape = (chunk_len, 1)
     else:

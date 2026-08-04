@@ -22,7 +22,7 @@ from birdnet_stm32.models.blocks import (
     inverted_residual_block,
     se_block,
 )
-from birdnet_stm32.models.frontend import AudioFrontendLayer, normalize_frontend_name
+from birdnet_stm32.models.frontend import AudioFrontendLayer, hybrid_fft_bins, normalize_frontend_name
 
 
 def ds_conv_block(
@@ -115,8 +115,7 @@ def build_dscnn_model(
         chunk_duration: Chunk duration (seconds).
         embeddings_size: Channels in the final embeddings layer.
         num_classes: Number of output classes.
-        audio_frontend: 'librosa' | 'hybrid' | 'raw' | 'mfcc' | 'log_mel'
-            (deprecated: 'precomputed', 'tf').
+        audio_frontend: 'librosa' | 'hybrid' | 'raw' | 'mfcc' | 'log_mel'.
         alpha: Width multiplier for the backbone.
         depth_multiplier: Repeats multiplier for DS blocks per stage.
         fft_length: FFT size for hybrid/librosa paths.
@@ -164,7 +163,7 @@ def build_dscnn_model(
             name="audio_frontend",
         )(inputs)
     elif audio_frontend == "hybrid":
-        fft_bins = fft_length // 2 + 1
+        fft_bins = hybrid_fft_bins(fft_length)
         inputs = tf.keras.Input(shape=(fft_bins, spec_width, 1), name="linear_spectrogram_input")
         x = AudioFrontendLayer(
             mode="hybrid",
@@ -256,5 +255,7 @@ def build_dscnn_model(
     else:
         x = layers.GlobalAveragePooling2D(name="gap")(x)
     x = layers.Dropout(dropout_rate, name="dropout")(x)
-    outputs = layers.Dense(num_classes, activation="sigmoid", name="pred")(x)
+    # Keep the head in float32: under a mixed_float16 policy a float16 sigmoid
+    # saturates well before the loss does, which stalls training.
+    outputs = layers.Dense(num_classes, activation="sigmoid", name="pred", dtype="float32")(x)
     return tf.keras.models.Model(inputs, outputs, name="dscnn_audio")

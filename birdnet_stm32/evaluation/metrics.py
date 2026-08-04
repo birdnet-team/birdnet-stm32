@@ -12,7 +12,7 @@ from tqdm import tqdm
 from birdnet_stm32.audio.io import load_audio_file
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
 from birdnet_stm32.evaluation.pooling import pool_scores
-from birdnet_stm32.models.frontend import normalize_frontend_name
+from birdnet_stm32.models.frontend import hybrid_fft_bins, normalize_frontend_name
 
 
 def make_chunks_for_file(
@@ -53,7 +53,7 @@ def make_chunks_for_file(
             )
             out.append(S[:, :, None].astype(np.float32))
     elif frontend == "hybrid":
-        fft_bins = n_fft // 2 + 1
+        fft_bins = hybrid_fft_bins(n_fft)
         for ch in chunks:
             S = get_spectrogram_from_audio(ch, sample_rate=sr, n_fft=n_fft, mel_bins=-1, spec_width=spec_width)
             if S.shape[0] != fft_bins:
@@ -339,13 +339,8 @@ def compute_det_curve(
     Returns:
         Tuple (far, frr, thresholds) — arrays of equal length.
     """
-    y_t = y_true.ravel()
-    y_s = y_scores.ravel()
-
-    # Sort by descending score
-    desc = np.argsort(-y_s)
-    y_t[desc]
-    y_s_sorted = y_s[desc]
+    y_t = y_true.ravel().astype(np.float64)
+    y_s = y_scores.ravel().astype(np.float64)
 
     total_pos = y_t.sum()
     total_neg = len(y_t) - total_pos
@@ -353,23 +348,20 @@ def compute_det_curve(
     if total_pos == 0 or total_neg == 0:
         return np.array([0.0]), np.array([0.0]), np.array([0.5])
 
-    # Unique thresholds
-    unique_scores = np.unique(y_s_sorted)[::-1]
+    # Single sort + cumulative counts instead of one full pass per threshold.
+    # Evaluation sets with many classes produce hundreds of thousands of
+    # distinct scores, which makes the naive O(n_thresholds * n) loop unusable.
+    order = np.argsort(-y_s, kind="mergesort")
+    y_s_sorted = y_s[order]
+    y_t_sorted = y_t[order]
 
-    far_list: list[float] = []
-    frr_list: list[float] = []
-    thr_list: list[float] = []
+    tps = np.cumsum(y_t_sorted)
+    fps = np.cumsum(1.0 - y_t_sorted)
 
-    for thr in unique_scores:
-        pred_pos = y_s >= thr
-        tp = np.sum(y_t[pred_pos])
-        fp = np.sum(1 - y_t[pred_pos])
-        fn = total_pos - tp
+    # Keep the last index of every run of equal scores so each returned point
+    # corresponds to the decision rule ``score >= threshold``.
+    last_of_run = np.r_[np.flatnonzero(np.diff(y_s_sorted)), y_s_sorted.size - 1]
 
-        far = fp / total_neg  # false acceptance rate
-        frr = fn / total_pos  # false rejection rate
-        far_list.append(far)
-        frr_list.append(frr)
-        thr_list.append(float(thr))
-
-    return np.array(far_list), np.array(frr_list), np.array(thr_list)
+    far = fps[last_of_run] / total_neg  # false acceptance rate
+    frr = (total_pos - tps[last_of_run]) / total_pos  # false rejection rate
+    return far, frr, y_s_sorted[last_of_run]

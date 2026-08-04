@@ -113,6 +113,9 @@ def get_spectrogram_from_audio(
                 window="hann",
             )
         )
+        # Drop the Nyquist bin so the row count is n_fft // 2 — a multiple of 8,
+        # which the hybrid mel mixer consumes without a runtime channel pad.
+        S = S[: n_fft // 2, :]
     else:
         S = librosa.feature.melspectrogram(
             y=audio,

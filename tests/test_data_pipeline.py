@@ -10,6 +10,7 @@ from birdnet_stm32.data.generator import (
     estimate_samples_per_epoch,
     load_dataset,
 )
+from birdnet_stm32.models.frontend import hybrid_fft_bins
 
 
 def _make_long_dataset(tmp_path, sample_rate=22050, chunk_duration=3, n_classes=3, files_per_class=2, file_duration=12):
@@ -289,7 +290,7 @@ class TestLoadDataset:
         )
         batch = next(iter(ds))
         samples, labels = batch
-        assert samples.shape == (batch_size, fft_length // 2 + 1, spec_width, 1)
+        assert samples.shape == (batch_size, hybrid_fft_bins(fft_length), spec_width, 1)
         assert labels.shape == (batch_size, len(classes))
 
     def test_multi_chunk_produces_more_samples(self, tmp_path):
