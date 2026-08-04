@@ -17,6 +17,7 @@ from birdnet_stm32.data.dataset import (
 from birdnet_stm32.data.generator import estimate_samples_per_epoch, load_dataset
 from birdnet_stm32.models.dscnn import build_dscnn_model
 from birdnet_stm32.models.frontend import normalize_frontend_name
+from birdnet_stm32.models.profiler import print_profile
 from birdnet_stm32.training.config import ModelConfig
 from birdnet_stm32.training.trainer import compute_hop_length, train_model
 
@@ -419,7 +420,10 @@ def main():
         expansion_factor=args.expansion_factor,
         use_attention_pooling=args.use_attention_pooling,
     )
-    model.summary()
+    # Per-layer MACs and N6 compatibility, rather than a plain Keras summary:
+    # on this target the MAC budget and op support decide whether the model is
+    # deployable at all.
+    print_profile(model)
 
     # Save model config
     cfg = ModelConfig(

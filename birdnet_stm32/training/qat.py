@@ -35,29 +35,31 @@ def fake_quantize_weights(
 ) -> np.ndarray:
     """Simulate INT8 quantization on a weight array (quantize then dequantize).
 
+    Mirrors the grid TFLite actually uses for kernels: **symmetric**, zero-point
+    zero, values in ``[-(2**(b-1) - 1), 2**(b-1) - 1]``. Simulating an
+    asymmetric min/max grid here would train the model against a quantizer it
+    never meets at conversion time.
+
     Args:
         w: Weight tensor (float32).
         num_bits: Quantization bit width.
         per_channel: Per-channel (True) or per-tensor (False) quantization.
-        channel_axis: Axis for per-channel quantization.
+        channel_axis: Axis for per-channel quantization (may be negative).
 
     Returns:
         Fake-quantized weight tensor (float32, same shape).
     """
-    qmax = (1 << num_bits) - 1  # 255 for 8-bit
+    qmax = (1 << (num_bits - 1)) - 1  # 127 for 8-bit
 
     if per_channel and w.ndim > 1:
-        reduce_axes = tuple(i for i in range(w.ndim) if i != channel_axis)
-        w_min = w.min(axis=reduce_axes, keepdims=True)
-        w_max = w.max(axis=reduce_axes, keepdims=True)
+        axis = channel_axis % w.ndim  # normalise so negative axes match
+        reduce_axes = tuple(i for i in range(w.ndim) if i != axis)
+        amax = np.max(np.abs(w), axis=reduce_axes, keepdims=True)
     else:
-        w_min = w.min()
-        w_max = w.max()
+        amax = np.max(np.abs(w))
 
-    scale = (w_max - w_min) / qmax
-    scale = np.maximum(scale, 1e-10)
-
-    w_q = np.round((w - w_min) / scale) * scale + w_min
+    scale = np.maximum(amax / qmax, 1e-12)
+    w_q = np.clip(np.round(w / scale), -qmax, qmax) * scale
     return w_q.astype(np.float32)
 
 

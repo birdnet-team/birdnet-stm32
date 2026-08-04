@@ -244,3 +244,44 @@ class TestQATCallback:
         # Check tracked variables — none should be biases
         for var, _, _ in cb._tracked:
             assert "bias" not in var.name
+
+
+class TestQuantizationGridMatchesTFLite:
+    """The simulated grid must be the one TFLite uses for kernels."""
+
+    def test_grid_is_symmetric_around_zero(self):
+        """Quantized values must be integer multiples of a scale, with no offset.
+
+        TFLite quantizes kernels symmetrically (zero_point=0). An asymmetric
+        min/max grid would train against a quantizer conversion never applies.
+        """
+        w = np.linspace(-0.2, 1.0, 512).astype(np.float32)  # deliberately off-centre
+        fq = fake_quantize_weights(w, num_bits=8, per_channel=False)
+
+        scale = np.max(np.abs(w)) / 127.0
+        steps = fq / scale
+        np.testing.assert_allclose(steps, np.round(steps), atol=1e-3)
+        # Exact zero must survive: a nonzero zero-point would shift it.
+        assert fake_quantize_weights(np.zeros((4,), dtype=np.float32), per_channel=False).tolist() == [0.0] * 4
+
+    def test_per_channel_uses_per_channel_scales(self):
+        """Channels with very different magnitudes must not share one scale."""
+        w = np.zeros((1, 1, 1, 2), dtype=np.float32)
+        w[..., 0] = 1.0  # large channel
+        w[..., 1] = 0.001  # small channel
+
+        per_ch = fake_quantize_weights(w, per_channel=True, channel_axis=-1)
+        per_tensor = fake_quantize_weights(w, per_channel=False)
+
+        # Under one shared scale the small channel collapses toward zero;
+        # with its own scale it is represented exactly.
+        assert per_ch[..., 1] == pytest.approx(0.001, rel=1e-3)
+        assert per_tensor[..., 1] != pytest.approx(0.001, rel=1e-3)
+
+    def test_depthwise_axis_is_respected(self):
+        """Depthwise kernels quantize along axis -2, not the trailing axis."""
+        w = np.zeros((1, 1, 2, 1), dtype=np.float32)
+        w[:, :, 0, :] = 1.0
+        w[:, :, 1, :] = 0.001
+        fq = fake_quantize_weights(w, per_channel=True, channel_axis=-2)
+        assert fq[:, :, 1, :].item() == pytest.approx(0.001, rel=1e-3)

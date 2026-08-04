@@ -129,62 +129,6 @@ def smart_crop(
     return chunks if chunks else [audio[:chunk_size].astype(np.float32)]
 
 
-def get_s2n_from_spectrogram(spectrogram: np.ndarray) -> float:
-    """Compute a simple signal-to-noise proxy from a spectrogram (mean / std).
-
-    Args:
-        spectrogram: 2D spectrogram array.
-
-    Returns:
-        SNR-like scalar value.
-    """
-    signal = np.mean(spectrogram)
-    noise = np.std(spectrogram)
-    return signal / (noise + 1e-10)
-
-
-def get_s2n_from_audio(audio: np.ndarray) -> float:
-    """Compute a simple signal-to-noise proxy from raw audio (mean / std).
-
-    Args:
-        audio: 1D audio signal.
-
-    Returns:
-        SNR-like scalar value.
-    """
-    signal = np.mean(audio)
-    noise = np.std(audio)
-    return signal / (noise + 1e-10)
-
-
-def sort_by_s2n(samples: list[np.ndarray], threshold: float = 0.1) -> list[np.ndarray]:
-    """Sort samples by SNR proxy and filter out low-SNR ones. Keeps at least one.
-
-    Args:
-        samples: List of 2D spectrograms or 1D audio arrays.
-        threshold: Minimum normalized SNR to keep (in [0, 1]).
-
-    Returns:
-        Sorted (descending by SNR) and filtered samples.
-    """
-    if len(samples[0].shape) == 2:
-        s2n_values = np.array([get_s2n_from_spectrogram(spec) for spec in samples])
-    elif len(samples[0].shape) == 1:
-        s2n_values = np.array([get_s2n_from_audio(audio) for audio in samples])
-    else:
-        raise ValueError("Samples must be 1D or 2D arrays (raw audio or spectrograms).")
-
-    s2n_values /= s2n_values.max() + 1e-10
-
-    sorted_indices = np.argsort(s2n_values)[::-1]
-    sorted_samples = [samples[i] for i in sorted_indices]
-
-    filtered = [s for s, v in zip(sorted_samples, s2n_values[sorted_indices], strict=False) if v >= threshold]
-    if len(filtered) == 0:
-        filtered = [sorted_samples[0]]
-    return filtered
-
-
 def get_activity_ratio(x: np.ndarray, k: float = 2.0, max_active: float = 0.8, subsample: int = 512) -> float:
     """Compute the fraction of units above median + k * MAD, capped to avoid broadband noise.
 

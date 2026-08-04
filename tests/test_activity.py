@@ -1,73 +1,12 @@
-"""Unit tests for activity detection and signal-to-noise sorting."""
+"""Unit tests for activity detection and salient-chunk selection."""
 
 import numpy as np
 
 from birdnet_stm32.audio.activity import (
     get_activity_ratio,
-    get_s2n_from_audio,
-    get_s2n_from_spectrogram,
     pick_random_samples,
     sort_by_activity,
-    sort_by_s2n,
 )
-
-
-class TestS2NFromSpectrogram:
-    """Tests for get_s2n_from_spectrogram."""
-
-    def test_constant_input(self):
-        """Constant spectrogram has near-infinite SNR (mean/std -> high)."""
-        spec = np.ones((64, 128), dtype=np.float32)
-        snr = get_s2n_from_spectrogram(spec)
-        assert snr > 1e6  # std ≈ 0 -> large ratio
-
-    def test_noisy_input(self):
-        """Random spectrogram should return finite positive SNR."""
-        rng = np.random.default_rng(0)
-        spec = rng.standard_normal((64, 128)).astype(np.float32)
-        snr = get_s2n_from_spectrogram(spec)
-        assert np.isfinite(snr)
-
-
-class TestS2NFromAudio:
-    """Tests for get_s2n_from_audio."""
-
-    def test_silence(self):
-        """All-zero audio should return near-zero SNR."""
-        audio = np.zeros(1000, dtype=np.float32)
-        snr = get_s2n_from_audio(audio)
-        assert abs(snr) < 1e-3
-
-    def test_sine(self, sine_wave):
-        """Sine wave should return a finite SNR."""
-        snr = get_s2n_from_audio(sine_wave)
-        assert np.isfinite(snr)
-
-
-class TestSortByS2N:
-    """Tests for sort_by_s2n."""
-
-    def test_ordering(self):
-        """Higher-SNR samples should come first."""
-        quiet = np.random.default_rng(0).standard_normal((64, 128)).astype(np.float32) * 0.01
-        loud = np.ones((64, 128), dtype=np.float32) + 0.01 * np.random.default_rng(1).standard_normal((64, 128)).astype(
-            np.float32
-        )
-        result = sort_by_s2n([quiet, loud], threshold=0.0)
-        # Loud should sort before quiet
-        assert np.mean(result[0]) > np.mean(result[1])
-
-    def test_keeps_at_least_one(self):
-        """Even with high threshold, at least one sample is kept."""
-        samples = [np.zeros((64, 128), dtype=np.float32)]
-        result = sort_by_s2n(samples, threshold=0.99)
-        assert len(result) >= 1
-
-    def test_1d_audio(self):
-        """Should work with 1D audio arrays and return sorted results."""
-        samples = [np.random.default_rng(i).standard_normal(1000).astype(np.float32) for i in range(5)]
-        result = sort_by_s2n(samples, threshold=0.0)
-        assert len(result) >= 1  # at least one survives
 
 
 class TestGetActivityRatio:
