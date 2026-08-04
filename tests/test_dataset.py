@@ -63,3 +63,11 @@ class TestUpsampleMinority:
         # Small class should grow to ~50
         small_count = sum(1 for p in result if "small" in p)
         assert small_count >= 40  # Allow some variance
+
+    def test_preserves_noise_examples(self, tmp_path):
+        """Balancing output classes must retain all-zero noise examples."""
+        class_paths = [str(tmp_path / "bird" / f"{i}.wav") for i in range(4)]
+        noise_paths = [str(tmp_path / "noise" / f"{i}.wav") for i in range(3)]
+        result = upsample_minority_classes(class_paths + noise_paths, ["bird"], ratio=0.5)
+        assert set(noise_paths).issubset(result)
+        assert len(result) == len(class_paths) + len(noise_paths)

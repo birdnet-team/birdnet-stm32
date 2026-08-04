@@ -126,15 +126,19 @@ def upsample_minority_classes(
         ratio: Target fraction of the largest class size (0 < ratio <= 1).
 
     Returns:
-        Augmented list of file paths with upsampled minority classes.
+        Augmented list with output classes upsampled and all original
+        noise-like paths retained unchanged.
     """
     assert 0 < ratio <= 1, "Ratio must be in (0, 1]."
     class_to_paths: dict[str, list[str]] = {cls: [] for cls in classes}
+    noise_paths: list[str] = []
 
     for path in file_paths:
         class_name = os.path.basename(os.path.dirname(path))
         if class_name in class_to_paths:
             class_to_paths[class_name].append(path)
+        elif class_name.lower() in NOISE_CLASSES:
+            noise_paths.append(path)
 
     max_size = max(len(paths) for paths in class_to_paths.values())
     target_size = int(max_size * ratio)
@@ -148,5 +152,8 @@ def upsample_minority_classes(
             paths.extend(additional)
         augmented_paths.extend(paths)
 
+    # Noise-like folders intentionally have no output neuron. Keep their
+    # all-zero examples unchanged while balancing the positive classes.
+    augmented_paths.extend(noise_paths)
     np.random.shuffle(augmented_paths)
     return augmented_paths
