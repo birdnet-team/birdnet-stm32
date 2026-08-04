@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 from birdnet_stm32.audio.io import load_audio_file
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
+from birdnet_stm32.data.dataset import NOISE_CLASSES
 from birdnet_stm32.evaluation.pooling import pool_scores
 from birdnet_stm32.models.frontend import hybrid_fft_bins, normalize_frontend_name
 
@@ -116,10 +117,12 @@ def evaluate(
 
     for path in tqdm(files, total=len(files), desc="Evaluating", unit="file"):
         label_name = os.path.basename(os.path.dirname(path))
-        if label_name not in classes:
+        is_noise = label_name.lower() in NOISE_CLASSES
+        if label_name not in classes and not is_noise:
             continue
         target = np.zeros((num_classes,), dtype=np.float32)
-        target[classes.index(label_name)] = 1.0
+        if not is_noise:
+            target[classes.index(label_name)] = 1.0
 
         chunks = make_chunks_for_file(path, cfg, frontend, mag_scale, n_fft, overlap)
         if len(chunks) == 0:

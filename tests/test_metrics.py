@@ -85,6 +85,28 @@ class TestEvaluateMetrics:
         for key in ("roc-auc", "f1", "precision", "recall", "cmAP", "mAP", "ap_per_class"):
             assert key in metrics, f"Missing metric key: {key}"
 
+    def test_noise_folder_is_evaluated_as_all_zero(self, tmp_path):
+        """Noise files must contribute all-zero targets to false-positive metrics."""
+        import soundfile as sf
+
+        noise_dir = tmp_path / "noise"
+        noise_dir.mkdir()
+        path = noise_dir / "sample.wav"
+        sf.write(path, np.zeros(22050 * 3, dtype=np.float32), 22050)
+        cfg = {
+            "sample_rate": 22050,
+            "chunk_duration": 3,
+            "num_mels": 64,
+            "spec_width": 256,
+            "fft_length": 512,
+            "audio_frontend": "librosa",
+            "mag_scale": "none",
+        }
+        runner = FakeRunner(np.array([[0.7, 0.2]], dtype=np.float32))
+        _metrics, per_file, y_true, _y_scores = evaluate(runner, [str(path)], ["bird_a", "bird_b"], cfg)
+        assert len(per_file) == 1
+        assert np.all(y_true == 0)
+
     def test_no_valid_files_raises(self, tmp_path):
         """Evaluate with no matching files should raise RuntimeError."""
         cfg = {
