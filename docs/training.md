@@ -285,6 +285,13 @@ re-opening the same file 3 times across epochs.
 The reservoir maintains batch diversity by shuffling samples from many
 different files before yielding them.
 
+Training also checks host-available memory every 25 batches. It aborts before
+available RAM falls below an adaptive reserve (20% of host RAM, bounded between
+2 and 12 GiB), leaving the last completed-epoch checkpoint available for a
+safer restart. This protects the host from multiprocessing and TensorFlow
+memory spikes; it is not a substitute for choosing a conservative worker count
+and batch size.
+
 Tune with:
 
 - `--num_workers N` — number of worker processes (default 8, 0 = sequential)

@@ -124,6 +124,49 @@ class AdaptiveLoaderTuner(tf.keras.callbacks.Callback):
         }
 
 
+class HostMemoryGuard(tf.keras.callbacks.Callback):
+    """Abort training before host memory pressure makes the machine unusable."""
+
+    def __init__(
+        self,
+        check_every: int = 25,
+        reserve_gb: float = 12.0,
+        reserve_fraction: float = 0.20,
+    ):
+        super().__init__()
+        self.check_every = max(1, int(check_every))
+        self.reserve_gb = float(reserve_gb)
+        self.reserve_fraction = float(reserve_fraction)
+        self._steps = 0
+
+    def _memory_state(self) -> tuple[float, float, float]:
+        total_gb, available_gb = _read_meminfo_gb()
+        adaptive_reserve_gb = min(self.reserve_gb, max(2.0, total_gb * self.reserve_fraction))
+        return total_gb, available_gb, adaptive_reserve_gb
+
+    def on_train_batch_end(self, batch, logs=None):
+        self._steps += 1
+        if self._steps % self.check_every != 0:
+            return
+
+        _total_gb, available_gb, adaptive_reserve_gb = self._memory_state()
+        if available_gb > 0 and available_gb < adaptive_reserve_gb:
+            raise MemoryError(
+                "Host memory guard stopped training: "
+                f"{available_gb:.1f} GiB available is below the "
+                f"{adaptive_reserve_gb:.1f} GiB reserve. "
+                "The last completed-epoch checkpoint is still usable."
+            )
+
+    def on_epoch_end(self, epoch, logs=None):
+        _total_gb, available_gb, adaptive_reserve_gb = self._memory_state()
+        if available_gb > 0:
+            print(
+                f"[memory] epoch={epoch + 1} available={available_gb:.1f} GiB "
+                f"reserve={adaptive_reserve_gb:.1f} GiB"
+            )
+
+
 # Internal defaults: keep CLI simple while auto-balancing loader throughput
 # and memory usage at runtime.
 _LOADER_TUNE_ADJUST_EVERY = 200
@@ -371,7 +414,7 @@ def main():
     common_kwargs["max_inflight_files"] = initial_inflight
 
     train_loader_control: dict | None = {"max_inflight_files": int(initial_inflight)} if args.num_workers > 0 else None
-    extra_callbacks: list[tf.keras.callbacks.Callback] = []
+    extra_callbacks: list[tf.keras.callbacks.Callback] = [HostMemoryGuard()]
     if train_loader_control is not None:
         extra_callbacks.append(
             AdaptiveLoaderTuner(
