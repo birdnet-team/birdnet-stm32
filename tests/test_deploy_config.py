@@ -2,6 +2,7 @@
 
 import os
 
+from birdnet_stm32.deploy.board_test import _load_gen_app_config
 from birdnet_stm32.deploy.config import DeployConfig, resolve_deploy_config
 from birdnet_stm32.deploy.stedgeai import detect_board
 
@@ -55,3 +56,22 @@ class TestDetectBoard:
     def test_returns_none_or_string(self):
         result = detect_board()
         assert result is None or result.startswith("/dev/ttyACM")
+
+
+def test_generated_firmware_drops_nyquist_bin():
+    """Generated firmware geometry must match the hybrid model input."""
+    generator = _load_gen_app_config()
+    config = generator.generate_app_config_h(
+        {
+            "sample_rate": 24000,
+            "chunk_duration": 2.5,
+            "fft_length": 512,
+            "hop_length": 234,
+            "spec_width": 256,
+            "num_mels": 64,
+            "audio_frontend": "hybrid",
+        },
+        num_classes=25,
+    )
+    assert "#define APP_CHUNK_SAMPLES     60000" in config
+    assert "#define APP_FFT_BINS          (APP_FFT_LENGTH / 2)" in config

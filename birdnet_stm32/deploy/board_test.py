@@ -3,12 +3,12 @@
 Full on-device pipeline — nothing is precomputed on the host:
 1. Deploy model: stedgeai generate → patch NPU_Validation project → n6_loader
    build + flash.
-2. Firmware on board: read WAV from SD card → STFT on Cortex-M55 → NPU
-   inference → results over UART.
+2. Firmware on board: read WAV from SD card → frontend-specific preprocessing
+   (raw normalization, STFT, or STFT + mel) → NPU inference → UART results.
 3. This script captures UART output and parses per-file predictions.
 
 Requires:
-- USB-connected STM32N6570-DK with SD card containing audio/ and labels.txt.
+- USB-connected STM32N6570-DK with an SD card containing audio/ WAV files.
 - pyserial (pip install pyserial).
 """
 

@@ -25,7 +25,8 @@ void stft_magnitude(const float *audio, uint32_t chunk_samples,
                     uint32_t fft_length, uint32_t hop_length,
                     uint32_t spec_width, float *out)
 {
-    const uint32_t fft_bins = fft_length / 2 + 1;
+    /* The model contract drops Nyquist, matching hybrid_fft_bins() in Python. */
+    const uint32_t fft_bins = fft_length / 2;
 
     /* Working buffers on the stack (512-point FFT = 2 KB, manageable). */
     float window[512];          /* fft_length <= 512 */
@@ -58,14 +59,11 @@ void stft_magnitude(const float *audio, uint32_t chunk_samples,
         /* Bin 0 (DC): magnitude is |fft_buf[0]| */
         out[0 * spec_width + t] = fabsf(fft_buf[0]);
 
-        /* Bins 1 .. fft_length/2 - 1 */
-        for (uint32_t f = 1; f < fft_bins - 1; f++) {
+        /* Bins 1 .. fft_length/2 - 1. Nyquist is intentionally omitted. */
+        for (uint32_t f = 1; f < fft_bins; f++) {
             float re = fft_buf[2 * f];
             float im = fft_buf[2 * f + 1];
             out[f * spec_width + t] = sqrtf(re * re + im * im);
         }
-
-        /* Bin fft_length/2 (Nyquist): magnitude is |fft_buf[1]| */
-        out[(fft_bins - 1) * spec_width + t] = fabsf(fft_buf[1]);
     }
 }

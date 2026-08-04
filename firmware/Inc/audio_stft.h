@@ -22,7 +22,7 @@
  * @param hop_length  Hop between successive frames (e.g. 258).
  * @param spec_width  Number of STFT frames to produce.
  * @param out         Output buffer: [fft_bins x spec_width] floats,
- *                    where fft_bins = fft_length / 2 + 1.
+ *                    where fft_bins = fft_length / 2 (Nyquist omitted).
  *                    Must be allocated by caller.
  */
 void stft_magnitude(const float *audio, uint32_t chunk_samples,

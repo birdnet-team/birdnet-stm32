@@ -28,7 +28,7 @@
 #define APP_CHUNK_DURATION    2.9
 #define APP_CHUNK_SAMPLES     63945
 #define APP_FFT_LENGTH        512
-#define APP_FFT_BINS          (APP_FFT_LENGTH / 2 + 1)
+#define APP_FFT_BINS          (APP_FFT_LENGTH / 2)
 #define APP_HOP_LENGTH        172
 #define APP_SPEC_WIDTH        256
 #define APP_NUM_MELS          64

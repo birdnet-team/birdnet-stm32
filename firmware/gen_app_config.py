@@ -86,7 +86,7 @@ def generate_app_config_h(model_cfg: dict, num_classes: int) -> str:
 #define APP_CHUNK_DURATION    {chunk_literal}
 #define APP_CHUNK_SAMPLES     {chunk_samples}
 #define APP_FFT_LENGTH        {fft_len}
-#define APP_FFT_BINS          (APP_FFT_LENGTH / 2 + 1)
+#define APP_FFT_BINS          (APP_FFT_LENGTH / 2)
 #define APP_HOP_LENGTH        {hop}
 #define APP_SPEC_WIDTH        {sw}
 #define APP_NUM_MELS          {num_mels}
@@ -151,10 +151,12 @@ def _guess_labels_path(config_path: Path) -> Path | None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("model_config", type=Path, help="Path to *_model_config.json")
-    parser.add_argument("labels_file", type=Path, nargs="?", default=None,
-                        help="Path to *_labels.txt (auto-detected if omitted)")
-    parser.add_argument("-o", "--output-dir", type=Path, default=None,
-                        help="Output directory for headers (default: Inc/)")
+    parser.add_argument(
+        "labels_file", type=Path, nargs="?", default=None, help="Path to *_labels.txt (auto-detected if omitted)"
+    )
+    parser.add_argument(
+        "-o", "--output-dir", type=Path, default=None, help="Output directory for headers (default: Inc/)"
+    )
     args = parser.parse_args()
 
     # Load model config
@@ -168,8 +170,7 @@ def main() -> None:
     else:
         labels = model_cfg.get("class_names", [])
         if not labels:
-            print("[WARN] No labels file found and no class_names in config; "
-                  "using generic labels", file=sys.stderr)
+            print("[WARN] No labels file found and no class_names in config; using generic labels", file=sys.stderr)
             n = model_cfg.get("num_classes", 10)
             labels = [f"class_{i}" for i in range(n)]
 
@@ -183,11 +184,13 @@ def main() -> None:
     # Write app_config.h
     config_h = out_dir / "app_config.h"
     config_h.write_text(generate_app_config_h(model_cfg, num_classes))
-    print(f"[OK] {config_h}  (sr={model_cfg['sample_rate']}, "
-          f"chunk={model_cfg['chunk_duration']}s, "
-          f"samples={int(model_cfg['sample_rate'] * model_cfg['chunk_duration'])}, "
-          f"frontend={model_cfg.get('audio_frontend', 'hybrid')}, "
-          f"classes={num_classes})")
+    print(
+        f"[OK] {config_h}  (sr={model_cfg['sample_rate']}, "
+        f"chunk={model_cfg['chunk_duration']}s, "
+        f"samples={int(model_cfg['sample_rate'] * model_cfg['chunk_duration'])}, "
+        f"frontend={model_cfg.get('audio_frontend', 'hybrid')}, "
+        f"classes={num_classes})"
+    )
 
     # Write app_labels.h
     labels_h = out_dir / "app_labels.h"

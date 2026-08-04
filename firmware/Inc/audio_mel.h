@@ -16,7 +16,7 @@
  * Builds a Slaney-normalized triangular mel filterbank with the given
  * parameters.  Must be called once before mel_filterbank().
  *
- * @param fft_bins    Number of FFT frequency bins (fft_length / 2 + 1).
+ * @param fft_bins    Number of FFT frequency bins (fft_length / 2; Nyquist omitted).
  * @param num_mels    Number of mel bands.
  * @param sample_rate Audio sample rate in Hz.
  * @param fmin        Lowest mel filter center frequency (Hz).

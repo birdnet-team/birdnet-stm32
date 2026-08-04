@@ -79,6 +79,24 @@ static float mel_buf[APP_NUM_MELS * APP_SPEC_WIDTH]
 #endif
 /* raw: audio_buf is fed directly to NPU, no extra buffer needed */
 
+#if APP_AUDIO_FRONTEND == APP_FRONTEND_RAW
+static void peak_normalize(float *audio, uint32_t num_samples)
+{
+    float peak = 0.0f;
+
+    for (uint32_t i = 0; i < num_samples; i++) {
+        float magnitude = fabsf(audio[i]);
+        if (magnitude > peak)
+            peak = magnitude;
+    }
+
+    /* Match the raw-audio preprocessing used for training and PTQ calibration. */
+    float scale = peak + 1.0e-6f;
+    for (uint32_t i = 0; i < num_samples; i++)
+        audio[i] /= scale;
+}
+#endif
+
 /* ---- NPU inference ------------------------------------------------------- */
 
 static bool run_inference(const float *spect, float *output)
@@ -192,24 +210,28 @@ int main(void)
     aiValidationInit();
 
     printf("\n=== BirdNET-STM32 SD Card Inference ===\n");
+    unsigned long chunk_seconds = APP_CHUNK_SAMPLES / APP_SAMPLE_RATE;
+    unsigned long chunk_milliseconds =
+        ((APP_CHUNK_SAMPLES % APP_SAMPLE_RATE) * 1000UL) / APP_SAMPLE_RATE;
 #if APP_AUDIO_FRONTEND == APP_FRONTEND_RAW
     printf("[INFO] Frontend: raw (waveform → NPU)\n");
-    printf("[INFO] Sample rate: %d Hz, chunk: %ds (%d samples), classes: %d\n",
-           (int)APP_SAMPLE_RATE, (int)APP_CHUNK_DURATION, (int)APP_CHUNK_SAMPLES, APP_NUM_CLASSES);
+    printf("[INFO] Sample rate: %d Hz, chunk: %lu.%03lus (%d samples), classes: %d\n",
+           (int)APP_SAMPLE_RATE, chunk_seconds, chunk_milliseconds,
+           (int)APP_CHUNK_SAMPLES, APP_NUM_CLASSES);
 #elif APP_AUDIO_FRONTEND == APP_FRONTEND_PRECOMPUTED
-    printf("[INFO] Frontend: precomputed (STFT + mel on M55 → NPU)\n");
-    printf("[INFO] Sample rate: %d Hz, chunk: %ds, FFT: %d, hop: %d, "
+    printf("[INFO] Frontend: librosa (STFT + mel on M55 → NPU)\n");
+    printf("[INFO] Sample rate: %d Hz, chunk: %lu.%03lus, FFT: %d, hop: %d, "
            "spec: %dx%d, mels: %d, classes: %d\n",
-           (int)APP_SAMPLE_RATE, (int)APP_CHUNK_DURATION, APP_FFT_LENGTH,
+           (int)APP_SAMPLE_RATE, chunk_seconds, chunk_milliseconds, APP_FFT_LENGTH,
            APP_HOP_LENGTH, APP_FFT_BINS, APP_SPEC_WIDTH, APP_NUM_MELS, APP_NUM_CLASSES);
     mel_init(APP_FFT_BINS, APP_NUM_MELS, APP_SAMPLE_RATE, 150.0f,
              (float)(APP_SAMPLE_RATE / 2));
     printf("[OK] Mel filterbank initialized\n");
 #else
     printf("[INFO] Frontend: hybrid (STFT on M55 → NPU)\n");
-    printf("[INFO] Sample rate: %d Hz, chunk: %ds, FFT: %d, hop: %d, "
+    printf("[INFO] Sample rate: %d Hz, chunk: %lu.%03lus, FFT: %d, hop: %d, "
            "spec: %dx%d, classes: %d\n",
-           (int)APP_SAMPLE_RATE, (int)APP_CHUNK_DURATION, APP_FFT_LENGTH,
+           (int)APP_SAMPLE_RATE, chunk_seconds, chunk_milliseconds, APP_FFT_LENGTH,
            APP_HOP_LENGTH, APP_FFT_BINS, APP_SPEC_WIDTH, APP_NUM_CLASSES);
 #endif
 
@@ -313,10 +335,11 @@ int main(void)
         const float *npu_input = NULL;
 
 #if APP_AUDIO_FRONTEND == APP_FRONTEND_RAW
-        /* Raw: feed waveform directly to NPU (no STFT) */
+        /* Raw: reproduce training-time normalization, then feed the waveform. */
+        peak_normalize(audio_buf, APP_CHUNK_SAMPLES);
         npu_input = audio_buf;
 #elif APP_AUDIO_FRONTEND == APP_FRONTEND_PRECOMPUTED
-        /* Precomputed: STFT → mel filterbank on M55 */
+        /* Librosa: STFT → mel filterbank on M55 */
         t0 = HAL_GetTick();
         stft_magnitude(audio_buf, APP_CHUNK_SAMPLES,
                        APP_FFT_LENGTH, APP_HOP_LENGTH,
