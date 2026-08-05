@@ -13,6 +13,7 @@ Usage::
         --epochs 10 --learning_rate 0.0001
 """
 
+import argparse
 import math
 import os
 
@@ -166,7 +167,7 @@ def _detect_loss(model: tf.keras.Model) -> str:
     return "binary_crossentropy"
 
 
-def run_qat(args) -> None:
+def run_qat(args: argparse.Namespace) -> None:
     """Run QAT fine-tuning from CLI args.
 
     Loads a pretrained model, freezes BatchNorm layers, and fine-tunes

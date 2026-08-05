@@ -161,10 +161,7 @@ class HostMemoryGuard(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         _total_gb, available_gb, adaptive_reserve_gb = self._memory_state()
         if available_gb > 0:
-            print(
-                f"[memory] epoch={epoch + 1} available={available_gb:.1f} GiB "
-                f"reserve={adaptive_reserve_gb:.1f} GiB"
-            )
+            print(f"[memory] epoch={epoch + 1} available={available_gb:.1f} GiB reserve={adaptive_reserve_gb:.1f} GiB")
 
 
 # Internal defaults: keep CLI simple while auto-balancing loader throughput

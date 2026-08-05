@@ -6,6 +6,7 @@ float32 I/O and INT8 internal ops for STM32N6 NPU deployment.
 
 import os
 import random
+from collections.abc import Callable, Iterable, Iterator
 
 import numpy as np
 import tensorflow as tf
@@ -16,7 +17,9 @@ from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
 from birdnet_stm32.models.frontend import normalize_frontend_name
 
 
-def representative_data_gen(file_paths: list[str], cfg: dict, num_samples: int = 100, snr_threshold: float = 0.01):
+def representative_data_gen(
+    file_paths: list[str], cfg: dict, num_samples: int = 100, snr_threshold: float = 0.01
+) -> Iterator[list[np.ndarray]]:
     """Build a representative dataset generator for TFLite PTQ calibration.
 
     Yields one input tensor per iteration in the exact shape expected by the model.
@@ -110,7 +113,7 @@ def representative_data_gen(file_paths: list[str], cfg: dict, num_samples: int =
 
 def convert_to_tflite(
     model: tf.keras.Model,
-    rep_data_gen,
+    rep_data_gen: Callable[[], Iterable[list[np.ndarray]]],
     output_path: str,
     quantization: str = "ptq",
     per_tensor: bool = False,

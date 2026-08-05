@@ -1,5 +1,7 @@
 """Validation utilities for comparing Keras vs. TFLite model outputs."""
 
+from collections.abc import Callable, Iterable
+
 import numpy as np
 import tensorflow as tf
 
@@ -48,7 +50,11 @@ def pearson_correlation(a: np.ndarray, b: np.ndarray, eps: float = 1e-12) -> flo
     return float(np.dot(a, b) / denom)
 
 
-def validate_models(keras_model: tf.keras.Model, tflite_model_path: str, rep_data_gen) -> dict[str, float]:
+def validate_models(
+    keras_model: tf.keras.Model,
+    tflite_model_path: str,
+    rep_data_gen: Callable[[], Iterable[list[np.ndarray]]],
+) -> dict[str, float]:
     """Compare Keras vs. TFLite predictions and print summary statistics.
 
     Runs the TFLite interpreter without delegates to minimize numeric differences.

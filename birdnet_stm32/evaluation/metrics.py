@@ -4,6 +4,7 @@ import math
 import os
 import resource
 import time
+from typing import Protocol
 
 import numpy as np
 from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score
@@ -14,6 +15,14 @@ from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
 from birdnet_stm32.data.dataset import NOISE_CLASSES
 from birdnet_stm32.evaluation.pooling import pool_scores
 from birdnet_stm32.models.frontend import hybrid_fft_bins, normalize_frontend_name
+
+
+class ModelRunner(Protocol):
+    """Inference interface shared by Keras and TFLite runners."""
+
+    def predict(self, x_batch: np.ndarray) -> np.ndarray:
+        """Return model predictions for one input batch."""
+        ...
 
 
 def make_chunks_for_file(
@@ -74,7 +83,7 @@ def make_chunks_for_file(
 
 
 def evaluate(
-    model_runner,
+    model_runner: ModelRunner,
     files: list[str],
     classes: list[str],
     cfg: dict,
@@ -262,7 +271,7 @@ def bootstrap_ap_ci(
     Returns:
         List of dicts, one per class:
         ``{"class": str, "ap": float, "ci_lower": float, "ci_upper": float,
-          "n_positive": int, "n_total": int}``.
+        "n_positive": int, "n_total": int}``.
     """
     rng = np.random.default_rng(seed)
     n_samples = y_true.shape[0]

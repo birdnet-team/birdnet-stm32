@@ -95,7 +95,7 @@ class TFLiteRunner:
         return self.interpreter.get_tensor(self.output_index)
 
 
-def load_model_runner(model_path: str):
+def load_model_runner(model_path: str) -> KerasRunner | TFLiteRunner:
     """Load a .keras or .tflite model and return a runner with predict().
 
     Args:
