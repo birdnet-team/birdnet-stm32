@@ -109,8 +109,9 @@ operator.
 The activation ranges come from the converter's exact deterministic,
 class-stratified calibration manifest and preprocessing path. The untouched
 float checkpoint is also loaded as a frozen teacher. Training adds per-output
-Bernoulli KL divergence and both mean and worst-quartile per-sample cosine
-distance to the label loss. Background and low-confidence probabilities remain
+Bernoulli KL divergence and both mean and worst-sample per-sample cosine
+distance to the label loss. The default tail objective targets the worst 10%
+of each batch. Background and low-confidence probabilities remain
 calibrated while the lower parity tail is optimized directly; hard-label BCE
 alone barely penalizes those errors.
 

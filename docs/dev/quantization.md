@@ -30,10 +30,11 @@ The implementation is native Keras 3 (`birdnet_stm32/training/qat.py`):
    raw-frontend internals on asymmetric per-tensor INT8 grids.
 5. Fine-tune at a low learning rate, while checkpointing the clean model that
    shares standard variables and receives synchronized frontend variables.
-6. Add Bernoulli KL plus mean and worst-quartile per-sample cosine consistency
-   against a frozen copy of the untouched float checkpoint, preserving
-   calibrated low-confidence outputs while directly protecting the lower
-   parity tail.
+6. Add Bernoulli KL plus mean and worst-sample per-sample cosine consistency
+   against a frozen copy of the untouched float checkpoint. By default the
+   tail term targets the worst 10% of each batch with 0.75 weight, preserving
+   calibrated low-confidence outputs while directly protecting the p05 parity
+   tail.
 
 Because no FakeQuant nodes are saved, the resulting `.keras` model is fully
 compatible with the STM32N6 NPU after standard PTQ conversion.
@@ -42,6 +43,7 @@ compatible with the STM32N6 NPU after standard PTQ conversion.
 python -m birdnet_stm32 train --data_path_train data/train \
   --qat --checkpoint_path checkpoints/best_model.keras \
   --qat_calibration_samples 1024 \
+  --qat_cosine_tail_fraction 0.10 --qat_cosine_tail_weight 0.75 \
   --epochs 10 --learning_rate 0.0001
 ```
 

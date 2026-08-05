@@ -70,7 +70,7 @@ ordered output contract.
   per-tensor, plus dynamic range mode.
 - **Quantization-aware training (QAT)**: per-channel kernel and per-tensor
   activation INT8 simulation via `--qat`, aligned to final conversion's exact
-  calibration manifest. Frozen-teacher KL plus mean and worst-quartile cosine
+  calibration manifest. Frozen-teacher KL plus mean and worst-sample cosine
   consistency protect mean and tail parity. The saved deployment checkpoint
   has no FakeQuant ops and remains N6 compatible.
 - **Optuna hyperparameter search**: `--tune --n_trials 20` for automated

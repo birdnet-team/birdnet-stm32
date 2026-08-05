@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and per-tensor activation INT8 grids, including the model input and internal
   raw-frontend boundaries. QAT and final conversion share one exact
   deterministic calibration manifest; frozen-teacher Bernoulli KL plus mean
-  and worst-quartile cosine consistency preserve calibrated outputs and
+  and configurable worst-sample cosine consistency preserve calibrated outputs and
   lower-tail parity, and
   synchronized clean checkpoints contain no training-only quantization
   operators.

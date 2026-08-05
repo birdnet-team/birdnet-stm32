@@ -165,9 +165,10 @@ graph is saved, so no FakeQuant ops remain in the model.
 
 A frozen copy of the untouched checkpoint acts as the teacher. QAT minimizes
 the normal label loss, per-output Bernoulli KL divergence, and both mean and
-worst-quartile per-sample cosine distance from that teacher. This constrains
-background and low-confidence probabilities while directly optimizing the
-lower tail that the release parity gate measures.
+worst-sample per-sample cosine distance from that teacher. The defaults apply
+the tail loss to the worst 10% of each batch with 0.75 weight; both values are
+configurable. This constrains background and low-confidence probabilities
+while directly optimizing the lower tail that the release parity gate measures.
 
 ```bash
 # Step 1: Normal training
@@ -179,6 +180,7 @@ python -m birdnet_stm32 train --data_path_train data/train \
   --data_path_val data/validation --classes_file data/labels.txt --qat \
   --checkpoint_path checkpoints/model.keras \
   --qat_calibration_samples 1024 \
+  --qat_cosine_tail_fraction 0.10 --qat_cosine_tail_weight 0.75 \
   --epochs 6 --learning_rate 0.00002
 
 # Step 3: Convert the QAT model
@@ -279,6 +281,11 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--tune` | False | Run Optuna hyperparameter search |
 | `--n_trials` | 20 | Number of Optuna trials |
 | `--qat` | False | Quantization-aware fine-tuning |
+| `--qat_calibration_samples` | 1024 | Exact stratified samples used for QAT and conversion calibration |
+| `--qat_distillation_weight` | 1.0 | Frozen-teacher Bernoulli-KL weight |
+| `--qat_cosine_weight` | 0.10 | Mean teacher/student cosine-loss weight |
+| `--qat_cosine_tail_weight` | 0.75 | Worst-sample cosine-loss weight |
+| `--qat_cosine_tail_fraction` | 0.10 | Fraction of each batch included in the worst-sample loss |
 | `--linear_probe` | False | Freeze backbone and train only classifier head |
 
 ## Data pipeline
