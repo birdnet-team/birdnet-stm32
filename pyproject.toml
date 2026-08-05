@@ -40,6 +40,7 @@ dev = [
     "ruff>=0.4.0",
     "pre-commit>=3.7.0",
     "mypy>=1.10.0",
+    "pyserial>=3.5",
 ]
 docs = [
     "mkdocs-material>=9.5",
