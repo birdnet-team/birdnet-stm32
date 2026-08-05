@@ -89,7 +89,7 @@ part of the model contract.
 - **Magnitude scaling**: `pwl` (piecewise-linear, quantization-friendly), `pcen`, `db`, `none`
 - **Model**: DS-CNN with configurable width (`--alpha`) and depth (`--depth_multiplier`), SE attention and inverted residuals (on by default; disable with `--no_se`, `--no_inverted_residual`), and optional attention pooling (`--use_attention_pooling`)
 - **Augmentation**: Dirichlet multi-source mixup with multi-label union targets for overlapping vocalizations, SpecAugment (on by default), smart crop for long recordings
-- **Optimization**: linear warmup into cosine LR decay, Adam/SGD/AdamW, gradient clipping (on by default), mixed precision (FP16). Best checkpoint and early stopping track validation ROC-AUC
+- **Optimization**: linear warmup into cosine LR decay, Adam/SGD/AdamW, gradient clipping (on by default), mixed precision (FP16). Standard training checkpoints track validation ROC-AUC; QAT checkpoints track lower-tail teacher/student parity and retain ROC-AUC for the task-accuracy gate
 - **QAT**: native Keras 3 quantization-aware fine-tuning via `--qat` — uses the converter's exact calibration manifest to simulate the INT8 input, per-channel kernels, fused activation boundaries, and otherwise-opaque raw-frontend internals; frozen-teacher KL plus mean and configurable worst-sample cosine consistency protect probability calibration and lower-tail parity while a clean deployment model is checkpointed
 - **Linear probing**: `--linear_probe` freezes a pretrained backbone and trains only the classifier head
 - **Hyperparameter tuning**: Optuna search via `--tune --n_trials N`

@@ -211,7 +211,9 @@ The probe model is saved as `{name}_probe.keras` with a new labels file.
 
 A two-epoch linear warmup reaches `--learning_rate` (default 0.001), followed
 by cosine decay to near-zero over `--epochs` (default 50). Best-checkpoint
-selection and early stopping monitor validation ROC-AUC with patience 10.
+selection and early stopping monitor validation ROC-AUC with patience 10 for
+standard training. QAT instead minimizes validation teacher/student tail loss;
+the paired catalog evaluation remains the release-deciding accuracy gate.
 
 ### Hyperparameter tuning with Optuna
 

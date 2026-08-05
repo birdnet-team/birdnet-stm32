@@ -30,6 +30,8 @@ The implementation is native Keras 3 (`birdnet_stm32/training/qat.py`):
    raw-frontend internals on asymmetric per-tensor INT8 grids.
 5. Fine-tune at a low learning rate, while checkpointing the clean model that
    shares standard variables and receives synchronized frontend variables.
+   Select QAT checkpoints by validation tail loss; record ROC-AUC and enforce
+   the task-accuracy gate during paired float/INT8 evaluation.
 6. Add Bernoulli KL plus mean and worst-sample per-sample cosine consistency
    against a frozen copy of the untouched float checkpoint. By default the
    tail term targets the worst 10% of each batch with 0.75 weight, preserving
