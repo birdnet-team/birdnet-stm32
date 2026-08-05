@@ -81,13 +81,19 @@ class FakeQuantActivation(layers.Layer):
 
     def call(self, inputs):
         """Apply the same scalar affine grid used for TFLite activations."""
-        return tf.quantization.fake_quant_with_min_max_args(
-            inputs,
-            min=self.minimum,
-            max=self.maximum,
-            num_bits=self.num_bits,
-            narrow_range=False,
+        qmin = -(1 << (self.num_bits - 1))
+        qmax = (1 << (self.num_bits - 1)) - 1
+        scale = tf.cast((self.maximum - self.minimum) / (qmax - qmin), inputs.dtype)
+        zero_point = tf.clip_by_value(
+            tf.round(tf.cast(qmin, inputs.dtype) - tf.cast(self.minimum, inputs.dtype) / scale),
+            tf.cast(qmin, inputs.dtype),
+            tf.cast(qmax, inputs.dtype),
         )
+        quantized = tf.clip_by_value(tf.round(inputs / scale) + zero_point, qmin, qmax)
+        dequantized = (quantized - zero_point) * scale
+        # Explicit straight-through estimator. Unlike TensorFlow's FakeQuant
+        # gradient kernel, this is supported by deterministic GPU execution.
+        return inputs + tf.stop_gradient(dequantized - inputs)
 
     def get_config(self):
         """Return serializable quantizer settings."""
@@ -106,15 +112,10 @@ def _fake_quantize_kernel_tensor(kernel: tf.Tensor, channel_axis: int) -> tf.Ten
         inverse = np.argsort(permutation).tolist()
         kernel = tf.transpose(kernel, permutation)
     reduce_axes = tuple(range(rank - 1))
-    maximum = tf.reduce_max(tf.abs(kernel), axis=reduce_axes)
-    maximum = tf.maximum(maximum, tf.cast(1e-12, kernel.dtype))
-    quantized = tf.quantization.fake_quant_with_min_max_vars_per_channel(
-        kernel,
-        min=-maximum,
-        max=maximum,
-        num_bits=8,
-        narrow_range=True,
-    )
+    maximum = tf.stop_gradient(tf.reduce_max(tf.abs(kernel), axis=reduce_axes, keepdims=True))
+    scale = tf.maximum(maximum / tf.cast(127.0, kernel.dtype), tf.cast(1e-12, kernel.dtype))
+    dequantized = tf.clip_by_value(tf.round(kernel / scale), -127.0, 127.0) * scale
+    quantized = kernel + tf.stop_gradient(dequantized - kernel)
     return tf.transpose(quantized, inverse) if transposed else quantized
 
 
