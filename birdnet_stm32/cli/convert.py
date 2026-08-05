@@ -1,6 +1,7 @@
 """CLI entry point for TFLite conversion."""
 
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -127,6 +128,20 @@ def _write_report(path: str, report: dict) -> None:
     print(f"Conversion report saved to {path}")
 
 
+def _manifest_record(paths: list[str], root: str) -> dict:
+    """Return a reproducible, compact identity for an audio path manifest."""
+    relative_paths = [os.path.relpath(path, root).replace(os.sep, "/") for path in paths]
+    payload = "\n".join(relative_paths).encode("utf-8")
+    class_counts: dict[str, int] = defaultdict(int)
+    for path in relative_paths:
+        class_counts[path.split("/", 1)[0]] += 1
+    return {
+        "count": len(relative_paths),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "class_counts": dict(sorted(class_counts.items())),
+    }
+
+
 def main():
     """Convert a trained Keras model to quantized TFLite and validate."""
     args = get_args()
@@ -147,6 +162,7 @@ def main():
     print(f"Loaded model from {args.checkpoint_path}")
 
     # Build representative dataset generator
+    data_manifests: dict[str, dict] = {}
     if os.path.isdir(args.data_path_train):
         configured_classes = cfg.get("class_names") or None
         file_paths, classes = load_file_paths_from_directory(args.data_path_train, classes=configured_classes)
@@ -155,7 +171,12 @@ def main():
 
         class_count = len({os.path.basename(os.path.dirname(path)) for path in file_paths})
         stratified_paths = _stratified_sample_paths(file_paths, args.num_samples, seed=42)
+        if len(stratified_paths) != args.num_samples:
+            raise ValueError(
+                f"Requested {args.num_samples} calibration paths but only {len(stratified_paths)} are available."
+            )
         print(f"Representative dataset: {len(stratified_paths)} stratified samples from {class_count} folders.")
+        data_manifests["calibration"] = _manifest_record(stratified_paths, args.data_path_train)
 
         def rep_data_gen():
             return representative_data_gen(stratified_paths, cfg, num_samples=len(stratified_paths))
@@ -170,7 +191,12 @@ def main():
         )
         if not val_paths_subset:
             raise ValueError("No files remain for disjoint quantization validation.")
+        if len(val_paths_subset) != args.validate_samples:
+            raise ValueError(
+                f"Requested {args.validate_samples} validation paths but only {len(val_paths_subset)} are available."
+            )
         print(f"Validation dataset: {len(val_paths_subset)} disjoint stratified samples.")
+        data_manifests["validation"] = _manifest_record(val_paths_subset, args.data_path_train)
 
         def rep_data_gen_val():
             return representative_data_gen(val_paths_subset, cfg, num_samples=len(val_paths_subset))
@@ -215,6 +241,7 @@ def main():
         "quantization": args.quantization,
         "per_tensor": args.per_tensor,
         "quality_gate_passed": False,
+        "data_manifests": data_manifests,
     }
 
     try:

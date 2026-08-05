@@ -17,13 +17,14 @@ from birdnet_stm32.models.frontend import normalize_frontend_name
 
 
 def representative_data_gen(
-    file_paths: list[str], cfg: dict, num_samples: int = 100, snr_threshold: float = 0.01
+    file_paths: list[str], cfg: dict, num_samples: int = 100, snr_threshold: float = 0.0
 ) -> Iterator[list[np.ndarray]]:
     """Build a representative dataset generator for TFLite PTQ calibration.
 
     Yields one input tensor per iteration in the exact shape expected by the model.
-    Filters out near-silent chunks (below snr_threshold) to avoid widening INT8
-    quantization ranges with uninformative data.
+    Includes quiet and nuisance recordings by default because they are part of
+    the deployed input distribution and every requested calibration path must
+    contribute deterministically. Callers may opt into energy filtering.
 
     Args:
         file_paths: Audio file paths to sample from.
