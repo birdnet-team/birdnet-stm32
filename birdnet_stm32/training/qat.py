@@ -557,6 +557,8 @@ def run_qat(args: argparse.Namespace) -> None:
         gradient_clip_norm=args.grad_clip,
         checkpoint_model=deployment_model,
         checkpoint_sync=lambda: sync_frontend_weights(qat_model, deployment_model),
+        checkpoint_monitor="val_distillation_cosine_tail_loss",
+        checkpoint_mode="min",
     )
     print(f"[QAT] Clean quantization-ready checkpoint saved to {qat_path}")
     print(f"[QAT] Activation calibration ranges saved to {ranges_path}")

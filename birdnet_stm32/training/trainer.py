@@ -123,6 +123,8 @@ def train_model(
     extra_callbacks: list[tf.keras.callbacks.Callback] | None = None,
     checkpoint_model: tf.keras.Model | None = None,
     checkpoint_sync: Callable[[], None] | None = None,
+    checkpoint_monitor: str = _MONITOR,
+    checkpoint_mode: str = _MONITOR_MODE,
 ) -> tf.keras.callbacks.History:
     """Train a model with cosine LR schedule, early stopping, and checkpointing.
 
@@ -156,6 +158,10 @@ def train_model(
             instead of training-only wrappers such as fake-quant layers.
         checkpoint_sync: Optional hook that copies separately cloned weights
             into ``checkpoint_model`` immediately before each save.
+        checkpoint_monitor: Validation metric used for checkpoint selection
+            and early stopping.
+        checkpoint_mode: Whether a larger (``max``) or smaller (``min``)
+            monitored value is better.
 
     Returns:
         Keras training history.
@@ -167,6 +173,8 @@ def train_model(
         raise ValueError("steps_per_epoch must be > 0")
     if val_steps is None or val_steps <= 0:
         val_steps = 1
+    if checkpoint_mode not in {"min", "max"}:
+        raise ValueError("checkpoint_mode must be 'min' or 'max'")
 
     os.makedirs(os.path.dirname(checkpoint_path) or ".", exist_ok=True)
 
@@ -264,13 +272,13 @@ def train_model(
         def __init__(self, target: tf.keras.Model):
             super().__init__()
             self.target = target
-            self.best = -float("inf") if _MONITOR_MODE == "max" else float("inf")
+            self.best = -float("inf") if checkpoint_mode == "max" else float("inf")
 
         def on_epoch_end(self, epoch, logs=None):
-            value = (logs or {}).get(_MONITOR)
+            value = (logs or {}).get(checkpoint_monitor)
             if value is None:
                 return
-            improved = value > self.best if _MONITOR_MODE == "max" else value < self.best
+            improved = value > self.best if checkpoint_mode == "max" else value < self.best
             if improved:
                 self.best = float(value)
                 if checkpoint_sync is not None:
@@ -288,14 +296,21 @@ def train_model(
     checkpoint_callback: tf.keras.callbacks.Callback
     if checkpoint_model is None or checkpoint_model is model:
         checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
-            checkpoint_path, monitor=_MONITOR, save_best_only=True, mode=_MONITOR_MODE, save_weights_only=False
+            checkpoint_path,
+            monitor=checkpoint_monitor,
+            save_best_only=True,
+            mode=checkpoint_mode,
+            save_weights_only=False,
         )
     else:
         checkpoint_callback = _SharedWeightsCheckpoint(checkpoint_model)
 
     callbacks = [
         tf.keras.callbacks.EarlyStopping(
-            monitor=_MONITOR, patience=patience, restore_best_weights=True, mode=_MONITOR_MODE
+            monitor=checkpoint_monitor,
+            patience=patience,
+            restore_best_weights=True,
+            mode=checkpoint_mode,
         ),
         checkpoint_callback,
         _SaveTrainState(),
