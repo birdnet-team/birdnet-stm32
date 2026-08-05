@@ -241,8 +241,10 @@ class TestActivationQAT:
         assert np.isfinite(metrics["loss"])
         assert np.isfinite(metrics["distillation_kl"])
         assert np.isfinite(metrics["distillation_cosine_loss"])
+        assert np.isfinite(metrics["distillation_cosine_tail_loss"])
         assert metrics["distillation_kl"] >= -1e-6
         assert 0 <= metrics["distillation_cosine_loss"] <= 2
+        assert metrics["distillation_cosine_loss"] <= metrics["distillation_cosine_tail_loss"] <= 2
 
 
 # ---------------------------------------------------------------------------

@@ -214,15 +214,20 @@ class _DistilledQATModel(tf.keras.Model):
         student: tf.keras.Model,
         teacher: tf.keras.Model,
         distillation_weight: float = 1.0,
-        cosine_weight: float = 0.25,
+        cosine_weight: float = 0.10,
+        cosine_tail_weight: float = 0.25,
+        cosine_tail_fraction: float = 0.25,
     ):
         super().__init__(inputs=student.inputs, outputs=student.outputs, name=student.name)
         teacher.trainable = False
         self.teacher = teacher
         self.distillation_weight = float(distillation_weight)
         self.cosine_weight = float(cosine_weight)
+        self.cosine_tail_weight = float(cosine_tail_weight)
+        self.cosine_tail_fraction = float(cosine_tail_fraction)
         self.distillation_metric = tf.keras.metrics.Mean(name="distillation_kl")
         self.cosine_metric = tf.keras.metrics.Mean(name="distillation_cosine_loss")
+        self.cosine_tail_metric = tf.keras.metrics.Mean(name="distillation_cosine_tail_loss")
 
     def compute_loss(self, x, y, y_pred, sample_weight=None, training=True):
         """Add multi-label Bernoulli KL divergence to supervised BCE."""
@@ -243,9 +248,24 @@ class _DistilledQATModel(tf.keras.Model):
         self.distillation_metric.update_state(divergence)
         teacher_direction = tf.math.l2_normalize(teacher_pred, axis=-1)
         student_direction = tf.math.l2_normalize(y_pred, axis=-1)
-        cosine_loss = tf.reduce_mean(1.0 - tf.reduce_sum(teacher_direction * student_direction, axis=-1))
+        per_sample_cosine_loss = 1.0 - tf.reduce_sum(teacher_direction * student_direction, axis=-1)
+        cosine_loss = tf.reduce_mean(per_sample_cosine_loss)
         self.cosine_metric.update_state(cosine_loss)
-        return supervised + self.distillation_weight * divergence + self.cosine_weight * cosine_loss
+        tail_count = tf.maximum(
+            1,
+            tf.cast(
+                tf.math.ceil(tf.cast(tf.size(per_sample_cosine_loss), tf.float32) * self.cosine_tail_fraction),
+                tf.int32,
+            ),
+        )
+        cosine_tail_loss = tf.reduce_mean(tf.math.top_k(per_sample_cosine_loss, k=tail_count).values)
+        self.cosine_tail_metric.update_state(cosine_tail_loss)
+        return (
+            supervised
+            + self.distillation_weight * divergence
+            + self.cosine_weight * cosine_loss
+            + self.cosine_tail_weight * cosine_tail_loss
+        )
 
 
 def calibrate_activation_ranges(
@@ -494,7 +514,11 @@ def run_qat(args: argparse.Namespace) -> None:
     print(f"[QAT] Activation ranges use the converter's exact stratified {calibration_count}-sample manifest (seed=42)")
     qat_student = build_qat_model(deployment_model, activation_ranges)
     qat_model = _DistilledQATModel(qat_student, teacher_model)
-    print("[QAT] Enabled frozen-teacher consistency losses (Bernoulli KL weight=1.0, cosine weight=0.25)")
+    print(
+        "[QAT] Enabled frozen-teacher consistency losses "
+        "(Bernoulli KL weight=1.0, cosine mean weight=0.10, "
+        "worst-quartile cosine weight=0.25)"
+    )
 
     qat_path = args.checkpoint_path.replace(".keras", "_qat.keras")
     ranges_path = qat_path.replace(".keras", "_activation_ranges.json")
