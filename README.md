@@ -90,7 +90,7 @@ part of the model contract.
 - **Model**: DS-CNN with configurable width (`--alpha`) and depth (`--depth_multiplier`), SE attention and inverted residuals (on by default; disable with `--no_se`, `--no_inverted_residual`), and optional attention pooling (`--use_attention_pooling`)
 - **Augmentation**: Dirichlet multi-source mixup with multi-label union targets for overlapping vocalizations, SpecAugment (on by default), smart crop for long recordings
 - **Optimization**: linear warmup into cosine LR decay, Adam/SGD/AdamW, gradient clipping (on by default), mixed precision (FP16). Best checkpoint and early stopping track validation ROC-AUC
-- **QAT**: native Keras 3 quantization-aware fine-tuning via `--qat` — simulates the INT8 input, per-channel kernels, fused activation boundaries, and otherwise-opaque raw-frontend internals while checkpointing a clean deployment model
+- **QAT**: native Keras 3 quantization-aware fine-tuning via `--qat` — simulates the INT8 input, per-channel kernels, fused activation boundaries, and otherwise-opaque raw-frontend internals; a frozen float teacher preserves the original output distribution while a clean deployment model is checkpointed
 - **Linear probing**: `--linear_probe` freezes a pretrained backbone and trains only the classifier head
 - **Hyperparameter tuning**: Optuna search via `--tune --n_trials N`
 

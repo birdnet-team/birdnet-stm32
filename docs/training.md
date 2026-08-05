@@ -162,6 +162,12 @@ frozen. Standard variables are shared with a clean deployment graph; cloned
 frontend variables are synchronized before each checkpoint. Only the clean
 graph is saved, so no FakeQuant ops remain in the model.
 
+A frozen copy of the untouched checkpoint acts as the teacher. QAT minimizes
+both the normal label loss and per-output Bernoulli KL divergence from that
+teacher. This constrains background and low-confidence probabilities that
+would otherwise contribute little to binary cross-entropy but can dominate the
+tail parity gate.
+
 ```bash
 # Step 1: Normal training
 python -m birdnet_stm32 train --data_path_train data/train \

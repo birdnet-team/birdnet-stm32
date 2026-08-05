@@ -29,6 +29,8 @@ The implementation is native Keras 3 (`birdnet_stm32/training/qat.py`):
    raw-frontend internals on asymmetric per-tensor INT8 grids.
 5. Fine-tune at a low learning rate, while checkpointing the clean model that
    shares standard variables and receives synchronized frontend variables.
+6. Add Bernoulli KL consistency against a frozen copy of the untouched float
+   checkpoint, so QAT preserves low-confidence outputs as well as hard labels.
 
 Because no FakeQuant nodes are saved, the resulting `.keras` model is fully
 compatible with the STM32N6 NPU after standard PTQ conversion.

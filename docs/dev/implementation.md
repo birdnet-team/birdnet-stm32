@@ -106,6 +106,11 @@ activation boundaries, and the kernel and elementwise boundaries hidden inside
 by ReLU are not quantized twice because LiteRT folds those sequences into one
 operator.
 
+The untouched float checkpoint is also loaded as a frozen teacher. Training
+adds per-output Bernoulli KL divergence to the label loss so background and
+low-confidence probabilities remain constrained; hard-label BCE alone barely
+penalizes the tail errors that dominate quantization parity failures.
+
 The saved `.keras` model contains only standard float32 weights — no FakeQuant
 nodes. Standard PTQ then calibrates and quantizes the hardened deployment
 graph; held-out parity and task-level accuracy remain mandatory gates.
