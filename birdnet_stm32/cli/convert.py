@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from birdnet_stm32.audio.activity import pick_random_samples
 from birdnet_stm32.conversion.quantize import convert_to_tflite, representative_data_gen
-from birdnet_stm32.conversion.validate import validate_models
+from birdnet_stm32.conversion.validate import cosine_similarity, validate_models
 from birdnet_stm32.data.dataset import load_file_paths_from_directory
 from birdnet_stm32.models.frontend import AudioFrontendLayer, hybrid_fft_bins, normalize_frontend_name
 from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
@@ -140,6 +140,73 @@ def _manifest_record(paths: list[str], root: str) -> dict:
         "sha256": hashlib.sha256(payload).hexdigest(),
         "class_counts": dict(sorted(class_counts.items())),
     }
+
+
+def _export_and_validate_onnx(model, output_path: str, validation_gen) -> dict:
+    """Atomically export ONNX and require checker/runtime parity to pass."""
+    try:
+        import onnx
+        import onnxruntime as ort
+        import tf2onnx  # noqa: F401 - required by Keras' ONNX exporter
+    except ImportError as exc:
+        raise RuntimeError("ONNX export requires tf2onnx, onnx, and onnxruntime") from exc
+
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    with tempfile.NamedTemporaryFile(
+        prefix=".exporting-onnx-",
+        suffix=".onnx",
+        dir=output_dir,
+        delete=False,
+    ) as handle:
+        temporary_path = handle.name
+    try:
+        signature = [tf.TensorSpec(model.input_shape, tf.float32, name="input")]
+        model.export(
+            temporary_path,
+            format="onnx",
+            input_signature=signature,
+            verbose=False,
+        )
+        onnx_model = onnx.load(temporary_path)
+        onnx.checker.check_model(onnx_model, full_check=True)
+        session = ort.InferenceSession(temporary_path, providers=["CPUExecutionProvider"])
+        input_name = session.get_inputs()[0].name
+
+        cosines: list[float] = []
+        maximum_errors: list[float] = []
+        squared_errors: list[float] = []
+        for item in validation_gen():
+            sample = np.asarray(item[0], dtype=np.float32)
+            model_inputs = [sample] if isinstance(model._inputs_struct, (list, tuple)) else sample  # noqa: SLF001
+            keras_output = np.asarray(model(model_inputs, training=False))
+            onnx_output = np.asarray(session.run(None, {input_name: sample})[0])
+            cosines.append(cosine_similarity(keras_output.ravel(), onnx_output.ravel()))
+            maximum_errors.append(float(np.max(np.abs(keras_output - onnx_output))))
+            squared_errors.append(float(np.mean((keras_output - onnx_output) ** 2)))
+            if len(cosines) >= 16:
+                break
+        if not cosines:
+            raise RuntimeError("ONNX validation generator yielded no samples")
+
+        report = {
+            "checker_passed": True,
+            "runtime": "onnxruntime",
+            "validation_samples": len(cosines),
+            "cosine_mean": float(np.mean(cosines)),
+            "cosine_min": float(np.min(cosines)),
+            "max_abs_error": float(np.max(maximum_errors)),
+            "mse_mean": float(np.mean(squared_errors)),
+            "opset": max((item.version for item in onnx_model.opset_import), default=0),
+        }
+        if report["cosine_min"] < 0.9999 or report["max_abs_error"] > 1e-4:
+            raise RuntimeError(f"ONNX runtime parity failed: {report}")
+        os.replace(temporary_path, output_path)
+        temporary_path = ""
+        report["size_bytes"] = os.path.getsize(output_path)
+        return report
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.unlink(temporary_path)
 
 
 def main():
@@ -308,17 +375,9 @@ def main():
         # ONNX export
         if args.export_onnx:
             onnx_path = os.path.splitext(args.output_path)[0] + ".onnx"
-            try:
-                import tf2onnx
-
-                spec = (tf.TensorSpec(model.input_shape, tf.float32, name="input"),)
-                tf2onnx.convert.from_keras(model, input_signature=spec, output_path=onnx_path)
-                print(f"ONNX model saved to {onnx_path}")
-                report["onnx_path"] = onnx_path
-            except ImportError:
-                raise RuntimeError("ONNX export requested but tf2onnx is not installed") from None
-            except Exception as exc:
-                raise RuntimeError(f"ONNX export failed: {exc}") from exc
+            report["onnx_validation"] = _export_and_validate_onnx(model, onnx_path, rep_data_gen_val)
+            report["onnx_path"] = onnx_path
+            print(f"ONNX model validated and saved to {onnx_path}")
 
         report["model_size_bytes"] = os.path.getsize(args.output_path)
         report["keras_size_bytes"] = os.path.getsize(args.checkpoint_path)

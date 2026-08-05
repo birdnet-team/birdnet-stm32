@@ -53,6 +53,11 @@ deploy = [
 tune = [
     "optuna>=3.6",
 ]
+release = [
+    "tf2onnx>=1.17.0",
+    "onnx>=1.22.0",
+    "onnxruntime>=1.28.0",
+]
 all = [
     "build>=1.2",
     "pytest>=8.0",
@@ -66,6 +71,9 @@ all = [
     "mkdocs-literate-nav>=0.6",
     "pyserial>=3.5",
     "optuna>=3.6",
+    "tf2onnx>=1.17.0",
+    "onnx>=1.22.0",
+    "onnxruntime>=1.28.0",
 ]
 
 [project.scripts]
