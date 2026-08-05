@@ -5,7 +5,8 @@ import pytest
 
 tf = pytest.importorskip("tensorflow", reason="TensorFlow required for conversion tests")
 
-from birdnet_stm32.cli.convert import _export_and_validate_onnx, _manifest_record, _stratified_sample_paths
+from birdnet_stm32.cli.convert import _export_and_validate_onnx, _manifest_record
+from birdnet_stm32.conversion.quantize import stratified_sample_paths
 from birdnet_stm32.conversion.validate import cosine_similarity, pearson_correlation
 
 
@@ -69,13 +70,13 @@ class TestCalibrationSampling:
         paths = [
             f"/data/class_{class_idx}/sample_{sample_idx}.wav" for class_idx in range(3) for sample_idx in range(7)
         ]
-        calibration = _stratified_sample_paths(paths, 10, seed=42)
-        validation = _stratified_sample_paths(paths, 8, seed=43, exclude=set(calibration))
+        calibration = stratified_sample_paths(paths, 10, seed=42)
+        validation = stratified_sample_paths(paths, 8, seed=43, exclude=set(calibration))
 
         assert len(calibration) == 10
         assert len(validation) == 8
         assert set(calibration).isdisjoint(validation)
-        assert calibration == _stratified_sample_paths(paths, 10, seed=42)
+        assert calibration == stratified_sample_paths(paths, 10, seed=42)
 
     def test_manifest_record_is_location_independent(self):
         """Manifest identity uses stable relative paths and class counts."""

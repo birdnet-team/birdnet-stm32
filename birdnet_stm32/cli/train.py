@@ -286,6 +286,12 @@ def get_args() -> argparse.Namespace:
         default=False,
         help="Quantization-aware fine-tuning (requires pretrained --checkpoint_path)",
     )
+    parser.add_argument(
+        "--qat_calibration_samples",
+        type=int,
+        default=1024,
+        help="Exact stratified samples used for QAT ranges and final INT8 calibration",
+    )
 
     # -- Linear probing -------------------------------------------------------
     parser.add_argument(

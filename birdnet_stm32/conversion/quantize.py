@@ -5,6 +5,8 @@ float32 I/O and INT8 internal ops for STM32N6 NPU deployment.
 """
 
 import os
+import random
+from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator
 
 import numpy as np
@@ -14,6 +16,44 @@ from tqdm import tqdm
 from birdnet_stm32.audio.io import load_audio_file
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
 from birdnet_stm32.models.frontend import normalize_frontend_name
+
+
+def stratified_sample_paths(
+    file_paths: list[str],
+    num_samples: int,
+    *,
+    seed: int,
+    exclude: set[str] | None = None,
+) -> list[str]:
+    """Select an exact, deterministic, class-balanced audio manifest."""
+    excluded = exclude or set()
+    grouped: dict[str, list[str]] = defaultdict(list)
+    for path in file_paths:
+        if path not in excluded:
+            grouped[os.path.basename(os.path.dirname(path))].append(path)
+
+    rng = random.Random(seed)
+    class_names = sorted(grouped)
+    rng.shuffle(class_names)
+    for paths in grouped.values():
+        rng.shuffle(paths)
+
+    selected: list[str] = []
+    offsets = {name: 0 for name in class_names}
+    while len(selected) < num_samples:
+        added = False
+        for name in class_names:
+            offset = offsets[name]
+            paths = grouped[name]
+            if offset < len(paths):
+                selected.append(paths[offset])
+                offsets[name] = offset + 1
+                added = True
+                if len(selected) == num_samples:
+                    break
+        if not added:
+            break
+    return selected
 
 
 def representative_data_gen(

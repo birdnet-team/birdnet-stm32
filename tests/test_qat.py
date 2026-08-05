@@ -159,6 +159,22 @@ class TestActivationQAT:
         assert qat_model.get_layer("input_fake_quant") is not None
         assert any(layer.name.endswith("_fake_quant") for layer in inner_model.layers)
 
+    def test_calibration_accepts_converter_style_single_input_lists(self):
+        """QAT must consume the exact tensor iterator used by conversion."""
+        inputs = tf.keras.Input(shape=(4,), name="input")
+        outputs = tf.keras.layers.Dense(2, activation="sigmoid", name="pred")(inputs)
+        deployment = tf.keras.Model(inputs, outputs)
+        samples = np.random.default_rng(17).normal(size=(4, 4)).astype(np.float32)
+
+        ranges = calibrate_activation_ranges(
+            deployment,
+            ([sample[None]] for sample in samples),
+            max_samples=4,
+        )
+
+        assert ranges["__input__"][0] <= float(samples.min())
+        assert ranges["__input__"][1] >= float(samples.max())
+
     def test_raw_frontend_is_quantized_and_synced_to_clean_model(self):
         """QAT must cover opaque frontend kernels without polluting deployment."""
         from birdnet_stm32.models.frontend import AudioFrontendLayer
@@ -224,7 +240,9 @@ class TestActivationQAT:
         metrics = distilled.train_on_batch(samples, targets, return_dict=True)
         assert np.isfinite(metrics["loss"])
         assert np.isfinite(metrics["distillation_kl"])
+        assert np.isfinite(metrics["distillation_cosine_loss"])
         assert metrics["distillation_kl"] >= -1e-6
+        assert 0 <= metrics["distillation_cosine_loss"] <= 2
 
 
 # ---------------------------------------------------------------------------

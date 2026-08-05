@@ -214,12 +214,15 @@ class _DistilledQATModel(tf.keras.Model):
         student: tf.keras.Model,
         teacher: tf.keras.Model,
         distillation_weight: float = 1.0,
+        cosine_weight: float = 0.25,
     ):
         super().__init__(inputs=student.inputs, outputs=student.outputs, name=student.name)
         teacher.trainable = False
         self.teacher = teacher
         self.distillation_weight = float(distillation_weight)
+        self.cosine_weight = float(cosine_weight)
         self.distillation_metric = tf.keras.metrics.Mean(name="distillation_kl")
+        self.cosine_metric = tf.keras.metrics.Mean(name="distillation_cosine_loss")
 
     def compute_loss(self, x, y, y_pred, sample_weight=None, training=True):
         """Add multi-label Bernoulli KL divergence to supervised BCE."""
@@ -238,7 +241,11 @@ class _DistilledQATModel(tf.keras.Model):
         teacher_entropy = tf.keras.losses.binary_crossentropy(teacher_pred, teacher_pred)
         divergence = tf.reduce_mean(cross_entropy - teacher_entropy)
         self.distillation_metric.update_state(divergence)
-        return supervised + self.distillation_weight * divergence
+        teacher_direction = tf.math.l2_normalize(teacher_pred, axis=-1)
+        student_direction = tf.math.l2_normalize(y_pred, axis=-1)
+        cosine_loss = tf.reduce_mean(1.0 - tf.reduce_sum(teacher_direction * student_direction, axis=-1))
+        self.cosine_metric.update_state(cosine_loss)
+        return supervised + self.distillation_weight * divergence + self.cosine_weight * cosine_loss
 
 
 def calibrate_activation_ranges(
@@ -261,7 +268,7 @@ def calibrate_activation_ranges(
     seen = 0
     try:
         for batch in dataset:
-            inputs = batch[0] if isinstance(batch, (tuple, list)) and len(batch) == 2 else batch
+            inputs = batch[0] if isinstance(batch, (tuple, list)) else batch
             inputs = np.asarray(inputs)
             for sample in inputs:
                 ranges["__input__"][0] = min(ranges["__input__"][0], float(np.min(sample)), 0.0)
@@ -366,6 +373,7 @@ def _detect_loss(model: tf.keras.Model) -> str:
 
 def run_qat(args: argparse.Namespace) -> None:
     """Fine-tune a pretrained model against weight and activation INT8 noise."""
+    from birdnet_stm32.conversion.quantize import representative_data_gen, stratified_sample_paths
     from birdnet_stm32.data.dataset import (
         load_classes_file,
         load_file_paths_from_directory,
@@ -464,10 +472,26 @@ def run_qat(args: argparse.Namespace) -> None:
 
     n_frozen = freeze_batch_norm(deployment_model)
     print(f"[QAT] Frozen {n_frozen} BatchNorm layers")
-    activation_ranges = calibrate_activation_ranges(deployment_model, val_dataset, max_samples=256)
+    calibration_count = int(args.qat_calibration_samples)
+    calibration_paths = stratified_sample_paths(train_paths, calibration_count, seed=42)
+    if len(calibration_paths) != calibration_count:
+        raise ValueError(
+            f"QAT requested {calibration_count} calibration paths but only {len(calibration_paths)} are available"
+        )
+    calibration_data = representative_data_gen(
+        calibration_paths,
+        cfg.to_dict(),
+        num_samples=calibration_count,
+    )
+    activation_ranges = calibrate_activation_ranges(
+        deployment_model,
+        calibration_data,
+        max_samples=calibration_count,
+    )
+    print(f"[QAT] Activation ranges use the converter's exact stratified {calibration_count}-sample manifest (seed=42)")
     qat_student = build_qat_model(deployment_model, activation_ranges)
     qat_model = _DistilledQATModel(qat_student, teacher_model)
-    print("[QAT] Enabled frozen-teacher Bernoulli KL consistency loss (weight=1.0)")
+    print("[QAT] Enabled frozen-teacher consistency losses (Bernoulli KL weight=1.0, cosine weight=0.25)")
 
     qat_path = args.checkpoint_path.replace(".keras", "_qat.keras")
     ranges_path = qat_path.replace(".keras", "_activation_ranges.json")

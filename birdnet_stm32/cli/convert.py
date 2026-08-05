@@ -13,7 +13,11 @@ import tensorflow as tf
 from tqdm import tqdm
 
 from birdnet_stm32.audio.activity import pick_random_samples
-from birdnet_stm32.conversion.quantize import convert_to_tflite, representative_data_gen
+from birdnet_stm32.conversion.quantize import (
+    convert_to_tflite,
+    representative_data_gen,
+    stratified_sample_paths,
+)
 from birdnet_stm32.conversion.validate import cosine_similarity, validate_models
 from birdnet_stm32.data.dataset import load_file_paths_from_directory
 from birdnet_stm32.models.frontend import AudioFrontendLayer, hybrid_fft_bins, normalize_frontend_name
@@ -79,44 +83,6 @@ def get_args() -> argparse.Namespace:
         help="Path to save a structured JSON conversion report.",
     )
     return parser.parse_args()
-
-
-def _stratified_sample_paths(
-    file_paths: list[str],
-    num_samples: int,
-    *,
-    seed: int,
-    exclude: set[str] | None = None,
-) -> list[str]:
-    """Select exactly ``num_samples`` paths with balanced class coverage."""
-    excluded = exclude or set()
-    grouped: dict[str, list[str]] = defaultdict(list)
-    for path in file_paths:
-        if path not in excluded:
-            grouped[os.path.basename(os.path.dirname(path))].append(path)
-
-    rng = random.Random(seed)
-    class_names = sorted(grouped)
-    rng.shuffle(class_names)
-    for paths in grouped.values():
-        rng.shuffle(paths)
-
-    selected: list[str] = []
-    offsets = {name: 0 for name in class_names}
-    while len(selected) < num_samples:
-        added = False
-        for name in class_names:
-            offset = offsets[name]
-            paths = grouped[name]
-            if offset < len(paths):
-                selected.append(paths[offset])
-                offsets[name] = offset + 1
-                added = True
-                if len(selected) == num_samples:
-                    break
-        if not added:
-            break
-    return selected
 
 
 def _write_report(path: str, report: dict) -> None:
@@ -237,7 +203,7 @@ def main():
             raise ValueError("No training audio found for the classes in the model config.")
 
         class_count = len({os.path.basename(os.path.dirname(path)) for path in file_paths})
-        stratified_paths = _stratified_sample_paths(file_paths, args.num_samples, seed=42)
+        stratified_paths = stratified_sample_paths(file_paths, args.num_samples, seed=42)
         if len(stratified_paths) != args.num_samples:
             raise ValueError(
                 f"Requested {args.num_samples} calibration paths but only {len(stratified_paths)} are available."
@@ -250,7 +216,7 @@ def main():
 
         # Calibration and validation must be disjoint; overlap makes parity
         # reports optimistic and invalidates a release gate.
-        val_paths_subset = _stratified_sample_paths(
+        val_paths_subset = stratified_sample_paths(
             file_paths,
             args.validate_samples,
             seed=43,
