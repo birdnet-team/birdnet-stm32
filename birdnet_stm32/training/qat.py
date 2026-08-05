@@ -62,7 +62,12 @@ def _is_quantizable(layer: tf.keras.layers.Layer) -> bool:
 
 def _is_activation_boundary(layer: tf.keras.layers.Layer) -> bool:
     """Return whether an outer-graph tensor is requantized during inference."""
-    return isinstance(layer, ACTIVATION_BOUNDARY_TYPES) or layer.__class__.__name__ == "AudioFrontendLayer"
+    if isinstance(layer, layers.BatchNormalization):
+        # Conv + BN + ReLU is folded into one quantized TFLite operator. Keep a
+        # boundary only for linear project BNs whose output feeds an Add.
+        consumers = [node.operation for node in layer._outbound_nodes]  # noqa: SLF001
+        return not consumers or not all(isinstance(consumer, layers.ReLU) for consumer in consumers)
+    return isinstance(layer, ACTIVATION_BOUNDARY_TYPES[1:]) or layer.__class__.__name__ == "AudioFrontendLayer"
 
 
 @tf.keras.utils.register_keras_serializable(package="birdnet_stm32")
@@ -151,6 +156,56 @@ class _QuantizedKernelCall(layers.Layer):
         return self.target.activation(output)
 
 
+class _ActivationRangeCollector:
+    """Observe internal custom-layer tensors without changing their values."""
+
+    def __init__(self):
+        self.ranges: dict[str, list[float]] = {}
+
+    def activation(self, name: str, inputs):
+        """Record one tensor's scalar range and return it unchanged."""
+        array = np.asarray(inputs)
+        values = self.ranges.setdefault(name, [float("inf"), -float("inf")])
+        values[0] = min(values[0], float(np.min(array)), 0.0)
+        values[1] = max(values[1], float(np.max(array)), 0.0)
+        return inputs
+
+    def kernel(self, layer, inputs):
+        """Call an ordinary full-precision kernel without adding a boundary."""
+        return layer(inputs)
+
+
+class _FrontendQuantizationHook:
+    """Apply static activation and kernel fake quantization inside a frontend."""
+
+    def __init__(self, activation_ranges: dict[str, tuple[float, float]]):
+        self.activation_ranges = activation_ranges
+        self._activations: dict[str, FakeQuantActivation] = {}
+        self._kernels: dict[str, _QuantizedKernelCall] = {}
+
+    def activation(self, name: str, inputs):
+        """Fake-quantize an internal activation on its calibrated grid."""
+        if name not in self.activation_ranges:
+            raise KeyError(f"Missing calibrated QAT activation range: {name}")
+        if name not in self._activations:
+            minimum, maximum = self.activation_ranges[name]
+            self._activations[name] = FakeQuantActivation(
+                minimum,
+                maximum,
+                name=f"{name}_fake_quant",
+            )
+        return self._activations[name](inputs)
+
+    def kernel(self, layer, inputs):
+        """Run an internal kernel with per-channel INT8 fake quantization."""
+        if layer.name not in self._kernels:
+            self._kernels[layer.name] = _QuantizedKernelCall(
+                layer,
+                name=f"{layer.name}_quantized_kernel",
+            )
+        return self._kernels[layer.name](inputs)
+
+
 def calibrate_activation_ranges(
     model: tf.keras.Model,
     dataset: Iterable,
@@ -162,27 +217,39 @@ def calibrate_activation_ranges(
         raise ValueError("Model has no supported activation quantization boundaries")
     probe = tf.keras.Model(model.inputs, [layer.output for layer in boundaries])
     ranges = {layer.name: [float("inf"), -float("inf")] for layer in boundaries}
+    ranges["__input__"] = [float("inf"), -float("inf")]
+    frontends = [layer for layer in _all_layers(model) if layer.__class__.__name__ == "AudioFrontendLayer"]
+    collector = _ActivationRangeCollector()
+    for frontend in frontends:
+        frontend.set_quantization_hook(collector)
 
     seen = 0
-    for batch in dataset:
-        inputs = batch[0] if isinstance(batch, (tuple, list)) and len(batch) == 2 else batch
-        inputs = np.asarray(inputs)
-        for sample in inputs:
-            outputs = probe(sample[None], training=False)
-            if not isinstance(outputs, (tuple, list)):
-                outputs = [outputs]
-            for layer, output in zip(boundaries, outputs, strict=True):
-                array = np.asarray(output)
-                ranges[layer.name][0] = min(ranges[layer.name][0], float(np.min(array)), 0.0)
-                ranges[layer.name][1] = max(ranges[layer.name][1], float(np.max(array)), 0.0)
-            seen += 1
+    try:
+        for batch in dataset:
+            inputs = batch[0] if isinstance(batch, (tuple, list)) and len(batch) == 2 else batch
+            inputs = np.asarray(inputs)
+            for sample in inputs:
+                ranges["__input__"][0] = min(ranges["__input__"][0], float(np.min(sample)), 0.0)
+                ranges["__input__"][1] = max(ranges["__input__"][1], float(np.max(sample)), 0.0)
+                outputs = probe([sample[None]], training=False)
+                if not isinstance(outputs, (tuple, list)):
+                    outputs = [outputs]
+                for layer, output in zip(boundaries, outputs, strict=True):
+                    array = np.asarray(output)
+                    ranges[layer.name][0] = min(ranges[layer.name][0], float(np.min(array)), 0.0)
+                    ranges[layer.name][1] = max(ranges[layer.name][1], float(np.max(array)), 0.0)
+                seen += 1
+                if seen >= max_samples:
+                    break
             if seen >= max_samples:
                 break
-        if seen >= max_samples:
-            break
+    finally:
+        for frontend in frontends:
+            frontend.set_quantization_hook(None)
     if seen == 0:
         raise ValueError("Activation calibration dataset yielded no samples")
 
+    ranges.update(collector.ranges)
     result = {name: (values[0], values[1]) for name, values in ranges.items()}
     print(f"[QAT] Calibrated {len(result)} activation tensors on {seen} samples")
     return result
@@ -193,6 +260,15 @@ def build_qat_model(
     activation_ranges: dict[str, tuple[float, float]],
 ) -> tf.keras.Model:
     """Build an activation-fake-quant graph sharing deployment model weights."""
+
+    def clone_function(layer):
+        if layer.__class__.__name__ != "AudioFrontendLayer":
+            return layer
+        clone = layer.__class__.from_config(layer.get_config())
+        clone.build(tuple(layer.input.shape))
+        clone.set_weights(layer.get_weights())
+        clone.set_quantization_hook(_FrontendQuantizationHook(activation_ranges))
+        return clone
 
     def call_function(layer, *args, **kwargs):
         if _is_quantizable(layer):
@@ -208,46 +284,33 @@ def build_qat_model(
             )(output)
         return output
 
-    return tf.keras.models.clone_model(
+    inner_model = tf.keras.models.clone_model(
         deployment_model,
-        clone_function=lambda layer: layer,
+        clone_function=clone_function,
         call_function=call_function,
     )
+    raw_inputs = tf.keras.Input(
+        shape=deployment_model.input_shape[1:],
+        dtype=deployment_model.input_dtype,
+        name="qat_input",
+    )
+    minimum, maximum = activation_ranges["__input__"]
+    quantized_inputs = FakeQuantActivation(minimum, maximum, name="input_fake_quant")(raw_inputs)
+    return tf.keras.Model(raw_inputs, inner_model(quantized_inputs), name=f"{deployment_model.name}_qat")
 
 
-class QATCallback(tf.keras.callbacks.Callback):
-    """Inject per-channel kernel fake quantization around each optimizer step."""
-
-    def __init__(self, num_bits: int = 8, per_channel: bool = True):
-        super().__init__()
-        self.num_bits = num_bits
-        self.per_channel = per_channel
-        self._qat_layers: list[tf.keras.layers.Layer] = []
-        self._tracked: list[tuple[tf.Variable, np.ndarray, np.ndarray]] = []
-
-    def on_train_begin(self, logs=None):
-        """Discover quantized kernels, including nested frontend layers."""
-        self._qat_layers = [layer for layer in _all_layers(self.model) if _is_quantizable(layer)]
-        n_params = sum(int(np.prod(layer.kernel.shape)) for layer in self._qat_layers)
-        print(
-            f"[QAT] {len(self._qat_layers)} kernel layers, {n_params:,} params, "
-            f"{self.num_bits}-bit, per_channel={self.per_channel}"
-        )
-
-    def on_train_batch_begin(self, batch, logs=None):
-        """Replace full-precision kernels with their dequantized INT8 values."""
-        self._tracked = []
-        for layer in self._qat_layers:
-            variable = layer.kernel
-            fp = variable.numpy().copy()
-            quantized = fake_quantize_weights(fp, self.num_bits, self.per_channel, _channel_axis(layer))
-            variable.assign(quantized)
-            self._tracked.append((variable, fp, quantized))
-
-    def on_train_batch_end(self, batch, logs=None):
-        """Apply the optimizer delta to the full-precision shadow kernels."""
-        for variable, fp, quantized in self._tracked:
-            variable.assign(fp + variable.numpy() - quantized)
+def sync_frontend_weights(qat_model: tf.keras.Model, deployment_model: tf.keras.Model) -> None:
+    """Copy separately cloned custom-frontend weights into the clean model."""
+    qat_frontends = {
+        layer.name: layer for layer in _all_layers(qat_model) if layer.__class__.__name__ == "AudioFrontendLayer"
+    }
+    deployment_frontends = {
+        layer.name: layer for layer in _all_layers(deployment_model) if layer.__class__.__name__ == "AudioFrontendLayer"
+    }
+    if qat_frontends.keys() != deployment_frontends.keys():
+        raise ValueError("QAT and deployment frontend layers do not match")
+    for name, frontend in qat_frontends.items():
+        deployment_frontends[name].set_weights(frontend.get_weights())
 
 
 def freeze_batch_norm(model: tf.keras.Model) -> int:
@@ -355,7 +418,7 @@ def run_qat(args: argparse.Namespace) -> None:
 
     n_frozen = freeze_batch_norm(deployment_model)
     print(f"[QAT] Frozen {n_frozen} BatchNorm layers")
-    activation_ranges = calibrate_activation_ranges(deployment_model, val_dataset, max_samples=64)
+    activation_ranges = calibrate_activation_ranges(deployment_model, val_dataset, max_samples=256)
     qat_model = build_qat_model(deployment_model, activation_ranges)
 
     qat_path = args.checkpoint_path.replace(".keras", "_qat.keras")
@@ -382,6 +445,7 @@ def run_qat(args: argparse.Namespace) -> None:
         loss_fn=_detect_loss(deployment_model),
         gradient_clip_norm=args.grad_clip,
         checkpoint_model=deployment_model,
+        checkpoint_sync=lambda: sync_frontend_weights(qat_model, deployment_model),
     )
     print(f"[QAT] Clean quantization-ready checkpoint saved to {qat_path}")
     print(f"[QAT] Activation calibration ranges saved to {ranges_path}")

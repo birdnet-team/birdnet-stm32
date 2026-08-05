@@ -2,6 +2,7 @@
 
 import json
 import os
+from collections.abc import Callable
 
 import tensorflow as tf
 
@@ -121,6 +122,7 @@ def train_model(
     resume: bool = False,
     extra_callbacks: list[tf.keras.callbacks.Callback] | None = None,
     checkpoint_model: tf.keras.Model | None = None,
+    checkpoint_sync: Callable[[], None] | None = None,
 ) -> tf.keras.callbacks.History:
     """Train a model with cosine LR schedule, early stopping, and checkpointing.
 
@@ -152,6 +154,8 @@ def train_model(
         checkpoint_model: Optional deployment model that shares weights with
             ``model``. When supplied, checkpoints contain this clean model
             instead of training-only wrappers such as fake-quant layers.
+        checkpoint_sync: Optional hook that copies separately cloned weights
+            into ``checkpoint_model`` immediately before each save.
 
     Returns:
         Keras training history.
@@ -269,10 +273,14 @@ def train_model(
             improved = value > self.best if _MONITOR_MODE == "max" else value < self.best
             if improved:
                 self.best = float(value)
+                if checkpoint_sync is not None:
+                    checkpoint_sync()
                 self.target.save(checkpoint_path)
 
         def on_train_end(self, logs=None):
             # EarlyStopping restores the best shared weights before this runs.
+            if checkpoint_sync is not None:
+                checkpoint_sync()
             self.target.save(checkpoint_path)
 
     csv_path = checkpoint_path.replace(".keras", "_history.csv")

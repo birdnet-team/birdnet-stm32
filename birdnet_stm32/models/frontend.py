@@ -267,6 +267,10 @@ class AudioFrontendLayer(layers.Layer):
         self.mel_norm = mel_norm
         self.mag_scale = mag_scale
         self.is_trainable = bool(is_trainable)
+        # Training may install a duck-typed quantization hook that simulates
+        # the INT8 boundaries hidden inside this custom layer. It is never
+        # serialized, so deployment models retain the ordinary clean graph.
+        self._quantization_hook = None
 
         # Fixed input samples for one chunk
         self._T = int(self.sample_rate * self.chunk_duration)
@@ -408,12 +412,30 @@ class AudioFrontendLayer(layers.Layer):
         """Dispatch to the magnitude scaling layer."""
         return self.mag_layer(x)
 
+    def set_quantization_hook(self, hook) -> None:
+        """Install or remove a training-only internal quantization hook."""
+        self._quantization_hook = hook
+        self.mag_layer.set_quantization_hook(hook)
+
+    def _quantized_call(self, layer, inputs):
+        """Call a kernel layer through the QAT hook when one is installed."""
+        if self._quantization_hook is None:
+            return layer(inputs)
+        return self._quantization_hook.kernel(layer, inputs)
+
+    def _quantized_activation(self, name: str, inputs):
+        """Mark an internal tensor as an INT8 activation boundary for QAT."""
+        if self._quantization_hook is None:
+            return inputs
+        return self._quantization_hook.activation(name, inputs)
+
     def _calibrate(self, y, training, smooth: bool = False):
         """Optional temporal lowpass, then per-band normalization and scaling."""
         if smooth:
-            y = self.band_smooth(y)
+            y = self._quantized_call(self.band_smooth, y)
         y = self.band_bn(y, training=training)
         y = self.band_relu(y)
+        y = self._quantized_activation(self.band_relu.name, y)
         return self._apply_mag(y)
 
     def call(self, inputs, training=None):
@@ -433,7 +455,7 @@ class AudioFrontendLayer(layers.Layer):
                 raise ValueError(f"Hybrid expects [B,{fft_bins},T,1], got {inputs.shape}")
             y = tf.transpose(inputs, [0, 3, 2, 1])  # [B,1,T,fft_bins]
             y = y[:, :, : self.spec_width, :]
-            y = self.mel_mixer(y)
+            y = self._quantized_call(self.mel_mixer, y)
             y = self._calibrate(y, training)
             y = tf.transpose(y, [0, 3, 2, 1])  # [B,mel,T,1]
             return y[:, :, : self.spec_width, :]
@@ -445,14 +467,19 @@ class AudioFrontendLayer(layers.Layer):
         # stride 2 — the only strides the NPU takes — while the effective hop
         # stays at `g.hop` samples.
         y = tf.reshape(inputs[:, : g.crop, :], [-1, 1, g.crop // g.fold, g.fold])
-        re, im = self.fb_re(y), self.fb_im(y)
+        re = self._quantized_activation(self.fb_re.name, self._quantized_call(self.fb_re, y))
+        im = self._quantized_activation(self.fb_im.name, self._quantized_call(self.fb_im, y))
 
         # alpha-max-plus-beta-min: |z| ~= max(|re|,|im|) + 0.4*min(|re|,|im|).
         # Within ~4% of the true magnitude, against ~17% ripple for |re|+|im| —
         # and that ripple would beat at the carrier frequency, aliasing into the
         # frame rate. Costs three elementwise ops, all of which stay on the NPU.
-        a, b = tf.abs(re), tf.abs(im)
-        mag = tf.maximum(a, b) + 0.4 * tf.minimum(a, b)
+        a = self._quantized_activation(f"{self.name}_abs_re", tf.abs(re))
+        b = self._quantized_activation(f"{self.name}_abs_im", tf.abs(im))
+        maximum = self._quantized_activation(f"{self.name}_maximum", tf.maximum(a, b))
+        minimum = self._quantized_activation(f"{self.name}_minimum", tf.minimum(a, b))
+        scaled_minimum = self._quantized_activation(f"{self.name}_minimum_scale", 0.4 * minimum)
+        mag = self._quantized_activation(f"{self.name}_magnitude", maximum + scaled_minimum)
 
         mag = self._calibrate(mag, training, smooth=True)
         mag = mag[:, :, : self.spec_width, :]
