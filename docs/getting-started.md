@@ -93,7 +93,12 @@ the STM32N6570-DK.
 
 ## Pre-trained model
 
-The tracked release bundle lives in `checkpoints/release/` and contains the
-Keras checkpoint, quantized TFLite model, ordered labels, and model config for
-the 100-class reference model. Treat those four files as one versioned unit:
-the config and labels define the TFLite input and output contract.
+Pre-trained models are GitHub release assets, not tracked repository files.
+Version 1.0 uses the basename `BirdNET_Tiny_N6_USNE_30_V1.0` for a model with
+30 northeastern-US bird species and eight nuisance outputs. The number in the
+name counts bird species only.
+
+Download the Keras, TFLite, ONNX, ordered labels, and model config from the same
+release and keep them together. The config and labels define the input/output
+contract; do not mix sidecars from another model version. Maintainers stage
+validated release bundles locally under the gitignored `release/` directory.

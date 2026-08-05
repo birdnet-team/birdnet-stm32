@@ -53,6 +53,7 @@ python -m birdnet_stm32 train --data_path_train data/train --tune --n_trials 20 
 
 - **Dataset layout**: `data/{train,test}/<species_name>/*.wav`. Special folder names (`noise`, `silence`, `background`, `other`) get all-zero label vectors.
 - **Checkpoint outputs**: `{name}.keras`, `{name}_model_config.json`, `{name}_labels.txt`, `{name}_history.csv`, `{name}_curves.png`, `{name}_train_state.json`, `{name}_quantized.tflite`, `{name}_quantized_validation_data.npz`.
+- **Public model names**: `BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>`. The count excludes nuisance outputs. Release `.keras`, `.tflite`, and `.onnx` files share the exact basename; stage them under gitignored `release/<basename>/` only after validation passes.
 - **Model config**: `ModelConfig` dataclass in `birdnet_stm32/training/config.py` — validated, JSON-serializable, backward-compatible with legacy configs.
 - **Config files**: `config.json` (gcc/CubeIDE paths), `config_n6l.json` (N6 loader mappings). These are machine-local — don't hardcode paths.
 - **Eval runs**: CSV results stored in `report/eval_runs/` with naming `{run_number}_{frontend}_{mag}_{alpha}_{depth}_{embed}_{batch}_{maxsamples}.csv`.

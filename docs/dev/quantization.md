@@ -41,6 +41,10 @@ python -m birdnet_stm32 train --data_path_train data/train \
     magnitude scaling and adjusting the representative dataset. QAT typically
     recovers 1–3% accuracy lost during quantization.
 
+    Keep the untouched pre-QAT checkpoint. For a public QAT-derived release,
+    use the canonical basename for the deployable checkpoint and preserve the
+    source checkpoint with an `_original.keras` suffix.
+
 ## Representative dataset
 
 The calibration dataset is critical for PTQ quality:
@@ -80,10 +84,13 @@ flowchart LR
     A[".keras model"] --> B["birdnet_stm32 convert\nPTQ → .tflite"]
     B --> C{"Cosine sim\n> 0.95?"}
     C -->|Yes| D["stedgeai analyze\nN6 compatibility"]
-    C -->|No| E["Adjust rep dataset\nor mag scaling"]
+    C -->|No| E["Audit calibration\nor run QAT"]
     E --> B
     D --> F{"All ops\nsupported?"}
     F -->|Yes| G["stedgeai validate\non-device"]
     F -->|No| H["Simplify model\nor remove op"]
     H --> B
 ```
+
+A conversion that fails the parity gate is failed even if a `.tflite` file was
+written. Never copy that intermediate file into a release bundle.

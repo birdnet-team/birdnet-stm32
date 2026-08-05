@@ -15,7 +15,8 @@ python -m birdnet_stm32 convert \
 This produces:
 
 - `my_model_quantized.tflite` — quantized TFLite model
-- `my_model_quantized_validation_data.npz` — validation inputs/outputs for
+- `my_model_quantized_labels.txt` — ordered output labels
+- `my_model_quantized_validation_data.npz` — validation inputs for
   on-device comparison
 
 ## How it works
@@ -41,12 +42,17 @@ After conversion, the script reports:
 | Pearson r | > 0.95 | Linear correlation |
 
 !!! warning "Cosine similarity < 0.95"
-    If cosine similarity drops below 0.95, the quantized model may behave
-    significantly differently from the float model. Common causes:
+    The command fails if mean cosine similarity drops below 0.95. It may have
+    written a `.tflite` file before detecting the failure; that file is a
+    diagnostic artifact and must not be deployed or released. Common causes:
 
     - Overly diverse representative dataset widens INT8 ranges.
     - Using `db` magnitude scaling (poor quantization behavior).
     - Very wide channel counts without proper alignment.
+
+    First inspect calibration coverage and repeat parity on held-out examples.
+    If representative calibration cannot pass reliably, use QAT and rerun the
+    complete conversion, evaluation, STM32N6 analysis, and board checks.
 
 ## Arguments
 
@@ -86,3 +92,11 @@ After conversion, the script reports:
     Audio spectrograms are continuous-valued signals. Quantizing model inputs
     to INT8 would destroy meaningful precision. The pipeline enforces float32
     I/O with INT8 internals only.
+
+## Release names
+
+Experiment outputs may keep descriptive internal names. Public artifacts use
+`BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>` and share that exact
+basename across `.keras`, `.tflite`, and `.onnx`. The species count excludes
+nuisance/background outputs. See the [release process](dev/release-process.md)
+for required sidecars and validation gates.

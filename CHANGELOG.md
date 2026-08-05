@@ -7,11 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-08-05
+
+### Added
+
+- A fixed-validation training path with explicit output ordering and all-zero
+  noise examples for leakage-safe multi-label experiments.
+- Host-memory guards and bounded loader settings for long-running training on
+  large audio collections.
+- The public model naming convention
+  `BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>` and a gitignored
+  release-staging workflow with validation reports and checksums.
+
 ### Audio frontend rewrite
 
 The raw frontend is rebuilt around a learned **Gabor quadrature filterbank**, and
 both in-model frontends drop the per-sample normalization. Measured with
-`stedgeai analyze` on the reference 100-class model (24 kHz, 2.5 s, `raw`,
+`stedgeai analyze` on a 100-output profiling model (24 kHz, 2.5 s, `raw`,
 `pwl`): **software epochs 11 → 3**, and the filterbank convolutions moved off the
 Cortex-M55 onto the NPU. MACC rises 93.2M → 108.4M, which buys a filterbank that
 reads the whole signal instead of 5.7% of it.
@@ -65,6 +77,12 @@ reads the whole signal instead of 5.7% of it.
 
 ### Fixed
 
+- All-zero noise examples now survive class upsampling and are included in
+  evaluation without being mistaken for output classes.
+- Evaluation reports the number of files actually evaluated rather than the
+  number discovered before filtering.
+- Training aborts cleanly under sustained host-memory pressure instead of
+  allowing worker processes to exhaust the machine.
 - **PCEN was a no-op.** Its smoothing stages used `pool_size=(1, 1)`, making the AGC branch an identity, which silently reduced `--mag_scale pcen` to a fixed affine rescale. Smoothing now runs over the time axis.
 - **QAT simulated the wrong quantization grid.** `fake_quantize_weights()` used an asymmetric min/max (uint8-style) grid, while TFLite quantizes kernels symmetrically with zero-point 0 — so fine-tuning hardened the model against a quantizer conversion never applies. It is now symmetric.
 - **QAT per-channel quantization was per-tensor.** The reduction axes were computed by comparing a non-negative axis index against a negative `channel_axis`, which never matched, so every axis was reduced. Negative axes are now normalized.
