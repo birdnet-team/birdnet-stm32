@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The public model naming convention
   `BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>` and a gitignored
   release-staging workflow with validation reports and checksums.
+- Native Keras 3 activation-aware QAT with differentiable per-channel kernel
+  and per-tensor activation INT8 grids, including the model input and internal
+  raw-frontend boundaries; synchronized clean checkpoints contain no
+  training-only quantization operators.
 
 ### Audio frontend rewrite
 
@@ -74,6 +78,10 @@ reads the whole signal instead of 5.7% of it.
 - The classifier head is pinned to `dtype="float32"` so `--mixed_precision` does not run the sigmoid in float16.
 - `train` prints the per-layer MAC/N6-compatibility profile instead of `model.summary()`. The profiler was previously documented but unreachable.
 - `MagnitudeScalingLayer` accepts `pcen_pool_width` (default 3) controlling the width of each PCEN smoothing stage.
+- Conversion now uses deterministic, exactly sized, disjoint calibration and
+  validation samples; requires both mean and fifth-percentile cosine parity;
+  records reproducible manifest identities; and atomically promotes TFLite
+  artifacts only after all gates pass.
 
 ### Fixed
 
@@ -84,8 +92,11 @@ reads the whole signal instead of 5.7% of it.
 - Training aborts cleanly under sustained host-memory pressure instead of
   allowing worker processes to exhaust the machine.
 - **PCEN was a no-op.** Its smoothing stages used `pool_size=(1, 1)`, making the AGC branch an identity, which silently reduced `--mag_scale pcen` to a fixed affine rescale. Smoothing now runs over the time axis.
-- **QAT simulated the wrong quantization grid.** `fake_quantize_weights()` used an asymmetric min/max (uint8-style) grid, while TFLite quantizes kernels symmetrically with zero-point 0 — so fine-tuning hardened the model against a quantizer conversion never applies. It is now symmetric.
-- **QAT per-channel quantization was per-tensor.** The reduction axes were computed by comparing a non-negative axis index against a negative `channel_axis`, which never matched, so every axis was reduced. Negative axes are now normalized.
+- **QAT was weight-only and skipped frontend kernels.** It now simulates
+  the quantized model input, fused activation requantization, and nested
+  raw-frontend kernels and elementwise boundaries as part of the clean Keras 3
+  workflow.
+- Validation `.npz` files no longer contain a duplicated batch dimension.
 - **`--frontend_trainable` did nothing for the hybrid frontend.** The mel mixer was hard-wired to `trainable=False` and never saw `is_trainable`.
 - `compute_det_curve()` ran one full pass per distinct score, which is intractable on multi-class evaluation sets (hundreds of thousands of distinct scores). It now uses a single sort plus cumulative counts, and no longer contains a dead indexing statement.
 - `validate_models()` shares the `TFLiteRunner` code path instead of driving its own interpreter.

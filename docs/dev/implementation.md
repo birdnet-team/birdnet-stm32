@@ -90,17 +90,24 @@ of 8) or fail compilation entirely.
 
 ## QAT implementation
 
-The QAT implementation uses **shadow-weight fake-quantization** rather than
+The QAT implementation uses a native Keras 3 training graph rather than
 TensorFlow Model Optimization Toolkit (tfmot), because:
 
 1. **tfmot is incompatible with Keras 3** (as of 2026).
 2. **tfmot injects FakeQuant ops** that may not be supported by the N6 NPU.
-3. **Shadow weights are simpler**: during the forward pass, kernel weights are
-   fake-quantized to INT8 range; gradients flow through the straight-through
-   estimator to update the original float32 weights.
+3. **The deployment graph stays clean**: the QAT graph applies differentiable
+   per-channel kernel and per-tensor activation INT8 grids. Standard backbone
+   variables are shared; separately cloned custom-frontend weights are synced
+   into the clean model immediately before every checkpoint.
+
+The simulation covers the quantized waveform input, fused outer-graph
+activation boundaries, and the kernel and elementwise boundaries hidden inside
+`AudioFrontendLayer` and `MagnitudeScalingLayer`. BatchNorm boundaries followed
+by ReLU are not quantized twice because LiteRT folds those sequences into one
+operator.
 
 The saved `.keras` model contains only standard float32 weights — no FakeQuant
-nodes. Standard PTQ then quantizes the QAT-hardened weights, typically
-recovering 1-3% accuracy compared to PTQ-only.
+nodes. Standard PTQ then calibrates and quantizes the hardened deployment
+graph; held-out parity and task-level accuracy remain mandatory gates.
 
 See `birdnet_stm32/training/qat.py` for the implementation.

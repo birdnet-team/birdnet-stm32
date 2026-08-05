@@ -68,9 +68,9 @@ requires all of the following:
    retain its compatibility/memory report.
 7. Run the custom firmware on the physical board and retain the board report.
 
-If the converter writes a TFLite file and then fails its parity gate, that file
-is invalid and must not be staged. Audit calibration first; use QAT if PTQ
-cannot pass reliably, then repeat every downstream check.
+The converter promotes its temporary TFLite file only after mean and tail
+parity gates pass. A failed report is diagnostic only. Audit calibration first;
+use QAT if PTQ cannot pass reliably, then repeat every downstream check.
 
 ## 3. Stage model assets
 

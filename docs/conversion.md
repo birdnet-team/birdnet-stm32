@@ -27,7 +27,9 @@ flowchart TD
     B --> C["Build representative\ndataset (1024 samples)"]
     C --> D["TFLite PTQ\nfloat32 I/O, INT8 internals"]
     D --> E["Validate: Keras vs. TFLite\ncosine sim, MSE, Pearson r"]
-    E --> F[".tflite + .npz\nfor on-device validation"]
+    E --> F{"Mean + p05\nparity pass?"}
+    F -->|Yes| G["Atomic promote\n.tflite + .npz"]
+    F -->|No| H["Diagnostic report only"]
 ```
 
 ## Validation metrics
@@ -36,15 +38,16 @@ After conversion, the script reports:
 
 | Metric | Target | Description |
 |---|---|---|
-| Cosine similarity | > 0.95 | Directional agreement of output vectors |
+| Mean cosine similarity | ≥ 0.95 | Average directional agreement of output vectors |
+| Fifth-percentile cosine | ≥ 0.90 | Tail agreement; prevents the mean hiding severe failures |
 | MSE | Low | Mean squared error |
 | MAE | Low | Mean absolute error |
 | Pearson r | > 0.95 | Linear correlation |
 
 !!! warning "Cosine similarity < 0.95"
-    The command fails if mean cosine similarity drops below 0.95. It may have
-    written a `.tflite` file before detecting the failure; that file is a
-    diagnostic artifact and must not be deployed or released. Common causes:
+    The command fails if either cosine gate is missed. Conversion occurs in a
+    temporary file, and the final `.tflite` is promoted only after validation.
+    Common causes include:
 
     - Overly diverse representative dataset widens INT8 ranges.
     - Using `db` magnitude scaling (poor quantization behavior).
@@ -65,6 +68,7 @@ After conversion, the script reports:
 | `--num_samples` | 1024 | Number of representative samples |
 | `--validate_samples` | 256 | Samples for Keras vs. TFLite validation |
 | `--min_cosine_sim` | 0.95 | Fail conversion if cosine similarity is below this |
+| `--min_cosine_p05` | 0.90 | Fail conversion if fifth-percentile cosine is below this |
 | `--quantization` | `ptq` | `ptq` (full INT8 with calibration) or `dynamic` (dynamic range, no calibration data) |
 | `--per_tensor` | off | Use per-tensor quantization instead of per-channel |
 | `--batch_validate` | 0 | Run validation N times with different seeds, report worst-case |
@@ -76,8 +80,11 @@ After conversion, the script reports:
 - **Scheme**: full integer quantization (INT8 weights + INT8 activations)
 - **I/O**: float32 — audio inputs are continuous-valued and lose meaningful
   precision at INT8
-- **Calibration**: representative dataset drawn from training data with
-  stratified class sampling and SNR filtering (near-silent chunks skipped)
+- **Calibration**: deterministic, exactly sized, class-stratified training
+  sample including quiet and nuisance recordings; validation paths are
+  stratified and disjoint
+- **Provenance**: the report records counts, per-class coverage, and SHA-256
+  identities for both path manifests
 - **Target hardware**: STM32N6 NPU (requires channel counts in multiples of 8)
 - **Per-channel** (default): quantizes each output channel separately — better accuracy
 - **Per-tensor**: single scale per tensor — use only if per-channel causes N6 issues

@@ -68,9 +68,9 @@ ordered output contract.
 - **Post-training quantization**: float32 I/O with INT8 internals, targeting
   >0.95 cosine similarity vs. the float model. Per-channel (default) or
   per-tensor, plus dynamic range mode.
-- **Quantization-aware training (QAT)**: shadow-weight fake-quantization
-  fine-tuning via `--qat` for improved INT8 accuracy. No FakeQuant ops in the
-  saved model — N6 compatible.
+- **Quantization-aware training (QAT)**: per-channel kernel and per-tensor
+  activation INT8 simulation via `--qat`. The saved deployment checkpoint has
+  no FakeQuant ops and remains N6 compatible.
 - **Optuna hyperparameter search**: `--tune --n_trials 20` for automated
   architecture and training hyperparameter optimization.
 - **Comprehensive evaluation**: ROC-AUC, cmAP, F1, species-level AP with

@@ -90,7 +90,7 @@ part of the model contract.
 - **Model**: DS-CNN with configurable width (`--alpha`) and depth (`--depth_multiplier`), SE attention and inverted residuals (on by default; disable with `--no_se`, `--no_inverted_residual`), and optional attention pooling (`--use_attention_pooling`)
 - **Augmentation**: Dirichlet multi-source mixup with multi-label union targets for overlapping vocalizations, SpecAugment (on by default), smart crop for long recordings
 - **Optimization**: linear warmup into cosine LR decay, Adam/SGD/AdamW, gradient clipping (on by default), mixed precision (FP16). Best checkpoint and early stopping track validation ROC-AUC
-- **QAT**: quantization-aware fine-tuning via `--qat` — shadow-weight fake-quantization, no FakeQuant ops in saved model
+- **QAT**: native Keras 3 quantization-aware fine-tuning via `--qat` — simulates the INT8 input, per-channel kernels, fused activation boundaries, and otherwise-opaque raw-frontend internals while checkpointing a clean deployment model
 - **Linear probing**: `--linear_probe` freezes a pretrained backbone and trains only the classifier head
 - **Hyperparameter tuning**: Optuna search via `--tune --n_trials N`
 
@@ -98,8 +98,8 @@ part of the model contract.
 
 - **Post-training quantization**: INT8 internals, float32 I/O, per-channel (default) or per-tensor
 - **Dynamic range quantization**: `--quantization dynamic` — no calibration data needed
-- **Validation**: cosine similarity, MSE, Pearson r between Keras and TFLite outputs
-- **Batch validation**: `--batch_validate N` for worst-case metrics across seeds
+- **Validation**: mean and tail cosine similarity, MSE, MAE, and Pearson r on a deterministic held-out calibration split
+- **Atomic quality gate**: failed conversions never promote a release-looking `.tflite`
 - **ONNX export**: `--export_onnx` (requires `tf2onnx`)
 
 ### Evaluation
@@ -154,4 +154,3 @@ Without these partnerships, this project would not have been possible.
 Thank you!
 
 ![Logos of all partners](https://tuc.cloud/index.php/s/KSdWfX5CnSRpRgQ/download/box_logos.png)
-

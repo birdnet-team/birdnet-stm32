@@ -154,10 +154,13 @@ quantized TFLite model by teaching the weights to survive quantization.
     have the same classes as the pretrained model; use `--linear_probe` to
     adapt to a different class set first.
 
-QAT works by injecting fake-quantization noise into kernel weights during
-training while maintaining full-precision shadow copies. BatchNorm layers are
-frozen to prevent running statistics drift. No FakeQuant ops remain in the
-saved model, so the N6 NPU runs it without issues.
+QAT calibrates activation ranges on 256 fixed validation inputs, then trains
+with per-channel INT8 kernel grids and per-tensor INT8 activation grids. The
+simulation includes the quantized waveform input and the kernels and
+elementwise boundaries inside the custom raw frontend. BatchNorm layers are
+frozen. Standard variables are shared with a clean deployment graph; cloned
+frontend variables are synchronized before each checkpoint. Only the clean
+graph is saved, so no FakeQuant ops remain in the model.
 
 ```bash
 # Step 1: Normal training
@@ -165,9 +168,10 @@ python -m birdnet_stm32 train --data_path_train data/train \
   --epochs 50 --checkpoint_path checkpoints/model.keras
 
 # Step 2: QAT fine-tuning (lower LR, fewer epochs)
-python -m birdnet_stm32 train --data_path_train data/train --qat \
+python -m birdnet_stm32 train --data_path_train data/train \
+  --data_path_val data/validation --classes_file data/labels.txt --qat \
   --checkpoint_path checkpoints/model.keras \
-  --epochs 10 --learning_rate 0.0001
+  --epochs 6 --learning_rate 0.00002
 
 # Step 3: Convert the QAT model
 python -m birdnet_stm32 convert \
