@@ -8,6 +8,7 @@ tf = pytest.importorskip("tensorflow", reason="TensorFlow required for QAT tests
 from birdnet_stm32.training.qat import (
     FakeQuantActivation,
     _channel_axis,
+    _DistilledQATModel,
     _is_quantizable,
     build_qat_model,
     calibrate_activation_ranges,
@@ -204,6 +205,26 @@ class TestActivationQAT:
             strict=True,
         ):
             np.testing.assert_array_equal(qat_weight, clean_weight)
+
+    def test_distillation_loss_is_finite_and_reported(self):
+        """The QAT objective must constrain probabilities beyond hard labels."""
+        inputs = tf.keras.Input(shape=(4,), name="input")
+        outputs = tf.keras.layers.Dense(2, activation="sigmoid", name="pred")(inputs)
+        deployment = tf.keras.Model(inputs, outputs)
+        teacher = tf.keras.models.clone_model(deployment)
+        teacher.set_weights(deployment.get_weights())
+        samples = np.random.default_rng(5).normal(size=(8, 4)).astype(np.float32)
+        targets = np.zeros((8, 2), np.float32)
+        dataset = tf.data.Dataset.from_tensor_slices((samples, targets)).batch(4)
+        ranges = calibrate_activation_ranges(deployment, dataset, max_samples=8)
+        student = build_qat_model(deployment, ranges)
+        distilled = _DistilledQATModel(student, teacher)
+        distilled.compile(optimizer="adam", loss="binary_crossentropy")
+
+        metrics = distilled.train_on_batch(samples, targets, return_dict=True)
+        assert np.isfinite(metrics["loss"])
+        assert np.isfinite(metrics["distillation_kl"])
+        assert metrics["distillation_kl"] >= -1e-6
 
 
 # ---------------------------------------------------------------------------

@@ -206,6 +206,41 @@ class _FrontendQuantizationHook:
         return self._kernels[layer.name](inputs)
 
 
+class _DistilledQATModel(tf.keras.Model):
+    """Train a quantized student against labels and a frozen float teacher."""
+
+    def __init__(
+        self,
+        student: tf.keras.Model,
+        teacher: tf.keras.Model,
+        distillation_weight: float = 1.0,
+    ):
+        super().__init__(inputs=student.inputs, outputs=student.outputs, name=student.name)
+        teacher.trainable = False
+        self.teacher = teacher
+        self.distillation_weight = float(distillation_weight)
+        self.distillation_metric = tf.keras.metrics.Mean(name="distillation_kl")
+
+    def compute_loss(self, x, y, y_pred, sample_weight=None, training=True):
+        """Add multi-label Bernoulli KL divergence to supervised BCE."""
+        supervised = super().compute_loss(
+            x=x,
+            y=y,
+            y_pred=y_pred,
+            sample_weight=sample_weight,
+            training=training,
+        )
+        teacher_pred = tf.stop_gradient(self.teacher(x, training=False))
+        epsilon = tf.cast(tf.keras.backend.epsilon(), y_pred.dtype)
+        teacher_pred = tf.clip_by_value(teacher_pred, epsilon, 1.0 - epsilon)
+        y_pred = tf.clip_by_value(y_pred, epsilon, 1.0 - epsilon)
+        cross_entropy = tf.keras.losses.binary_crossentropy(teacher_pred, y_pred)
+        teacher_entropy = tf.keras.losses.binary_crossentropy(teacher_pred, teacher_pred)
+        divergence = tf.reduce_mean(cross_entropy - teacher_entropy)
+        self.distillation_metric.update_state(divergence)
+        return supervised + self.distillation_weight * divergence
+
+
 def calibrate_activation_ranges(
     model: tf.keras.Model,
     dataset: Iterable,
@@ -302,7 +337,9 @@ def build_qat_model(
 def sync_frontend_weights(qat_model: tf.keras.Model, deployment_model: tf.keras.Model) -> None:
     """Copy separately cloned custom-frontend weights into the clean model."""
     qat_frontends = {
-        layer.name: layer for layer in _all_layers(qat_model) if layer.__class__.__name__ == "AudioFrontendLayer"
+        layer.name: layer
+        for layer in _all_layers(qat_model)
+        if layer.__class__.__name__ == "AudioFrontendLayer" and getattr(layer, "_quantization_hook", None) is not None
     }
     deployment_frontends = {
         layer.name: layer for layer in _all_layers(deployment_model) if layer.__class__.__name__ == "AudioFrontendLayer"
@@ -351,6 +388,15 @@ def run_qat(args: argparse.Namespace) -> None:
             "MagnitudeScalingLayer": MagnitudeScalingLayer,
         },
     )
+    teacher_model = tf.keras.models.load_model(
+        args.checkpoint_path,
+        compile=False,
+        custom_objects={
+            "AudioFrontendLayer": AudioFrontendLayer,
+            "MagnitudeScalingLayer": MagnitudeScalingLayer,
+        },
+    )
+    teacher_model.trainable = False
 
     cfg_path = getattr(args, "model_config", "") or os.path.splitext(args.checkpoint_path)[0] + "_model_config.json"
     if not os.path.isfile(cfg_path):
@@ -419,7 +465,9 @@ def run_qat(args: argparse.Namespace) -> None:
     n_frozen = freeze_batch_norm(deployment_model)
     print(f"[QAT] Frozen {n_frozen} BatchNorm layers")
     activation_ranges = calibrate_activation_ranges(deployment_model, val_dataset, max_samples=256)
-    qat_model = build_qat_model(deployment_model, activation_ranges)
+    qat_student = build_qat_model(deployment_model, activation_ranges)
+    qat_model = _DistilledQATModel(qat_student, teacher_model)
+    print("[QAT] Enabled frozen-teacher Bernoulli KL consistency loss (weight=1.0)")
 
     qat_path = args.checkpoint_path.replace(".keras", "_qat.keras")
     ranges_path = qat_path.replace(".keras", "_activation_ranges.json")
