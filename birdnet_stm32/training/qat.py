@@ -430,6 +430,9 @@ def run_qat(args: argparse.Namespace) -> None:
     if not train_paths or not val_paths:
         raise ValueError("QAT requires non-empty training and validation datasets")
 
+    # Conversion samples the physical training manifest, never the optionally
+    # duplicated epoch-balancing list used by the trainer.
+    calibration_source_paths = list(train_paths)
     if args.upsample_ratio and 0 < args.upsample_ratio <= 1.0:
         train_paths = upsample_minority_classes(train_paths, classes, args.upsample_ratio)
 
@@ -473,7 +476,7 @@ def run_qat(args: argparse.Namespace) -> None:
     n_frozen = freeze_batch_norm(deployment_model)
     print(f"[QAT] Frozen {n_frozen} BatchNorm layers")
     calibration_count = int(args.qat_calibration_samples)
-    calibration_paths = stratified_sample_paths(train_paths, calibration_count, seed=42)
+    calibration_paths = stratified_sample_paths(calibration_source_paths, calibration_count, seed=42)
     if len(calibration_paths) != calibration_count:
         raise ValueError(
             f"QAT requested {calibration_count} calibration paths but only {len(calibration_paths)} are available"
