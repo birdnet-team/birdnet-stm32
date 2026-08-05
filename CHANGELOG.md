@@ -20,9 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release-staging workflow with validation reports and checksums.
 - Native Keras 3 activation-aware QAT with differentiable per-channel kernel
   and per-tensor activation INT8 grids, including the model input and internal
-  raw-frontend boundaries; frozen-teacher Bernoulli KL consistency preserves
-  the float output distribution, and synchronized clean checkpoints contain no
-  training-only quantization operators.
+  raw-frontend boundaries. QAT and final conversion share one exact
+  deterministic calibration manifest; frozen-teacher Bernoulli KL and cosine
+  consistency preserve calibrated outputs and lower-tail parity, and
+  synchronized clean checkpoints contain no training-only quantization
+  operators.
 
 ### Audio frontend rewrite
 

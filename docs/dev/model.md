@@ -113,5 +113,6 @@ Key constraints:
 - **Activation memory**: intermediate activations must fit in NPU SRAM. Large
   spatial dimensions or channel counts may exceed limits.
 - **QAT is safe**: the activation-aware QAT graph (`--qat`) checkpoints a
-  synchronized clean deployment model, so the resulting `.keras` file has no
-  FakeQuant ops and remains compatible with standard PTQ conversion.
+  synchronized clean deployment model and uses final conversion's exact
+  calibration manifest, so the resulting `.keras` file has no FakeQuant ops
+  and remains compatible with standard PTQ conversion.
