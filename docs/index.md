@@ -16,9 +16,9 @@ flowchart LR
     A["Train\nDS-CNN"] --> B["Quantize\nINT8 TFLite"] --> C["Deploy\nSTM32N6 NPU"]
 ```
 
-Performance depends on the frontend, model, and SD card. A verified 24 kHz,
-2.5-second raw configuration averages **12–13 ms NPU time** and **84 ms total**
-including SD-card reads—about 30× faster than real time.
+Performance depends on the frontend, model, and SD card. The v1.0 USNE model's
+verified 24 kHz, 2.5-second raw configuration averages **6 ms NPU time** and
+**78 ms total** including SD-card reads—about 32× faster than real time.
 
 ## Quick start
 
@@ -52,7 +52,8 @@ and the [Deployment](deployment.md) guide for flashing the STM32N6570-DK.
 Pre-trained release assets use one basename across formats. Version 1.0's
 30-species northeastern-US bundle is `BirdNET_Tiny_N6_USNE_30_V1.0`; its eight
 nuisance outputs are excluded from the species count but remain part of the
-ordered output contract.
+ordered output contract. Its frozen-catalog INT8 results are ROC-AUC 0.963227
+and class-macro AP 0.669244.
 
 ## Key features
 

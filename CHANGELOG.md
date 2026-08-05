@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The public model naming convention
   `BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>` and a gitignored
   release-staging workflow with validation reports and checksums.
+- The `BirdNET_Tiny_N6_USNE_30_V1.0` Magpie RT model: 30 northeastern-US bird
+  species plus eight nuisance outputs, validated Keras/TFLite/ONNX formats,
+  an untouched pre-QAT checkpoint, model card, sanitized reports, and physical
+  STM32N6570-DK measurements.
 - Native Keras 3 activation-aware QAT with differentiable per-channel kernel
   and per-tensor activation INT8 grids, including the model input and internal
   raw-frontend boundaries. QAT and final conversion share one exact

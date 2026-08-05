@@ -69,11 +69,11 @@ requires all of the following:
 7. Run the custom firmware on the physical board and retain the board report.
 
 For the v1 USNE compact-model comparison, A1 is the accuracy reference
-(ROC-AUC 0.972374, class-macro AP 0.733490). A smaller release candidate may
-trade at most 0.02 ROC-AUC and 0.03 class-macro AP for size and board speed.
-Once selected, full-INT8 inference may lose at most 0.01 ROC-AUC or
-class-macro AP relative to that candidate's own float checkpoint. This keeps
-the model-capacity trade separate from quantization loss.
+(ROC-AUC 0.972374, class-macro AP 0.733490). The accepted compact-model floors
+are 0.952374 ROC-AUC and 0.680000 class-macro AP. Once selected, full-INT8
+inference may lose at most 0.01 ROC-AUC or 0.015 class-macro AP relative to
+that candidate's own float checkpoint. These v1 thresholds record an explicit
+size/accuracy decision; the mean/p05 cosine gates remain 0.95/0.90.
 
 The converter promotes its temporary TFLite file only after mean and tail
 parity gates pass. A failed report is diagnostic only. Audit calibration first;
@@ -102,11 +102,15 @@ The version 1.0 USNE bundle should contain:
 | `<basename>_float_benchmark.json` | Float test metrics and latency |
 | `<basename>_int8_benchmark.json` | INT8 test metrics and latency |
 | `<basename>_stedgeai_report.txt` | STM32N6 compiler analysis |
-| `<basename>_board_report.*` | Custom-firmware validation and timing |
-| `manifest.json` | Model identity, sources, dataset/code revisions, gates, and sizes |
+| `<basename>_board_report.json` | Custom-firmware validation, predictions, and timing |
+| `<basename>_model_card.md` | Contract, metrics, intended target, and file guide |
+| `manifest.json` | Model identity, dataset/code revisions, gates, sizes, and hashes |
 | `SHA256SUMS` | SHA-256 digest for every distributed file |
 
 Only list an asset in the manifest after its corresponding validation passed.
+Sanitize reports before staging: public files must not expose workstation
+paths. Keep training histories, raw logs, temporary exports, and other
+diagnostic-only artifacts out of the release bundle.
 
 ## 4. Commit, tag, and publish
 

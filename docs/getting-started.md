@@ -102,3 +102,5 @@ Download the Keras, TFLite, ONNX, ordered labels, and model config from the same
 release and keep them together. The config and labels define the input/output
 contract; do not mix sidecars from another model version. Maintainers stage
 validated release bundles locally under the gitignored `release/` directory.
+The v1.0 INT8 model uses 2.5-second mono 24 kHz input and produces 38 ordered
+scores: 30 bird species and eight nuisance sounds.

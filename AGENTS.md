@@ -25,3 +25,6 @@ Do not publish an artifact that merely converted successfully. A release model
 must pass the configured Keras/TFLite parity gate, load in each advertised
 runtime, pass ONNX validation when ONNX is included, and compile for STM32N6.
 Record checksums and the validation reports in the staged release directory.
+Exclude raw training histories, temporary conversions, and raw logs from public
+bundles. Sanitize copied reports and manifests so they do not expose
+machine-local paths, and include a concise model card for each public bundle.
