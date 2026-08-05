@@ -68,6 +68,13 @@ requires all of the following:
    retain its compatibility/memory report.
 7. Run the custom firmware on the physical board and retain the board report.
 
+For the v1 USNE compact-model comparison, A1 is the accuracy reference
+(ROC-AUC 0.972374, class-macro AP 0.733490). A smaller release candidate may
+trade at most 0.02 ROC-AUC and 0.03 class-macro AP for size and board speed.
+Once selected, full-INT8 inference may lose at most 0.01 ROC-AUC or
+class-macro AP relative to that candidate's own float checkpoint. This keeps
+the model-capacity trade separate from quantization loss.
+
 The converter promotes its temporary TFLite file only after mean and tail
 parity gates pass. A failed report is diagnostic only. Audit calibration first;
 use QAT if PTQ cannot pass reliably, then repeat every downstream check.
