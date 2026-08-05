@@ -83,6 +83,8 @@ reads the whole signal instead of 5.7% of it.
   validation samples; requires both mean and fifth-percentile cosine parity;
   records reproducible manifest identities; and atomically promotes TFLite
   artifacts only after all gates pass.
+- ONNX export now uses the Keras 3 exporter and atomically promotes an artifact
+  only after full ONNX checker validation and ONNX Runtime parity.
 
 ### Fixed
 

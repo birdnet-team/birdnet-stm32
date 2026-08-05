@@ -72,7 +72,7 @@ After conversion, the script reports:
 | `--quantization` | `ptq` | `ptq` (full INT8 with calibration) or `dynamic` (dynamic range, no calibration data) |
 | `--per_tensor` | off | Use per-tensor quantization instead of per-channel |
 | `--batch_validate` | 0 | Run validation N times with different seeds, report worst-case |
-| `--export_onnx` | off | Also export ONNX model (requires `tf2onnx`) |
+| `--export_onnx` | off | Export and validate ONNX (requires `tf2onnx`, `onnx`, and `onnxruntime`) |
 | `--report_json` | None | Save structured JSON conversion report |
 
 ## Quantization details
@@ -89,6 +89,12 @@ After conversion, the script reports:
 - **Per-channel** (default): quantizes each output channel separately — better accuracy
 - **Per-tensor**: single scale per tensor — use only if per-channel causes N6 issues
 - **Dynamic range**: INT8 weights, runtime float activations — no calibration data needed, less compression
+
+When `--export_onnx` is requested, export uses the native Keras 3 ONNX path and
+a temporary sibling file. The ONNX checker runs with full validation, then 16
+held-out samples must pass ONNX Runtime parity (`cosine_min >= 0.9999` and
+`max_abs_error <= 1e-4`) before the final `.onnx` is promoted. Install the
+required tools with `pip install 'birdnet-stm32[release]'`.
 
 !!! tip "Quantization modes"
     Use `--quantization ptq` (default) for best on-device performance.

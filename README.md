@@ -100,7 +100,7 @@ part of the model contract.
 - **Dynamic range quantization**: `--quantization dynamic` — no calibration data needed
 - **Validation**: mean and tail cosine similarity, MSE, MAE, and Pearson r on a deterministic held-out calibration split
 - **Atomic quality gate**: failed conversions never promote a release-looking `.tflite`
-- **ONNX export**: `--export_onnx` (requires `tf2onnx`)
+- **ONNX export**: `--export_onnx` uses the Keras 3 exporter, ONNX checker, and ONNX Runtime parity gate (requires `tf2onnx`, `onnx`, and `onnxruntime`)
 
 ### Evaluation
 
