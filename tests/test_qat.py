@@ -6,9 +6,12 @@ import pytest
 tf = pytest.importorskip("tensorflow", reason="TensorFlow required for QAT tests")
 
 from birdnet_stm32.training.qat import (
+    FakeQuantActivation,
     QATCallback,
     _channel_axis,
     _is_quantizable,
+    build_qat_model,
+    calibrate_activation_ranges,
     fake_quantize_weights,
     freeze_batch_norm,
 )
@@ -114,11 +117,43 @@ class TestLayerFiltering:
         layer = tf.keras.layers.ReLU(name="relu")
         assert _is_quantizable(layer) is False
 
-    def test_is_quantizable_audio_frontend_skipped(self):
-        """Layers named 'audio_frontend*' should be skipped."""
+    def test_audio_frontend_kernel_is_quantized(self):
+        """Frontend kernels must see the same INT8 noise as deployment."""
         layer = tf.keras.layers.Conv2D(8, 3, name="audio_frontend_conv")
         layer.build((None, 16, 16, 1))
-        assert _is_quantizable(layer) is False
+        assert _is_quantizable(layer) is True
+
+
+class TestActivationQAT:
+    """Exercise the activation side of the QAT graph."""
+
+    def test_fake_quant_activation_uses_int8_grid(self):
+        layer = FakeQuantActivation(-1.0, 2.0)
+        values = tf.linspace(-1.0, 2.0, 1000)
+        quantized = layer(values).numpy()
+        assert np.unique(quantized).size <= 256
+        assert quantized.min() >= -1.01
+        assert quantized.max() <= 2.01
+
+    def test_calibration_and_shared_weight_graph(self):
+        inputs = tf.keras.Input(shape=(4, 4, 1), name="input")
+        x = tf.keras.layers.Conv2D(4, 3, padding="same", use_bias=False, name="conv")(inputs)
+        x = tf.keras.layers.BatchNormalization(name="bn")(x)
+        x = tf.keras.layers.ReLU(max_value=6, name="relu")(x)
+        x = tf.keras.layers.GlobalAveragePooling2D(name="gap")(x)
+        outputs = tf.keras.layers.Dense(2, activation="sigmoid", name="pred")(x)
+        deployment = tf.keras.Model(inputs, outputs)
+
+        rng = np.random.default_rng(3)
+        samples = rng.normal(size=(4, 4, 4, 1)).astype(np.float32)
+        labels = np.zeros((4, 2), dtype=np.float32)
+        dataset = tf.data.Dataset.from_tensor_slices((samples, labels)).batch(2)
+        ranges = calibrate_activation_ranges(deployment, dataset, max_samples=4)
+        qat_model = build_qat_model(deployment, ranges)
+
+        assert {"bn", "relu", "gap", "pred"} <= ranges.keys()
+        assert qat_model.get_layer("conv_quantized_kernel").target is deployment.get_layer("conv")
+        assert any(layer.name.endswith("_fake_quant") for layer in qat_model.layers)
 
 
 # ---------------------------------------------------------------------------

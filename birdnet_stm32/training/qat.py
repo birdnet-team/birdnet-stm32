@@ -1,31 +1,29 @@
-"""Quantization-Aware Training (QAT) via shadow-weight fake-quantization.
+"""Keras 3 quantization-aware fine-tuning for full-INT8 TFLite deployment.
 
-Manual QAT for Keras 3 (tensorflow-model-optimization is incompatible).
-Injects INT8 quantization noise during fine-tuning so the model learns
-weights that survive Post-Training Quantization with minimal accuracy loss.
-
-No FakeQuant ops remain in the saved model — full STM32N6 NPU compatibility.
-
-Usage::
-
-    python -m birdnet_stm32 train --data_path_train data/train \\
-        --qat --checkpoint_path checkpoints/best_model.keras \\
-        --epochs 10 --learning_rate 0.0001
+The training graph simulates both quantized kernels and per-tensor activation
+requantization.  It shares variables with a clean deployment graph, so the
+saved checkpoint contains no FakeQuant operators or training-only wrappers.
 """
 
 import argparse
+import json
 import math
 import os
+from collections.abc import Iterable
 
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers
 
-# Layer types that receive weight fake-quantization during QAT.
 QUANTIZABLE_TYPES = (layers.Conv2D, layers.DepthwiseConv2D, layers.Dense)
-
-# Layer name prefixes to skip (custom/frontend layers).
-SKIP_PREFIXES = ("audio_frontend",)
+ACTIVATION_BOUNDARY_TYPES = (
+    layers.BatchNormalization,
+    layers.ReLU,
+    layers.Add,
+    layers.Multiply,
+    layers.Dense,
+    layers.GlobalAveragePooling2D,
+)
 
 
 def fake_quantize_weights(
@@ -34,73 +32,190 @@ def fake_quantize_weights(
     per_channel: bool = True,
     channel_axis: int = -1,
 ) -> np.ndarray:
-    """Simulate INT8 quantization on a weight array (quantize then dequantize).
-
-    Mirrors the grid TFLite actually uses for kernels: **symmetric**, zero-point
-    zero, values in ``[-(2**(b-1) - 1), 2**(b-1) - 1]``. Simulating an
-    asymmetric min/max grid here would train the model against a quantizer it
-    never meets at conversion time.
-
-    Args:
-        w: Weight tensor (float32).
-        num_bits: Quantization bit width.
-        per_channel: Per-channel (True) or per-tensor (False) quantization.
-        channel_axis: Axis for per-channel quantization (may be negative).
-
-    Returns:
-        Fake-quantized weight tensor (float32, same shape).
-    """
-    qmax = (1 << (num_bits - 1)) - 1  # 127 for 8-bit
-
+    """Quantize and dequantize a kernel on TFLite's symmetric INT8 grid."""
+    qmax = (1 << (num_bits - 1)) - 1
     if per_channel and w.ndim > 1:
-        axis = channel_axis % w.ndim  # normalise so negative axes match
+        axis = channel_axis % w.ndim
         reduce_axes = tuple(i for i in range(w.ndim) if i != axis)
         amax = np.max(np.abs(w), axis=reduce_axes, keepdims=True)
     else:
         amax = np.max(np.abs(w))
-
     scale = np.maximum(amax / qmax, 1e-12)
-    w_q = np.clip(np.round(w / scale), -qmax, qmax) * scale
-    return w_q.astype(np.float32)
+    return (np.clip(np.round(w / scale), -qmax, qmax) * scale).astype(np.float32)
+
+
+def _all_layers(model: tf.keras.Model) -> list[tf.keras.layers.Layer]:
+    """Return every nested layer exactly once."""
+    flattened = model._flatten_layers(include_self=False, recursive=True)  # noqa: SLF001
+    return list(dict.fromkeys(flattened))
 
 
 def _channel_axis(layer: tf.keras.layers.Layer) -> int:
-    """Get the per-channel quantization axis for a layer's kernel."""
-    if isinstance(layer, layers.DepthwiseConv2D):
-        return -2  # kernel shape: [H, W, C_in, depth_multiplier]
-    return -1  # Conv2D: [H, W, C_in, C_out], Dense: [in, out]
+    """Return TFLite's output-channel axis for a kernel."""
+    return -2 if isinstance(layer, layers.DepthwiseConv2D) else -1
 
 
 def _is_quantizable(layer: tf.keras.layers.Layer) -> bool:
-    """Check if a layer should be fake-quantized during QAT."""
-    if not isinstance(layer, QUANTIZABLE_TYPES):
-        return False
-    if not layer.trainable_weights:
-        return False
-    return not any(layer.name.startswith(p) for p in SKIP_PREFIXES)
+    """Return whether a layer owns a kernel quantized by full-INT8 TFLite."""
+    return isinstance(layer, QUANTIZABLE_TYPES) and bool(layer.trainable_weights)
+
+
+def _is_activation_boundary(layer: tf.keras.layers.Layer) -> bool:
+    """Return whether an outer-graph tensor is requantized during inference."""
+    return isinstance(layer, ACTIVATION_BOUNDARY_TYPES) or layer.__class__.__name__ == "AudioFrontendLayer"
+
+
+@tf.keras.utils.register_keras_serializable(package="birdnet_stm32")
+class FakeQuantActivation(layers.Layer):
+    """Static per-tensor INT8 fake quantizer with an asymmetric zero point."""
+
+    def __init__(self, minimum: float, maximum: float, num_bits: int = 8, **kwargs):
+        super().__init__(trainable=False, **kwargs)
+        minimum = min(float(minimum), 0.0)
+        maximum = max(float(maximum), 0.0)
+        if maximum - minimum < 1e-6:
+            maximum = minimum + 1e-6
+        self.minimum = minimum
+        self.maximum = maximum
+        self.num_bits = int(num_bits)
+
+    def call(self, inputs):
+        """Apply the same scalar affine grid used for TFLite activations."""
+        return tf.quantization.fake_quant_with_min_max_args(
+            inputs,
+            min=self.minimum,
+            max=self.maximum,
+            num_bits=self.num_bits,
+            narrow_range=False,
+        )
+
+    def get_config(self):
+        """Return serializable quantizer settings."""
+        config = super().get_config()
+        config.update({"minimum": self.minimum, "maximum": self.maximum, "num_bits": self.num_bits})
+        return config
+
+
+def _fake_quantize_kernel_tensor(kernel: tf.Tensor, channel_axis: int) -> tf.Tensor:
+    """Differentiably fake-quantize a kernel per output channel."""
+    rank = len(kernel.shape)
+    axis = channel_axis % rank
+    transposed = axis != rank - 1
+    if transposed:
+        permutation = [index for index in range(rank) if index != axis] + [axis]
+        inverse = np.argsort(permutation).tolist()
+        kernel = tf.transpose(kernel, permutation)
+    reduce_axes = tuple(range(rank - 1))
+    maximum = tf.reduce_max(tf.abs(kernel), axis=reduce_axes)
+    maximum = tf.maximum(maximum, tf.cast(1e-12, kernel.dtype))
+    quantized = tf.quantization.fake_quant_with_min_max_vars_per_channel(
+        kernel,
+        min=-maximum,
+        max=maximum,
+        num_bits=8,
+        narrow_range=True,
+    )
+    return tf.transpose(quantized, inverse) if transposed else quantized
+
+
+class _QuantizedKernelCall(layers.Layer):
+    """Call a built Conv/DWConv/Dense layer with an STE-quantized kernel."""
+
+    def __init__(self, target: tf.keras.layers.Layer, **kwargs):
+        super().__init__(trainable=True, **kwargs)
+        self.target = target
+
+    def call(self, inputs):
+        """Run the target math without replacing its full-precision variable."""
+        kernel = _fake_quantize_kernel_tensor(self.target.kernel, _channel_axis(self.target))
+        if isinstance(self.target, layers.Conv2D):
+            output = self.target.convolution_op(inputs, kernel)
+        elif isinstance(self.target, layers.DepthwiseConv2D):
+            if self.target.data_format != "channels_last":
+                raise ValueError("QAT supports channels_last DepthwiseConv2D only")
+            output = tf.nn.depthwise_conv2d(
+                inputs,
+                kernel,
+                strides=(1, *self.target.strides, 1),
+                padding=self.target.padding.upper(),
+                data_format="NHWC",
+                dilations=self.target.dilation_rate,
+            )
+        elif isinstance(self.target, layers.Dense):
+            output = tf.linalg.matmul(inputs, kernel)
+        else:  # pragma: no cover - constructor is internal and type-guarded
+            raise TypeError(f"Unsupported quantized kernel layer: {type(self.target).__name__}")
+        if self.target.bias is not None:
+            output = output + self.target.bias
+        return self.target.activation(output)
+
+
+def calibrate_activation_ranges(
+    model: tf.keras.Model,
+    dataset: Iterable,
+    max_samples: int = 64,
+) -> dict[str, tuple[float, float]]:
+    """Measure scalar activation ranges on real inputs for QAT initialization."""
+    boundaries = [layer for layer in model.layers if _is_activation_boundary(layer)]
+    if not boundaries:
+        raise ValueError("Model has no supported activation quantization boundaries")
+    probe = tf.keras.Model(model.inputs, [layer.output for layer in boundaries])
+    ranges = {layer.name: [float("inf"), -float("inf")] for layer in boundaries}
+
+    seen = 0
+    for batch in dataset:
+        inputs = batch[0] if isinstance(batch, (tuple, list)) and len(batch) == 2 else batch
+        inputs = np.asarray(inputs)
+        for sample in inputs:
+            outputs = probe(sample[None], training=False)
+            if not isinstance(outputs, (tuple, list)):
+                outputs = [outputs]
+            for layer, output in zip(boundaries, outputs, strict=True):
+                array = np.asarray(output)
+                ranges[layer.name][0] = min(ranges[layer.name][0], float(np.min(array)), 0.0)
+                ranges[layer.name][1] = max(ranges[layer.name][1], float(np.max(array)), 0.0)
+            seen += 1
+            if seen >= max_samples:
+                break
+        if seen >= max_samples:
+            break
+    if seen == 0:
+        raise ValueError("Activation calibration dataset yielded no samples")
+
+    result = {name: (values[0], values[1]) for name, values in ranges.items()}
+    print(f"[QAT] Calibrated {len(result)} activation tensors on {seen} samples")
+    return result
+
+
+def build_qat_model(
+    deployment_model: tf.keras.Model,
+    activation_ranges: dict[str, tuple[float, float]],
+) -> tf.keras.Model:
+    """Build an activation-fake-quant graph sharing deployment model weights."""
+
+    def call_function(layer, *args, **kwargs):
+        if _is_quantizable(layer):
+            output = _QuantizedKernelCall(layer, name=f"{layer.name}_quantized_kernel")(*args, **kwargs)
+        else:
+            output = layer(*args, **kwargs)
+        if layer.name in activation_ranges:
+            minimum, maximum = activation_ranges[layer.name]
+            output = FakeQuantActivation(
+                minimum,
+                maximum,
+                name=f"{layer.name}_fake_quant",
+            )(output)
+        return output
+
+    return tf.keras.models.clone_model(
+        deployment_model,
+        clone_function=lambda layer: layer,
+        call_function=call_function,
+    )
 
 
 class QATCallback(tf.keras.callbacks.Callback):
-    """Shadow-weight fake-quantization callback for QAT fine-tuning.
-
-    Before each training step:
-
-    1. Save full-precision (FP32) weight copies.
-    2. Replace kernel weights with fake-quantized (INT8-simulated) versions.
-       Biases are left at full precision (INT32 in TFLite).
-
-    After each training step:
-
-    1. Compute optimizer delta (post-update weight minus pre-update quantized weight).
-    2. Apply delta to full-precision weights.
-
-    This ensures gradients flow through quantized weights (approximate STE)
-    while maintaining full-precision weight accumulation across steps.
-
-    Args:
-        num_bits: Quantization bit width (default: 8).
-        per_channel: Per-channel (True) or per-tensor (False) quantization.
-    """
+    """Inject per-channel kernel fake quantization around each optimizer step."""
 
     def __init__(self, num_bits: int = 8, per_channel: bool = True):
         super().__init__()
@@ -110,75 +225,48 @@ class QATCallback(tf.keras.callbacks.Callback):
         self._tracked: list[tuple[tf.Variable, np.ndarray, np.ndarray]] = []
 
     def on_train_begin(self, logs=None):
-        """Identify quantizable layers and report statistics."""
-        self._qat_layers = [lyr for lyr in self.model.layers if _is_quantizable(lyr)]
-        n_params = sum(
-            sum(int(np.prod(w.shape)) for w in lyr.trainable_weights if "bias" not in w.name)
-            for lyr in self._qat_layers
-        )
+        """Discover quantized kernels, including nested frontend layers."""
+        self._qat_layers = [layer for layer in _all_layers(self.model) if _is_quantizable(layer)]
+        n_params = sum(int(np.prod(layer.kernel.shape)) for layer in self._qat_layers)
         print(
-            f"[QAT] {len(self._qat_layers)} layers, {n_params:,} kernel params, "
+            f"[QAT] {len(self._qat_layers)} kernel layers, {n_params:,} params, "
             f"{self.num_bits}-bit, per_channel={self.per_channel}"
         )
 
     def on_train_batch_begin(self, batch, logs=None):
-        """Save FP weights and inject fake-quantized versions for forward pass."""
+        """Replace full-precision kernels with their dequantized INT8 values."""
         self._tracked = []
         for layer in self._qat_layers:
-            axis = _channel_axis(layer)
-            for var in layer.trainable_weights:
-                if "bias" in var.name:
-                    continue  # biases stay at full precision (INT32 in TFLite)
-                fp = var.numpy().copy()
-                fq = fake_quantize_weights(fp, self.num_bits, self.per_channel, axis)
-                var.assign(fq)
-                self._tracked.append((var, fp, fq))
+            variable = layer.kernel
+            fp = variable.numpy().copy()
+            quantized = fake_quantize_weights(fp, self.num_bits, self.per_channel, _channel_axis(layer))
+            variable.assign(quantized)
+            self._tracked.append((variable, fp, quantized))
 
     def on_train_batch_end(self, batch, logs=None):
-        """Transfer optimizer's gradient update to full-precision weights."""
-        for var, fp, q in self._tracked:
-            # delta = what the optimizer changed = (post-update) - (pre-update quantized)
-            delta = var.numpy() - q
-            var.assign(fp + delta)
+        """Apply the optimizer delta to the full-precision shadow kernels."""
+        for variable, fp, quantized in self._tracked:
+            variable.assign(fp + variable.numpy() - quantized)
 
 
 def freeze_batch_norm(model: tf.keras.Model) -> int:
-    """Freeze all BatchNormalization layers (standard for QAT fine-tuning).
-
-    Prevents BN running statistics from drifting due to quantization noise.
-
-    Args:
-        model: Keras model.
-
-    Returns:
-        Number of frozen BN layers.
-    """
-    count = 0
-    for layer in model.layers:
-        if isinstance(layer, layers.BatchNormalization):
-            layer.trainable = False
-            count += 1
-    return count
+    """Freeze all BatchNormalization layers, including nested frontend BN."""
+    batch_norms = [layer for layer in _all_layers(model) if isinstance(layer, layers.BatchNormalization)]
+    for layer in batch_norms:
+        layer.trainable = False
+    return len(batch_norms)
 
 
 def _detect_loss(model: tf.keras.Model) -> str:
-    """Return the training loss for the model. Always binary crossentropy."""
-    del model  # The classifier head is always sigmoid + BCE.
+    """Return the multi-label classifier loss."""
+    del model
     return "binary_crossentropy"
 
 
 def run_qat(args: argparse.Namespace) -> None:
-    """Run QAT fine-tuning from CLI args.
-
-    Loads a pretrained model, freezes BatchNorm layers, and fine-tunes
-    with shadow-weight fake-quantization. Saves the QAT model as
-    ``{checkpoint_path_stem}_qat.keras``.
-
-    Args:
-        args: Parsed CLI arguments (checkpoint_path, data_path_train,
-              epochs, learning_rate, batch_size, etc.).
-    """
+    """Fine-tune a pretrained model against weight and activation INT8 noise."""
     from birdnet_stm32.data.dataset import (
+        load_classes_file,
         load_file_paths_from_directory,
         upsample_minority_classes,
     )
@@ -188,12 +276,10 @@ def run_qat(args: argparse.Namespace) -> None:
     from birdnet_stm32.training.config import ModelConfig
     from birdnet_stm32.training.trainer import train_model
 
-    # --- Load pretrained model -----------------------------------------------
     if not os.path.isfile(args.checkpoint_path):
-        raise FileNotFoundError(f"QAT requires a pretrained model. Not found: {args.checkpoint_path}")
-
+        raise FileNotFoundError(f"QAT requires a pretrained model: {args.checkpoint_path}")
     print(f"[QAT] Loading pretrained model from {args.checkpoint_path}")
-    model = tf.keras.models.load_model(
+    deployment_model = tf.keras.models.load_model(
         args.checkpoint_path,
         compile=False,
         custom_objects={
@@ -202,41 +288,31 @@ def run_qat(args: argparse.Namespace) -> None:
         },
     )
 
-    # --- Load model config ---------------------------------------------------
-    cfg_path = os.path.splitext(args.checkpoint_path)[0] + "_model_config.json"
-    if hasattr(args, "model_config") and args.model_config:
-        cfg_path = args.model_config
+    cfg_path = getattr(args, "model_config", "") or os.path.splitext(args.checkpoint_path)[0] + "_model_config.json"
     if not os.path.isfile(cfg_path):
         raise FileNotFoundError(f"Model config not found: {cfg_path}")
     cfg = ModelConfig.load(cfg_path)
 
-    # --- Freeze BatchNorm ----------------------------------------------------
-    n_frozen = freeze_batch_norm(model)
-    print(f"[QAT] Frozen {n_frozen} BatchNorm layers")
+    classes = load_classes_file(args.classes_file) if args.classes_file else list(cfg.class_names)
+    if not classes:
+        raise ValueError("QAT requires class_names in the model config or --classes_file")
+    if classes != cfg.class_names:
+        raise ValueError("QAT class order must exactly match the pretrained model config")
+    if len(classes) != deployment_model.output_shape[-1]:
+        raise ValueError("QAT dataset class count does not match the pretrained model output")
 
-    # --- Detect loss function ------------------------------------------------
-    loss_fn = _detect_loss(model)
-    print(f"[QAT] Loss: {loss_fn}")
+    train_paths, _ = load_file_paths_from_directory(args.data_path_train, classes=classes)
+    if args.data_path_val:
+        val_paths, _ = load_file_paths_from_directory(args.data_path_val, classes=classes)
+    else:
+        rng = np.random.default_rng(args.seed)
+        rng.shuffle(train_paths)
+        split_idx = int(len(train_paths) * (1 - args.val_split))
+        train_paths, val_paths = train_paths[:split_idx], train_paths[split_idx:]
+    if not train_paths or not val_paths:
+        raise ValueError("QAT requires non-empty training and validation datasets")
 
-    # --- Prepare datasets ----------------------------------------------------
-    file_paths, classes = load_file_paths_from_directory(args.data_path_train)
-
-    # Validate class count matches pretrained model
-    model_num_classes = model.output_shape[-1]
-    if len(classes) != model_num_classes:
-        raise ValueError(
-            f"QAT dataset has {len(classes)} classes but the pretrained model "
-            f"outputs {model_num_classes}. QAT fine-tunes an existing model — "
-            f"the class count must match. Use --linear_probe to adapt a "
-            f"pretrained model to a different set of classes."
-        )
-
-    split_idx = int(len(file_paths) * (1 - args.val_split))
-    train_paths = file_paths[:split_idx]
-    val_paths = file_paths[split_idx:]
-    print(f"[QAT] Training on {len(train_paths)} files, validating on {len(val_paths)} files")
-
-    if args.upsample_ratio and 0 < args.upsample_ratio < 1.0:
+    if args.upsample_ratio and 0 < args.upsample_ratio <= 1.0:
         train_paths = upsample_minority_classes(train_paths, classes, args.upsample_ratio)
 
     common_kwargs = dict(
@@ -247,8 +323,10 @@ def run_qat(args: argparse.Namespace) -> None:
         mel_bins=cfg.num_mels,
         fft_length=cfg.fft_length,
         mag_scale=cfg.mag_scale,
+        num_workers=args.num_workers,
+        max_chunks_per_file=args.max_chunks_per_file,
+        prefetch_batches=args.prefetch_batches,
     )
-    # No mixup or augmentation during QAT fine-tuning.
     train_dataset = load_dataset(
         train_paths,
         classes,
@@ -269,22 +347,27 @@ def run_qat(args: argparse.Namespace) -> None:
         mixup_alpha=0.0,
         mixup_probability=0.0,
         random_offset=False,
-        snr_threshold=0.5,
+        snr_threshold=0.0,
         spec_augment=False,
         **common_kwargs,
     )
 
+    n_frozen = freeze_batch_norm(deployment_model)
+    print(f"[QAT] Frozen {n_frozen} BatchNorm layers")
+    activation_ranges = calibrate_activation_ranges(deployment_model, val_dataset, max_samples=64)
+    qat_model = build_qat_model(deployment_model, activation_ranges)
+
+    qat_path = args.checkpoint_path.replace(".keras", "_qat.keras")
+    ranges_path = qat_path.replace(".keras", "_activation_ranges.json")
+    with open(ranges_path, "w", encoding="utf-8") as handle:
+        json.dump({name: {"min": lo, "max": hi} for name, (lo, hi) in activation_ranges.items()}, handle, indent=2)
+
     steps_per_epoch = max(1, math.ceil(len(train_paths) / float(args.batch_size)))
     val_steps = max(1, math.ceil(len(val_paths) / float(args.batch_size)))
-
-    # --- QAT output path -----------------------------------------------------
-    qat_path = args.checkpoint_path.replace(".keras", "_qat.keras")
-
-    # --- Fine-tune with QAT --------------------------------------------------
-    qat_cb = QATCallback(num_bits=8, per_channel=True)
+    print(f"[QAT] Training on {len(train_paths)} files, validating on {len(val_paths)} files")
     print(f"[QAT] Fine-tuning for {args.epochs} epochs at LR={args.learning_rate}")
     train_model(
-        model,
+        qat_model,
         train_dataset,
         val_dataset,
         epochs=args.epochs,
@@ -295,9 +378,9 @@ def run_qat(args: argparse.Namespace) -> None:
         val_steps=val_steps,
         optimizer=args.optimizer,
         weight_decay=args.weight_decay,
+        loss_fn=_detect_loss(deployment_model),
         gradient_clip_norm=args.grad_clip,
-        extra_callbacks=[qat_cb],
+        checkpoint_model=deployment_model,
     )
-
-    print(f"[QAT] Fine-tuned model saved to {qat_path}")
-    print(f"[QAT] Convert with: python -m birdnet_stm32 convert --checkpoint_path {qat_path} --model_config {cfg_path}")
+    print(f"[QAT] Clean quantization-ready checkpoint saved to {qat_path}")
+    print(f"[QAT] Activation calibration ranges saved to {ranges_path}")
