@@ -164,10 +164,10 @@ frontend variables are synchronized before each checkpoint. Only the clean
 graph is saved, so no FakeQuant ops remain in the model.
 
 A frozen copy of the untouched checkpoint acts as the teacher. QAT minimizes
-the normal label loss, per-output Bernoulli KL divergence, and per-sample
-cosine distance from that teacher. This constrains background and
-low-confidence probabilities while directly optimizing the lower tail that
-the release parity gate measures.
+the normal label loss, per-output Bernoulli KL divergence, and both mean and
+worst-quartile per-sample cosine distance from that teacher. This constrains
+background and low-confidence probabilities while directly optimizing the
+lower tail that the release parity gate measures.
 
 ```bash
 # Step 1: Normal training
