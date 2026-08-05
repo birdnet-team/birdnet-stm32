@@ -65,7 +65,9 @@ def validate_models(
         rep_data_gen: Callable returning an iterable of [input_tensor].
 
     Returns:
-        Dict with keys 'cosine_mean', 'mse_mean', 'mae_mean', 'pearson_mean'.
+        Distribution statistics for cosine similarity, MSE, MAE, and Pearson
+        correlation.  Tail statistics are included so a high mean cannot hide
+        badly quantized inputs.
     """
     # Go through the shared runner so INT8-I/O models are quantized/dequantized
     # exactly the way evaluation and deployment will do it.
@@ -105,9 +107,31 @@ def validate_models(
     _summ("mae", mae_list)
     _summ("pearson_r", pcc_list)
 
-    return {
-        "cosine_mean": float(np.mean(cos_list)) if cos_list else 0.0,
-        "mse_mean": float(np.mean(mse_list)) if mse_list else float("inf"),
-        "mae_mean": float(np.mean(mae_list)) if mae_list else float("inf"),
-        "pearson_mean": float(np.mean(pcc_list)) if pcc_list else 0.0,
-    }
+    def _stats(name: str, values: list[float], empty: float) -> dict[str, float]:
+        if not values:
+            return {
+                f"{name}_mean": empty,
+                f"{name}_std": empty,
+                f"{name}_min": empty,
+                f"{name}_p05": empty,
+                f"{name}_median": empty,
+                f"{name}_p95": empty,
+                f"{name}_max": empty,
+            }
+        array = np.asarray(values, dtype=np.float64)
+        return {
+            f"{name}_mean": float(np.mean(array)),
+            f"{name}_std": float(np.std(array)),
+            f"{name}_min": float(np.min(array)),
+            f"{name}_p05": float(np.percentile(array, 5)),
+            f"{name}_median": float(np.median(array)),
+            f"{name}_p95": float(np.percentile(array, 95)),
+            f"{name}_max": float(np.max(array)),
+        }
+
+    metrics: dict[str, float] = {"num_samples": float(len(cos_list))}
+    metrics.update(_stats("cosine", cos_list, 0.0))
+    metrics.update(_stats("mse", mse_list, float("inf")))
+    metrics.update(_stats("mae", mae_list, float("inf")))
+    metrics.update(_stats("pearson", pcc_list, 0.0))
+    return metrics

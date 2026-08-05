@@ -1,8 +1,11 @@
 """CLI entry point for TFLite conversion."""
 
 import argparse
+import json
 import os
 import random
+import tempfile
+from collections import defaultdict
 
 import numpy as np
 import tensorflow as tf
@@ -38,6 +41,12 @@ def get_args() -> argparse.Namespace:
         help="Minimum mean cosine similarity threshold. Conversion fails if below (0 to disable).",
     )
     parser.add_argument(
+        "--min_cosine_p05",
+        type=float,
+        default=0.90,
+        help="Minimum fifth-percentile cosine similarity (0 to disable).",
+    )
+    parser.add_argument(
         "--quantization",
         type=str,
         default="ptq",
@@ -71,6 +80,53 @@ def get_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _stratified_sample_paths(
+    file_paths: list[str],
+    num_samples: int,
+    *,
+    seed: int,
+    exclude: set[str] | None = None,
+) -> list[str]:
+    """Select exactly ``num_samples`` paths with balanced class coverage."""
+    excluded = exclude or set()
+    grouped: dict[str, list[str]] = defaultdict(list)
+    for path in file_paths:
+        if path not in excluded:
+            grouped[os.path.basename(os.path.dirname(path))].append(path)
+
+    rng = random.Random(seed)
+    class_names = sorted(grouped)
+    rng.shuffle(class_names)
+    for paths in grouped.values():
+        rng.shuffle(paths)
+
+    selected: list[str] = []
+    offsets = {name: 0 for name in class_names}
+    while len(selected) < num_samples:
+        added = False
+        for name in class_names:
+            offset = offsets[name]
+            paths = grouped[name]
+            if offset < len(paths):
+                selected.append(paths[offset])
+                offsets[name] = offset + 1
+                added = True
+                if len(selected) == num_samples:
+                    break
+        if not added:
+            break
+    return selected
+
+
+def _write_report(path: str, report: dict) -> None:
+    if not path:
+        return
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(report, handle, indent=2, default=str)
+    print(f"Conversion report saved to {path}")
+
+
 def main():
     """Convert a trained Keras model to quantized TFLite and validate."""
     args = get_args()
@@ -97,29 +153,24 @@ def main():
         if not file_paths:
             raise ValueError("No training audio found for the classes in the model config.")
 
-        # Stratified sampling: balance classes in representative dataset
-        from collections import defaultdict
-
-        class_files: dict[str, list[str]] = defaultdict(list)
-        for p in file_paths:
-            cls = os.path.basename(os.path.dirname(p))
-            class_files[cls].append(p)
-
-        per_class = max(1, args.num_samples // max(len(class_files), 1))
-        stratified_paths: list[str] = []
-        for _cls_name, paths in class_files.items():
-            n = min(per_class, len(paths))
-            stratified_paths.extend(random.sample(paths, n))
-        random.shuffle(stratified_paths)
-        # Cap at num_samples
-        stratified_paths = stratified_paths[: args.num_samples]
-        print(f"Representative dataset: {len(stratified_paths)} stratified samples from {len(class_files)} classes.")
+        class_count = len({os.path.basename(os.path.dirname(path)) for path in file_paths})
+        stratified_paths = _stratified_sample_paths(file_paths, args.num_samples, seed=42)
+        print(f"Representative dataset: {len(stratified_paths)} stratified samples from {class_count} folders.")
 
         def rep_data_gen():
             return representative_data_gen(stratified_paths, cfg, num_samples=len(stratified_paths))
 
-        # Validation uses a different subset
-        val_paths_subset = random.sample(file_paths, min(args.validate_samples, len(file_paths)))
+        # Calibration and validation must be disjoint; overlap makes parity
+        # reports optimistic and invalidates a release gate.
+        val_paths_subset = _stratified_sample_paths(
+            file_paths,
+            args.validate_samples,
+            seed=43,
+            exclude=set(stratified_paths),
+        )
+        if not val_paths_subset:
+            raise ValueError("No files remain for disjoint quantization validation.")
+        print(f"Validation dataset: {len(val_paths_subset)} disjoint stratified samples.")
 
         def rep_data_gen_val():
             return representative_data_gen(val_paths_subset, cfg, num_samples=len(val_paths_subset))
@@ -150,99 +201,106 @@ def main():
     if not args.output_path:
         args.output_path = os.path.splitext(args.checkpoint_path)[0] + "_quantized.tflite"
 
-    # Convert
-    convert_to_tflite(model, rep_data_gen, args.output_path, quantization=args.quantization, per_tensor=args.per_tensor)
-    print(f"TFLite model saved to {args.output_path}")
+    # Conversion is staged beside the destination and promoted atomically only
+    # after every numerical quality gate passes.  A failed conversion must
+    # never leave a release-looking .tflite artifact behind.
+    output_dir = os.path.dirname(os.path.abspath(args.output_path))
+    os.makedirs(output_dir, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        prefix=".quantizing-", suffix=".tflite", dir=output_dir, delete=False
+    ) as tmp_handle:
+        tmp_path = tmp_handle.name
+    report: dict = {
+        "output_path": args.output_path,
+        "quantization": args.quantization,
+        "per_tensor": args.per_tensor,
+        "quality_gate_passed": False,
+    }
 
-    # Save labels alongside the converted model so consumers don't need the
-    # full Keras model config to interpret the output tensor.
-    if cfg.get("class_names"):
-        labels_path = os.path.splitext(args.output_path)[0] + "_labels.txt"
-        with open(labels_path, "w") as f:
-            for name in cfg["class_names"]:
-                f.write(f"{name}\n")
-        print(f"Labels saved to {labels_path}")
+    try:
+        convert_to_tflite(model, rep_data_gen, tmp_path, quantization=args.quantization, per_tensor=args.per_tensor)
 
-    # Validate (single run or batch)
-    report: dict = {"output_path": args.output_path, "quantization": args.quantization, "per_tensor": args.per_tensor}
+        n_runs = max(1, args.batch_validate) if args.batch_validate > 0 else 1
+        all_metrics: list[dict] = []
+        for run_idx in range(n_runs):
+            if n_runs > 1:
+                print(f"\n--- Validation run {run_idx + 1}/{n_runs} ---")
+            val_metrics = validate_models(model, tmp_path, rep_data_gen_val)
+            all_metrics.append(val_metrics)
 
-    n_runs = max(1, args.batch_validate) if args.batch_validate > 0 else 1
-    all_metrics: list[dict] = []
-    for run_idx in range(n_runs):
+        # Aggregate metrics across runs. Input manifests are deterministic, so
+        # repeated runs measure runtime repeatability rather than resampling.
         if n_runs > 1:
-            print(f"\n--- Validation run {run_idx + 1}/{n_runs} ---")
-            random.seed(run_idx)
-            np.random.seed(run_idx)
-        val_metrics = validate_models(model, args.output_path, rep_data_gen_val)
-        all_metrics.append(val_metrics)
+            print(f"\n--- Batch validation summary ({n_runs} runs) ---")
+            for key in ["cosine_mean", "cosine_p05", "mse_mean", "mae_mean", "pearson_mean"]:
+                vals = [m[key] for m in all_metrics]
+                worst = min(vals) if "cosine" in key or "pearson" in key else max(vals)
+                mean = np.mean(vals)
+                print(f"  {key}: mean={mean:.6f}  worst={worst:.6f}")
+            report["batch_validation"] = {"n_runs": n_runs, "all_metrics": all_metrics}
+            val_metrics = dict(all_metrics[0])
+            val_metrics["cosine_mean"] = min(m["cosine_mean"] for m in all_metrics)
+            val_metrics["cosine_p05"] = min(m["cosine_p05"] for m in all_metrics)
+        else:
+            val_metrics = all_metrics[0]
+        report["validation"] = val_metrics
 
-    # Aggregate metrics across runs
-    if n_runs > 1:
-        print(f"\n--- Batch validation summary ({n_runs} runs) ---")
-        for key in ["cosine_mean", "mse_mean", "mae_mean", "pearson_mean"]:
-            vals = [m[key] for m in all_metrics]
-            worst = min(vals) if "cosine" in key or "pearson" in key else max(vals)
-            mean = np.mean(vals)
-            print(f"  {key}: mean={mean:.6f}  worst={worst:.6f}")
-        report["batch_validation"] = {"n_runs": n_runs, "all_metrics": all_metrics}
-        # Use worst-case cosine for threshold check
-        val_metrics = {"cosine_mean": min(m["cosine_mean"] for m in all_metrics)}
-    else:
-        val_metrics = all_metrics[0]
-    report["validation"] = val_metrics
-
-    # Reset seeds
-    random.seed(42)
-    np.random.seed(42)
-
-    # Check cosine similarity threshold
-    if args.min_cosine_sim > 0:
+        failures = []
         cos_mean = val_metrics["cosine_mean"]
-        if cos_mean < args.min_cosine_sim:
-            raise RuntimeError(
-                f"Quantization quality check failed: mean cosine similarity {cos_mean:.6f} "
-                f"< threshold {args.min_cosine_sim:.4f}. "
-                f"Consider using a more representative calibration dataset or a simpler model."
-            )
-        print(f"Cosine similarity check passed: {cos_mean:.6f} >= {args.min_cosine_sim:.4f}")
+        cos_p05 = val_metrics["cosine_p05"]
+        if args.min_cosine_sim > 0 and cos_mean < args.min_cosine_sim:
+            failures.append(f"mean cosine {cos_mean:.6f} < {args.min_cosine_sim:.4f}")
+        if args.min_cosine_p05 > 0 and cos_p05 < args.min_cosine_p05:
+            failures.append(f"p05 cosine {cos_p05:.6f} < {args.min_cosine_p05:.4f}")
+        if failures:
+            report["quality_gate_failures"] = failures
+            _write_report(args.report_json, report)
+            raise RuntimeError("Quantization quality check failed: " + "; ".join(failures))
 
-    # Save validation data
-    validation_data = []
-    for sample in rep_data_gen_val():
-        validation_data.append(sample[0])
-    validation_data = np.array(validation_data)
-    if validation_data.shape[0] > 25:
-        validation_data = pick_random_samples(validation_data, 25)
-    val_path = os.path.splitext(args.output_path)[0] + "_validation_data.npz"
-    np.savez_compressed(val_path, data=validation_data)
-    print(f"Validation data saved to {val_path}")
+        report["quality_gate_passed"] = True
+        os.replace(tmp_path, args.output_path)
+        tmp_path = ""
+        print(f"TFLite model validated and saved to {args.output_path}")
 
-    # ONNX export
-    if args.export_onnx:
-        onnx_path = os.path.splitext(args.checkpoint_path)[0] + ".onnx"
-        try:
-            import tf2onnx
+        # Save validation data
+        # Save labels only for a model that passed the gate.
+        if cfg.get("class_names"):
+            labels_path = os.path.splitext(args.output_path)[0] + "_labels.txt"
+            with open(labels_path, "w", encoding="utf-8") as handle:
+                handle.writelines(f"{name}\n" for name in cfg["class_names"])
+            print(f"Labels saved to {labels_path}")
 
-            spec = (tf.TensorSpec(model.input_shape, tf.float32, name="input"),)
-            model_proto, _ = tf2onnx.convert.from_keras(model, input_signature=spec, output_path=onnx_path)
-            print(f"ONNX model saved to {onnx_path}")
-            report["onnx_path"] = onnx_path
-        except ImportError:
-            print("[WARN] tf2onnx not installed. Skipping ONNX export (pip install tf2onnx).")
-        except Exception as e:
-            print(f"[WARN] ONNX export failed: {e}")
+        validation_batches = [sample[0] for sample in rep_data_gen_val()]
+        validation_data = np.concatenate(validation_batches, axis=0)
+        if validation_data.shape[0] > 25:
+            validation_data = pick_random_samples(validation_data, 25)
+        val_path = os.path.splitext(args.output_path)[0] + "_validation_data.npz"
+        np.savez_compressed(val_path, data=validation_data)
+        print(f"Validation data saved to {val_path}")
 
-    # Save conversion report
-    if args.report_json:
-        import json
+        # ONNX export
+        if args.export_onnx:
+            onnx_path = os.path.splitext(args.output_path)[0] + ".onnx"
+            try:
+                import tf2onnx
+
+                spec = (tf.TensorSpec(model.input_shape, tf.float32, name="input"),)
+                tf2onnx.convert.from_keras(model, input_signature=spec, output_path=onnx_path)
+                print(f"ONNX model saved to {onnx_path}")
+                report["onnx_path"] = onnx_path
+            except ImportError:
+                raise RuntimeError("ONNX export requested but tf2onnx is not installed") from None
+            except Exception as exc:
+                raise RuntimeError(f"ONNX export failed: {exc}") from exc
 
         report["model_size_bytes"] = os.path.getsize(args.output_path)
         report["keras_size_bytes"] = os.path.getsize(args.checkpoint_path)
         report["compression_ratio"] = report["keras_size_bytes"] / max(report["model_size_bytes"], 1)
         report["config"] = cfg
-        with open(args.report_json, "w") as f:
-            json.dump(report, f, indent=2, default=str)
-        print(f"Conversion report saved to {args.report_json}")
+        _write_report(args.report_json, report)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 if __name__ == "__main__":

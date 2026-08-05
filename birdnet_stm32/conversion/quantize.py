@@ -5,7 +5,6 @@ float32 I/O and INT8 internal ops for STM32N6 NPU deployment.
 """
 
 import os
-import random
 from collections.abc import Callable, Iterable, Iterator
 
 import numpy as np
@@ -47,7 +46,10 @@ def representative_data_gen(
 
     if len(file_paths) == 0:
         raise ValueError("No audio files found for representative dataset generation.")
-    sampled_paths = random.sample(file_paths, min(num_samples, len(file_paths)))
+    # The caller owns sampling.  Keeping this iterator ordered makes calibration
+    # reproducible and allows conversion and diagnostics to use the exact same
+    # file manifest.
+    sampled_paths = file_paths[: min(num_samples, len(file_paths))]
     # Bound calibration read length to a few chunks per file: longer reads waste
     # I/O and only the centre chunk is kept downstream.
     rep_max_duration = float(cfg.get("max_duration", 0)) or max(30.0, cd * 5.0)

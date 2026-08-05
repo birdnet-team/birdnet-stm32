@@ -5,6 +5,7 @@ import pytest
 
 tf = pytest.importorskip("tensorflow", reason="TensorFlow required for conversion tests")
 
+from birdnet_stm32.cli.convert import _stratified_sample_paths
 from birdnet_stm32.conversion.validate import cosine_similarity, pearson_correlation
 
 
@@ -59,6 +60,22 @@ class TestPearsonCorrelation:
         a = np.ones(5) * 3.0
         b = np.ones(5) * 7.0
         assert pearson_correlation(a, b) == 1.0
+
+
+class TestCalibrationSampling:
+    """Calibration selection is exact, balanced, deterministic, and disjoint."""
+
+    def test_fills_requested_count_and_excludes_paths(self):
+        paths = [
+            f"/data/class_{class_idx}/sample_{sample_idx}.wav" for class_idx in range(3) for sample_idx in range(7)
+        ]
+        calibration = _stratified_sample_paths(paths, 10, seed=42)
+        validation = _stratified_sample_paths(paths, 8, seed=43, exclude=set(calibration))
+
+        assert len(calibration) == 10
+        assert len(validation) == 8
+        assert set(calibration).isdisjoint(validation)
+        assert calibration == _stratified_sample_paths(paths, 10, seed=42)
 
 
 class TestQuantizationSmoke:
