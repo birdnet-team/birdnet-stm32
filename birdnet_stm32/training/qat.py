@@ -215,8 +215,8 @@ class _DistilledQATModel(tf.keras.Model):
         teacher: tf.keras.Model,
         distillation_weight: float = 1.0,
         cosine_weight: float = 0.10,
-        cosine_tail_weight: float = 0.25,
-        cosine_tail_fraction: float = 0.25,
+        cosine_tail_weight: float = 0.75,
+        cosine_tail_fraction: float = 0.10,
     ):
         super().__init__(inputs=student.inputs, outputs=student.outputs, name=student.name)
         teacher.trainable = False
@@ -512,12 +512,24 @@ def run_qat(args: argparse.Namespace) -> None:
         max_samples=calibration_count,
     )
     print(f"[QAT] Activation ranges use the converter's exact stratified {calibration_count}-sample manifest (seed=42)")
+    loss_weights = {
+        "distillation_weight": float(args.qat_distillation_weight),
+        "cosine_weight": float(args.qat_cosine_weight),
+        "cosine_tail_weight": float(args.qat_cosine_tail_weight),
+        "cosine_tail_fraction": float(args.qat_cosine_tail_fraction),
+    }
+    if any(loss_weights[name] < 0 for name in loss_weights if name != "cosine_tail_fraction"):
+        raise ValueError("QAT consistency-loss weights must be non-negative")
+    if not 0 < loss_weights["cosine_tail_fraction"] <= 1:
+        raise ValueError("QAT cosine tail fraction must be in (0, 1]")
     qat_student = build_qat_model(deployment_model, activation_ranges)
-    qat_model = _DistilledQATModel(qat_student, teacher_model)
+    qat_model = _DistilledQATModel(qat_student, teacher_model, **loss_weights)
     print(
         "[QAT] Enabled frozen-teacher consistency losses "
-        "(Bernoulli KL weight=1.0, cosine mean weight=0.10, "
-        "worst-quartile cosine weight=0.25)"
+        f"(Bernoulli KL weight={loss_weights['distillation_weight']:.3g}, "
+        f"cosine mean weight={loss_weights['cosine_weight']:.3g}, "
+        f"worst {loss_weights['cosine_tail_fraction']:.1%} cosine "
+        f"weight={loss_weights['cosine_tail_weight']:.3g})"
     )
 
     qat_path = args.checkpoint_path.replace(".keras", "_qat.keras")

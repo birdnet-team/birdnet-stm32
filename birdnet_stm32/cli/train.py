@@ -292,6 +292,30 @@ def get_args() -> argparse.Namespace:
         default=1024,
         help="Exact stratified samples used for QAT ranges and final INT8 calibration",
     )
+    parser.add_argument(
+        "--qat_distillation_weight",
+        type=float,
+        default=1.0,
+        help="QAT teacher Bernoulli-KL loss weight",
+    )
+    parser.add_argument(
+        "--qat_cosine_weight",
+        type=float,
+        default=0.10,
+        help="QAT mean teacher/student cosine-loss weight",
+    )
+    parser.add_argument(
+        "--qat_cosine_tail_weight",
+        type=float,
+        default=0.75,
+        help="QAT worst-sample teacher/student cosine-loss weight",
+    )
+    parser.add_argument(
+        "--qat_cosine_tail_fraction",
+        type=float,
+        default=0.10,
+        help="Fraction of each QAT batch included in the worst-sample loss",
+    )
 
     # -- Linear probing -------------------------------------------------------
     parser.add_argument(
