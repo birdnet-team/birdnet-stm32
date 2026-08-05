@@ -16,8 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Host-memory guards and bounded loader settings for long-running training on
   large audio collections.
 - The public model naming convention
-  `BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>` and a gitignored
-  release-staging workflow with validation reports and checksums.
+  `BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>_<PRECISION>` and a
+  gitignored release-staging workflow with validation reports and checksums.
 - The `BirdNET_Tiny_N6_USNE_30_V1.0` Magpie RT model: 30 northeastern-US bird
   species plus eight nuisance outputs, validated Keras/TFLite/ONNX formats,
   an untouched pre-QAT checkpoint, model card, sanitized reports, and physical

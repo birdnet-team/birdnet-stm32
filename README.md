@@ -73,16 +73,18 @@ See the [full documentation](https://birdnet-team.github.io/birdnet-stm32) for d
 
 ## Pre-trained models
 
-Release assets share the basename
+Release model families use the basename
 `BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>`. The first USNE
 bundle is `BirdNET_Tiny_N6_USNE_30_V1.0`: 30 northeastern-US bird species plus
 eight nuisance outputs. The species count in the filename excludes nuisance
-outputs. Download the Keras, TFLite, ONNX, config, and labels files from the
-same GitHub release and keep them together; the config and ordered labels are
-part of the model contract. On the frozen 5,861-file catalog test, the v1.0
-INT8 model reached ROC-AUC 0.963227 and class-macro AP 0.669244. The custom
-Magpie RT firmware processed 8/8 board-test files without error at 6 ms mean
-NPU time and 78 ms total per 2.5-second window.
+outputs. Model files add an uppercase precision suffix, including
+`BirdNET_Tiny_N6_USNE_30_V1.0_FP32.keras` and
+`BirdNET_Tiny_N6_USNE_30_V1.0_INT8.tflite`. Download the model, config, and
+labels from the same GitHub release and keep them together; the config and
+ordered labels are part of the model contract. On the frozen 5,861-file catalog
+test, the v1.0 INT8 model reached ROC-AUC 0.963227 and class-macro AP 0.669244.
+The custom Magpie RT firmware processed 8/8 board-test files without error at
+6 ms mean NPU time and 78 ms total per 2.5-second window.
 
 ## Features
 

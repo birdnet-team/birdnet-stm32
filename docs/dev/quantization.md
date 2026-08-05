@@ -56,7 +56,7 @@ python -m birdnet_stm32 train --data_path_train data/train \
 
     Keep the untouched pre-QAT checkpoint. For a public QAT-derived release,
     use the canonical basename for the deployable checkpoint and preserve the
-    source checkpoint with an `_original.keras` suffix.
+    source checkpoint with an `_original_FP32.keras` suffix.
 
 ## Representative dataset
 

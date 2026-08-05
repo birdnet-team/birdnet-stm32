@@ -2,7 +2,7 @@
 
 ## Model release names
 
-Public model artifacts use this exact basename:
+Public model families use this exact basename:
 
 `BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>`
 
@@ -11,12 +11,18 @@ Public model artifacts use this exact basename:
   in the label/config contract but do not change this number.
 - Version 1.0 of the 30-species USNE model is
   `BirdNET_Tiny_N6_USNE_30_V1.0`.
-- Give the deployable Keras, TFLite, and ONNX files the same basename and only
-  change the extension. Sidecars append `_model_config.json`, `_labels.txt`,
-  `_validation_data.npz`, or a descriptive report suffix.
+- Precision-bearing artifacts append exactly one uppercase precision token:
+  `_FP32`, `_FP16`, or `_INT8`. For example, the v1 files include
+  `BirdNET_Tiny_N6_USNE_30_V1.0_FP32.keras` and
+  `BirdNET_Tiny_N6_USNE_30_V1.0_INT8.tflite`. The token describes stored model
+  computation; the INT8 TFLite model still has float32 audio I/O.
+- Shared sidecars append `_model_config.json` or `_labels.txt` to the family
+  basename. Precision-specific validation data and reports append the precision
+  before their descriptive suffix, such as `_INT8_validation_data.npz`.
 - If quantization-aware training changes the deployable checkpoint, preserve
-  the untouched pre-QAT checkpoint as `<basename>_original.keras` and use
-  `<basename>.keras` for the checkpoint from which release exports were made.
+  the untouched pre-QAT checkpoint as `<basename>_original_FP32.keras` and use
+  `<basename>_FP32.keras` for the checkpoint from which release exports were
+  made.
 - Repository releases and Python packages use full SemVer (`v1.0.0`); the model
   basename intentionally uses the shorter `V1.0` token.
 - Stage binary assets only under the gitignored `release/<basename>/` directory.

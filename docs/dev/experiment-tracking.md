@@ -25,8 +25,8 @@ experiment a descriptive internal name.
 Public release names are separate from experiment names. Use
 `BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>` for release assets;
 for example, `BirdNET_Tiny_N6_USNE_30_V1.0`. The species count covers bird
-species only and excludes nuisance/background outputs. Keras, TFLite, and ONNX
-release files share the exact basename.
+species only and excludes nuisance/background outputs. Precision-bearing
+release files append `_FP32`, `_FP16`, or `_INT8` to that family basename.
 
 ## Evaluation run naming
 

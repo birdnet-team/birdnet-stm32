@@ -96,7 +96,9 @@ the STM32N6570-DK.
 Pre-trained models are GitHub release assets, not tracked repository files.
 Version 1.0 uses the basename `BirdNET_Tiny_N6_USNE_30_V1.0` for a model with
 30 northeastern-US bird species and eight nuisance outputs. The number in the
-name counts bird species only.
+name counts bird species only. Precision-bearing files add `_FP32`, `_FP16`, or
+`_INT8` before the extension; for example, deploy the
+`BirdNET_Tiny_N6_USNE_30_V1.0_INT8.tflite` asset on STM32N6.
 
 Download the Keras, TFLite, ONNX, ordered labels, and model config from the same
 release and keep them together. The config and labels define the input/output

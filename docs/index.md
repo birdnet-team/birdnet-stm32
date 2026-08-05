@@ -53,7 +53,8 @@ Pre-trained release assets use one basename across formats. Version 1.0's
 30-species northeastern-US bundle is `BirdNET_Tiny_N6_USNE_30_V1.0`; its eight
 nuisance outputs are excluded from the species count but remain part of the
 ordered output contract. Its frozen-catalog INT8 results are ROC-AUC 0.963227
-and class-macro AP 0.669244.
+and class-macro AP 0.669244. Precision-bearing filenames append `_FP32`,
+`_FP16`, or `_INT8` to the family basename.
 
 ## Key features
 

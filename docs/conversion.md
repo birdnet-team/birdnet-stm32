@@ -108,8 +108,9 @@ required tools with `pip install 'birdnet-stm32[release]'`.
 
 ## Release names
 
-Experiment outputs may keep descriptive internal names. Public artifacts use
-`BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>` and share that exact
-basename across `.keras`, `.tflite`, and `.onnx`. The species count excludes
-nuisance/background outputs. See the [release process](dev/release-process.md)
-for required sidecars and validation gates.
+Experiment outputs may keep descriptive internal names. Public model families
+use `BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>`, then append an
+uppercase `_FP32`, `_FP16`, or `_INT8` precision token to model artifacts. The
+species count excludes nuisance/background outputs. See the
+[release process](dev/release-process.md) for required sidecars and validation
+gates.

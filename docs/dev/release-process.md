@@ -21,7 +21,7 @@ Repository tags use full SemVer, such as `v1.0.0`.
 
 ## Model naming
 
-Public model artifacts use:
+Public model families use:
 
 ```text
 BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>
@@ -32,9 +32,12 @@ for the northeastern United States with 30 bird species. `SPECIES_COUNT` does
 not include nuisance or background outputs; those remain in the ordered labels
 and model config.
 
-Use one exact basename for the deployable `.keras`, `.tflite`, and `.onnx`
-files. If QAT changes the release checkpoint, also preserve the untouched
-pre-QAT checkpoint as `<basename>_original.keras`.
+Every precision-bearing filename appends `_FP32`, `_FP16`, or `_INT8` to that
+family basename. The precision token describes stored model computation, not
+the external tensor type: a full-INT8 TFLite model with float32 audio I/O is
+still named `<basename>_INT8.tflite`. If QAT changes the release checkpoint,
+also preserve the untouched pre-QAT checkpoint as
+`<basename>_original_FP32.keras`.
 
 ## 1. Prepare the repository
 
@@ -91,18 +94,18 @@ The version 1.0 USNE bundle should contain:
 
 | File | Purpose |
 |---|---|
-| `<basename>.keras` | Deployable Keras checkpoint used for exports |
-| `<basename>_original.keras` | Untouched training checkpoint when QAT was used |
-| `<basename>.tflite` | Validated full-INT8 model with float32 I/O |
-| `<basename>.onnx` | Validated ONNX export |
+| `<basename>_FP32.keras` | Deployable FP32 Keras checkpoint used for exports |
+| `<basename>_original_FP32.keras` | Untouched FP32 training checkpoint when QAT was used |
+| `<basename>_INT8.tflite` | Validated full-INT8 model with float32 I/O |
+| `<basename>_FP32.onnx` | Validated FP32 ONNX export |
 | `<basename>_model_config.json` | Input, frontend, architecture, and class contract |
 | `<basename>_labels.txt` | Ordered output labels |
-| `<basename>_validation_data.npz` | Fixed on-device validation inputs |
-| `<basename>_conversion.json` | Quantization and parity report |
-| `<basename>_float_benchmark.json` | Float test metrics and latency |
-| `<basename>_int8_benchmark.json` | INT8 test metrics and latency |
-| `<basename>_stedgeai_report.txt` | STM32N6 compiler analysis |
-| `<basename>_board_report.json` | Custom-firmware validation, predictions, and timing |
+| `<basename>_INT8_validation_data.npz` | Fixed INT8 on-device validation inputs |
+| `<basename>_INT8_conversion.json` | INT8 quantization and parity report |
+| `<basename>_FP32_benchmark.json` | FP32 test metrics and latency |
+| `<basename>_INT8_benchmark.json` | INT8 test metrics and latency |
+| `<basename>_INT8_stedgeai_report.txt` | INT8 STM32N6 compiler analysis |
+| `<basename>_INT8_board_report.json` | INT8 custom-firmware validation, predictions, and timing |
 | `<basename>_model_card.md` | Contract, metrics, intended target, and file guide |
 | `manifest.json` | Model identity, dataset/code revisions, gates, sizes, and hashes |
 | `SHA256SUMS` | SHA-256 digest for every distributed file |
