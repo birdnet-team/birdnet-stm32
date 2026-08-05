@@ -104,7 +104,9 @@ The simulation covers the quantized waveform input, fused outer-graph
 activation boundaries, and the kernel and elementwise boundaries hidden inside
 `AudioFrontendLayer` and `MagnitudeScalingLayer`. BatchNorm boundaries followed
 by ReLU are not quantized twice because LiteRT folds those sequences into one
-operator.
+operator. Boundary discovery follows through Dropout and SpatialDropout layers,
+which disappear during inference, so training-only regularization cannot create
+a fake requantization boundary that is absent from the deployed graph.
 
 The activation ranges come from the converter's exact deterministic,
 class-stratified calibration manifest and preprocessing path. The untouched

@@ -24,6 +24,12 @@ ACTIVATION_BOUNDARY_TYPES = (
     layers.Dense,
     layers.GlobalAveragePooling2D,
 )
+INFERENCE_PASSTHROUGH_TYPES = (
+    layers.Dropout,
+    layers.SpatialDropout1D,
+    layers.SpatialDropout2D,
+    layers.SpatialDropout3D,
+)
 
 
 def fake_quantize_weights(
@@ -65,7 +71,15 @@ def _is_activation_boundary(layer: tf.keras.layers.Layer) -> bool:
     if isinstance(layer, layers.BatchNormalization):
         # Conv + BN + ReLU is folded into one quantized TFLite operator. Keep a
         # boundary only for linear project BNs whose output feeds an Add.
+        # Dropout layers disappear during inference, so follow through them
+        # before deciding whether the effective consumer is a fused ReLU.
         consumers = [node.operation for node in layer._outbound_nodes]  # noqa: SLF001
+        while consumers and all(isinstance(consumer, INFERENCE_PASSTHROUGH_TYPES) for consumer in consumers):
+            consumers = [
+                node.operation
+                for consumer in consumers
+                for node in consumer._outbound_nodes  # noqa: SLF001
+            ]
         return not consumers or not all(isinstance(consumer, layers.ReLU) for consumer in consumers)
     return isinstance(layer, ACTIVATION_BOUNDARY_TYPES[1:]) or layer.__class__.__name__ == "AudioFrontendLayer"
 

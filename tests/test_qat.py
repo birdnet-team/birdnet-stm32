@@ -9,6 +9,7 @@ from birdnet_stm32.training.qat import (
     FakeQuantActivation,
     _channel_axis,
     _DistilledQATModel,
+    _is_activation_boundary,
     _is_quantizable,
     build_qat_model,
     calibrate_activation_ranges,
@@ -123,6 +124,24 @@ class TestLayerFiltering:
         layer = tf.keras.layers.Conv2D(8, 3, name="audio_frontend_conv")
         layer.build((None, 16, 16, 1))
         assert _is_quantizable(layer) is True
+
+    def test_bn_followed_by_inference_dropout_and_relu_is_fused(self):
+        inputs = tf.keras.Input(shape=(4, 4, 2))
+        x = tf.keras.layers.BatchNormalization(name="bn")(inputs)
+        x = tf.keras.layers.SpatialDropout2D(0.1, name="drop")(x)
+        outputs = tf.keras.layers.ReLU(max_value=6, name="relu")(x)
+        model = tf.keras.Model(inputs, outputs)
+
+        assert _is_activation_boundary(model.get_layer("bn")) is False
+
+    def test_bn_followed_by_inference_dropout_and_add_stays_boundary(self):
+        inputs = tf.keras.Input(shape=(4, 4, 2))
+        x = tf.keras.layers.BatchNormalization(name="bn")(inputs)
+        x = tf.keras.layers.SpatialDropout2D(0.1, name="drop")(x)
+        outputs = tf.keras.layers.Add(name="add")([inputs, x])
+        model = tf.keras.Model(inputs, outputs)
+
+        assert _is_activation_boundary(model.get_layer("bn")) is True
 
 
 class TestActivationQAT:
