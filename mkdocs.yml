@@ -82,6 +82,8 @@ nav:
   - Home:
       - index.md
       - Getting Started: getting-started.md
+      - Pre-trained Models: pretrained-models.md
+      - License & Acceptable Use: license.md
   - Pipeline:
       - Dataset Preparation: dataset.md
       - Training: training.md

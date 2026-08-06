@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `LICENSE-MODELS.md`: the Apache License 2.0, now covering all trained model
+  artifacts (checkpoints, `.tflite`/`.onnx` exports, labels, model config).
+  Source code remains under the MIT License.
+- `ACCEPTABLE_USE.md`: the BirdNET acceptable use policy, matching the wording
+  used across the BirdNET ecosystem.
+- `docs/license.md` and a "License & Acceptable Use" documentation page.
+- `docs/pretrained-models.md`: bundle contents and a board quickstart, replacing
+  the model-specific paragraphs previously duplicated across the README, docs
+  index, and getting-started pages.
+- Release bundles now ship `LICENSE-MODELS.md` and `ACCEPTABLE_USE.md`, and
+  `manifest.json` records `"license": "Apache-2.0"`.
+
+### Changed
+
+- Release bundles are now models-only: all model formats, labels, model config,
+  the STM32N6 compiler report, the model card, and the two license documents.
+  Benchmark, conversion, and board reports, fixed validation inputs,
+  `manifest.json`, and `SHA256SUMS` are no longer published. Every release gate
+  still runs; `assemble_release.py` writes the full validation record to a
+  sibling `release/<basename>_audit/` directory that is kept, not uploaded.
+- The model card drops its metrics tables in favor of a provenance section
+  (repository version, git revision, dataset identity, gates passed), since
+  `manifest.json` no longer ships with the bundle.
+
+### Removed
+
+- `TERMS_OF_USE.md`, superseded by `ACCEPTABLE_USE.md`. The previous binding
+  prohibitions are now stated as project guidance rather than license
+  conditions.
+
 ## [1.0.0] — 2026-08-05
 
 ### Added

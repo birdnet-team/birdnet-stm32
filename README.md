@@ -2,7 +2,8 @@
 
 <p align="center">
   <img src="birdnet-logo.png" alt="BirdNET Live" width="250"><br>
-  <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
+  <a href="LICENSE.md"><img src="https://img.shields.io/badge/Code-MIT-green.svg" alt="Code license: MIT"></a>
+  <a href="LICENSE-MODELS.md"><img src="https://img.shields.io/badge/Models-Apache--2.0-green.svg" alt="Model license: Apache 2.0"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.12%2B-blue.svg" alt="Python 3.12+"></a>
   <a href="https://birdnet-team.github.io/birdnet-stm32"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Docs"></a>
   <a href="https://github.com/birdnet-team/birdnet-stm32/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/version-1.0.0-orange.svg" alt="Version"></a>
@@ -73,18 +74,52 @@ See the [full documentation](https://birdnet-team.github.io/birdnet-stm32) for d
 
 ## Pre-trained models
 
-Release model families use the basename
-`BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>`. The first USNE
-bundle is `BirdNET_Tiny_N6_USNE_30_V1.0`: 30 northeastern-US bird species plus
-eight nuisance outputs. The species count in the filename excludes nuisance
-outputs. Model files add an uppercase precision suffix, including
-`BirdNET_Tiny_N6_USNE_30_V1.0_FP32.keras` and
-`BirdNET_Tiny_N6_USNE_30_V1.0_INT8.tflite`. Download the model, config, and
-labels from the same GitHub release and keep them together; the config and
-ordered labels are part of the model contract. On the frozen 5,861-file catalog
-test, the v1.0 INT8 model reached ROC-AUC 0.963227 and class-macro AP 0.669244.
-The custom Magpie RT firmware processed 8/8 board-test files without error at
-6 ms mean NPU time and 78 ms total per 2.5-second window.
+Trained and converted models are published as release assets — grab a bundle from
+the [latest release](https://github.com/birdnet-team/birdnet-stm32/releases/latest).
+
+### What's in a bundle
+
+Every file shares one basename, `BirdNET_Tiny_N6_<REGION>_<SPECIES>_V<VERSION>`:
+
+| File | Use it for |
+|---|---|
+| `<basename>_INT8.tflite` | Deploying to the STM32N6 — this is the model you flash |
+| `<basename>_model_config.json` | Input, frontend, and class contract; drives firmware config |
+| `<basename>_labels.txt` | Ordered output labels |
+| `<basename>_FP32.keras` | Host inference, fine-tuning, re-conversion |
+| `<basename>_original_FP32.keras` | Pre-QAT checkpoint, for retraining from an untouched state |
+| `<basename>_FP32.onnx` | Host and interchange inference |
+| `<basename>_INT8_stedgeai_report.txt` | Memory footprint and NPU operator coverage |
+| `<basename>_model_card.md` | Contract, provenance, measured accuracy, and on-board timing |
+
+The TFLite model, config, and labels are a single contract — keep them together
+and never mix files across bundles. Models are licensed under the
+[Apache License 2.0](LICENSE-MODELS.md); the bundle also carries the
+[acceptable use policy](ACCEPTABLE_USE.md).
+
+### Running a bundle on the board
+
+Everything the firmware needs is in the bundle — no extra downloads.
+
+1. Install the toolchain (X-CUBE-AI, STM32CubeProgrammer/IDE, ARM GNU) and copy
+   `config.example.json` to `config.json`, filling in your local tool paths.
+2. Prepare an SD card with test audio as described above, matching the sample
+   rate in `_model_config.json`.
+3. Compile, flash, and run on the NPU:
+
+   ```bash
+   BUNDLE=~/Downloads/BirdNET_Tiny_N6_USNE_30_V1.0
+
+   python -m birdnet_stm32 board-test \
+     --model_path    "$BUNDLE"/*_INT8.tflite \
+     --model_config  "$BUNDLE"/*_model_config.json \
+     --labels        "$BUNDLE"/*_labels.txt
+   ```
+
+The command generates the N6 binary, flashes the board over serial, runs
+inference on every WAV on the SD card, and streams the top predictions back over
+UART. See the [deployment guide](https://birdnet-team.github.io/birdnet-stm32/deployment/)
+for toolchain setup and troubleshooting.
 
 ## Features
 
@@ -125,7 +160,9 @@ The custom Magpie RT firmware processed 8/8 board-test files without error at
 
 ## License
 
-- **Source code and models**: [MIT License](LICENSE.md)
+- **Source code**: [MIT License](LICENSE.md)
+- **Model artifacts** (checkpoints, `.tflite`/`.onnx` exports, labels, model config): [Apache License 2.0](LICENSE-MODELS.md)
+- **Third-party firmware sources**: STMicroelectronics (BSD-3-Clause) and ChaN's FatFs retain their original licenses — see [firmware/THIRD_PARTY_LICENSES.md](firmware/THIRD_PARTY_LICENSES.md).
 - **STM tools and scripts**: see respective documentation for license details.
 
 ## Citation
@@ -142,9 +179,11 @@ The custom Magpie RT firmware processed 8/8 board-test files without error at
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. AI-assisted contributions are welcome — keep PRs focused and review every line.
 
-## Terms of Use
+## Acceptable Use
 
-See [TERMS_OF_USE.md](TERMS_OF_USE.md) for detailed terms and conditions.
+BirdNET is built to support biodiversity research and conservation. See
+[ACCEPTABLE_USE.md](ACCEPTABLE_USE.md) for how we expect the code and models to be used,
+including uses we consider unacceptable and guidance on branding derivative work.
 
 ## Funding
 

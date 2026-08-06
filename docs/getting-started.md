@@ -93,16 +93,8 @@ the STM32N6570-DK.
 
 ## Pre-trained model
 
-Pre-trained models are GitHub release assets, not tracked repository files.
-Version 1.0 uses the basename `BirdNET_Tiny_N6_USNE_30_V1.0` for a model with
-30 northeastern-US bird species and eight nuisance outputs. The number in the
-name counts bird species only. Precision-bearing files add `_FP32`, `_FP16`, or
-`_INT8` before the extension; for example, deploy the
-`BirdNET_Tiny_N6_USNE_30_V1.0_INT8.tflite` asset on STM32N6.
-
-Download the Keras, TFLite, ONNX, ordered labels, and model config from the same
-release and keep them together. The config and labels define the input/output
-contract; do not mix sidecars from another model version. Maintainers stage
-validated release bundles locally under the gitignored `release/` directory.
-The v1.0 INT8 model uses 2.5-second mono 24 kHz input and produces 38 ordered
-scores: 30 bird species and eight nuisance sounds.
+To skip training, download a released model bundle instead: it contains the
+INT8 TFLite model you flash to the board plus the ordered labels and model
+config that define its input/output contract. See
+[Pre-trained Models](pretrained-models.md) for the full bundle contents and a
+board quickstart.

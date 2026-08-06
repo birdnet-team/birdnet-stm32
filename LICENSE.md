@@ -2,6 +2,11 @@
 
 Copyright (c) 2025 birdnet-team
 
+This license covers the source code in this repository. The trained model
+artifacts — checkpoints, converted models, labels, and model configuration
+shipped in release bundles — are licensed under the Apache License 2.0; see
+[`LICENSE-MODELS.md`](LICENSE-MODELS.md).
+
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights
