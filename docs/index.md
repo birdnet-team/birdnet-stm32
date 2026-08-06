@@ -49,12 +49,9 @@ python -m birdnet_stm32 evaluate \
 See the [Getting Started](getting-started.md) guide for full setup instructions
 and the [Deployment](deployment.md) guide for flashing the STM32N6570-DK.
 
-Pre-trained release assets use one basename across formats. Version 1.0's
-30-species northeastern-US bundle is `BirdNET_Tiny_N6_USNE_30_V1.0`; its eight
-nuisance outputs are excluded from the species count but remain part of the
-ordered output contract. Its frozen-catalog INT8 results are ROC-AUC 0.963227
-and class-macro AP 0.669244. Precision-bearing filenames append `_FP32`,
-`_FP16`, or `_INT8` to the family basename.
+You do not have to train your own model. Trained and converted models are
+published as release assets — see [Pre-trained Models](pretrained-models.md) for
+what a bundle contains and how to run one on the board.
 
 ## Key features
 

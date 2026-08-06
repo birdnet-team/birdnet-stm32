@@ -90,7 +90,10 @@ Binary assets are not committed. Stage them under the gitignored directory:
 release/<model-basename>/
 ```
 
-The version 1.0 USNE bundle should contain:
+### Published bundle
+
+The uploaded bundle carries the models and the contract needed to run them —
+nothing else. It must contain exactly:
 
 | File | Purpose |
 |---|---|
@@ -100,20 +103,28 @@ The version 1.0 USNE bundle should contain:
 | `<basename>_FP32.onnx` | Validated FP32 ONNX export |
 | `<basename>_model_config.json` | Input, frontend, architecture, and class contract |
 | `<basename>_labels.txt` | Ordered output labels |
-| `<basename>_INT8_validation_data.npz` | Fixed INT8 on-device validation inputs |
-| `<basename>_INT8_conversion.json` | INT8 quantization and parity report |
-| `<basename>_FP32_benchmark.json` | FP32 test metrics and latency |
-| `<basename>_INT8_benchmark.json` | INT8 test metrics and latency |
 | `<basename>_INT8_stedgeai_report.txt` | INT8 STM32N6 compiler analysis |
-| `<basename>_INT8_board_report.json` | INT8 custom-firmware validation, predictions, and timing |
-| `<basename>_model_card.md` | Contract, metrics, intended target, and file guide |
-| `manifest.json` | Model identity, dataset/code revisions, gates, sizes, and hashes |
-| `SHA256SUMS` | SHA-256 digest for every distributed file |
+| `<basename>_model_card.md` | Contract, provenance, intended target, and file guide |
+| `LICENSE-MODELS.md` | Apache License 2.0 covering the model artifacts |
+| `ACCEPTABLE_USE.md` | BirdNET acceptable use policy (guidance, not a license condition) |
 
-Only list an asset in the manifest after its corresponding validation passed.
-Sanitize reports before staging: public files must not expose workstation
-paths. Keep training histories, raw logs, temporary exports, and other
-diagnostic-only artifacts out of the release bundle.
+Benchmark and validation reports, fixed validation inputs, `manifest.json`, and
+checksum files are **not** published. Sanitize what does ship: public files must
+not expose workstation paths.
+
+### Validation record
+
+Dropping those files from the upload does not relax any gate — every check still
+runs, and `assemble_release.py` writes the full record to a sibling directory:
+
+```text
+release/<model-basename>_audit/
+```
+
+This holds `manifest.json` (identity, dataset and code revisions, gate results,
+sizes, and hashes) plus the conversion, benchmark, and board reports. Keep it for
+provenance; never upload it. Training histories, raw logs, and temporary exports
+stay out of both directories.
 
 ## 4. Commit, tag, and publish
 

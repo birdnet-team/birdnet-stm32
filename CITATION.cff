@@ -23,7 +23,9 @@ authors:
     given-names: Holger
     affiliation: Cornell Lab of Ornithology
 repository-code: "https://github.com/birdnet-team/birdnet-stm32"
-license: MIT
+license:
+  - MIT
+  - Apache-2.0
 keywords:
   - bioacoustics
   - bird sound classification

@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Bird sound classification for edge deployment on STM32N6570-DK with NPU"
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE.md", "TERMS_OF_USE.md"]
+license-files = ["LICENSE.md", "LICENSE-MODELS.md", "ACCEPTABLE_USE.md"]
 requires-python = ">=3.12"
 authors = [
     {name = "Stefan Kahl", email = "stefan.kahl@cornell.edu"},
