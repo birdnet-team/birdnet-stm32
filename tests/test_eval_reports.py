@@ -209,13 +209,13 @@ class TestSaveBenchmarkJson:
     """Tests for save_benchmark_json."""
 
     def test_json_created(self, tmp_path):
-        metrics = {"roc-auc": 0.95, "cmAP": 0.88, "f1": 0.80, "total_chunks": 100}
+        metrics = {"roc-auc": 0.95, "cmAP": 0.88, "f1": 0.80, "total_files": 6, "total_chunks": 100}
         out = str(tmp_path / "benchmark.json")
         save_benchmark_json(metrics, ["a", "b"], "model.tflite", out)
         assert (tmp_path / "benchmark.json").exists()
 
     def test_json_structure(self, tmp_path):
-        metrics = {"roc-auc": 0.95, "cmAP": 0.88, "f1": 0.80, "total_chunks": 100}
+        metrics = {"roc-auc": 0.95, "cmAP": 0.88, "f1": 0.80, "total_files": 6, "total_chunks": 100}
         out = str(tmp_path / "benchmark.json")
         save_benchmark_json(metrics, ["a", "b"], "model.tflite", out)
         with open(out) as f:
@@ -224,6 +224,7 @@ class TestSaveBenchmarkJson:
         assert "num_classes" in data
         assert "metrics" in data
         assert data["num_classes"] == 2
+        assert data["num_files"] == 6
 
     def test_json_with_species(self, tmp_path, binary_data):
         y_true, y_scores, classes = binary_data

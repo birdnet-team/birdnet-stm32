@@ -5,6 +5,8 @@ import pytest
 
 tf = pytest.importorskip("tensorflow", reason="TensorFlow required for conversion tests")
 
+from birdnet_stm32.cli.convert import _export_and_validate_onnx, _manifest_record
+from birdnet_stm32.conversion.quantize import stratified_sample_paths
 from birdnet_stm32.conversion.validate import cosine_similarity, pearson_correlation
 
 
@@ -61,6 +63,31 @@ class TestPearsonCorrelation:
         assert pearson_correlation(a, b) == 1.0
 
 
+class TestCalibrationSampling:
+    """Calibration selection is exact, balanced, deterministic, and disjoint."""
+
+    def test_fills_requested_count_and_excludes_paths(self):
+        paths = [
+            f"/data/class_{class_idx}/sample_{sample_idx}.wav" for class_idx in range(3) for sample_idx in range(7)
+        ]
+        calibration = stratified_sample_paths(paths, 10, seed=42)
+        validation = stratified_sample_paths(paths, 8, seed=43, exclude=set(calibration))
+
+        assert len(calibration) == 10
+        assert len(validation) == 8
+        assert set(calibration).isdisjoint(validation)
+        assert calibration == stratified_sample_paths(paths, 10, seed=42)
+
+    def test_manifest_record_is_location_independent(self):
+        """Manifest identity uses stable relative paths and class counts."""
+        first = _manifest_record(["/one/a/x.wav", "/one/b/y.wav"], "/one")
+        second = _manifest_record(["/two/a/x.wav", "/two/b/y.wav"], "/two")
+        assert first == second
+        assert first["count"] == 2
+        assert first["class_counts"] == {"a": 1, "b": 1}
+        assert len(first["sha256"]) == 64
+
+
 class TestQuantizationSmoke:
     """Smoke test: build a tiny model, convert to TFLite, verify it runs."""
 
@@ -111,3 +138,26 @@ class TestQuantizationSmoke:
         y_keras = model(x_test, training=False).numpy()
         cos = cosine_similarity(y_keras.ravel(), y.ravel())
         assert cos > 0.8, f"Cosine similarity too low: {cos}"
+
+
+class TestOnnxExport:
+    """ONNX is only advertised after checker and runtime parity pass."""
+
+    def test_export_checker_and_runtime(self, tmp_path):
+        pytest.importorskip("onnx")
+        pytest.importorskip("onnxruntime")
+        pytest.importorskip("tf2onnx")
+        inputs = tf.keras.Input(shape=(4,), name="features")
+        outputs = tf.keras.layers.Dense(2, activation="sigmoid")(inputs)
+        model = tf.keras.Model(inputs, outputs)
+        sample = np.ones((1, 4), dtype=np.float32)
+        model(sample)
+
+        def validation_gen():
+            yield [sample]
+
+        output_path = str(tmp_path / "tiny.onnx")
+        report = _export_and_validate_onnx(model, output_path, validation_gen)
+        assert report["checker_passed"] is True
+        assert report["cosine_min"] >= 0.9999
+        assert report["max_abs_error"] <= 1e-4

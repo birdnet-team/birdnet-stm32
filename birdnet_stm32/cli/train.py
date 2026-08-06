@@ -11,6 +11,7 @@ import tensorflow as tf
 
 from birdnet_stm32.data.dataset import (
     get_classes_with_most_samples,
+    load_classes_file,
     load_file_paths_from_directory,
     upsample_minority_classes,
 )
@@ -123,6 +124,46 @@ class AdaptiveLoaderTuner(tf.keras.callbacks.Callback):
         }
 
 
+class HostMemoryGuard(tf.keras.callbacks.Callback):
+    """Abort training before host memory pressure makes the machine unusable."""
+
+    def __init__(
+        self,
+        check_every: int = 25,
+        reserve_gb: float = 12.0,
+        reserve_fraction: float = 0.20,
+    ):
+        super().__init__()
+        self.check_every = max(1, int(check_every))
+        self.reserve_gb = float(reserve_gb)
+        self.reserve_fraction = float(reserve_fraction)
+        self._steps = 0
+
+    def _memory_state(self) -> tuple[float, float, float]:
+        total_gb, available_gb = _read_meminfo_gb()
+        adaptive_reserve_gb = min(self.reserve_gb, max(2.0, total_gb * self.reserve_fraction))
+        return total_gb, available_gb, adaptive_reserve_gb
+
+    def on_train_batch_end(self, batch, logs=None):
+        self._steps += 1
+        if self._steps % self.check_every != 0:
+            return
+
+        _total_gb, available_gb, adaptive_reserve_gb = self._memory_state()
+        if available_gb > 0 and available_gb < adaptive_reserve_gb:
+            raise MemoryError(
+                "Host memory guard stopped training: "
+                f"{available_gb:.1f} GiB available is below the "
+                f"{adaptive_reserve_gb:.1f} GiB reserve. "
+                "The last completed-epoch checkpoint is still usable."
+            )
+
+    def on_epoch_end(self, epoch, logs=None):
+        _total_gb, available_gb, adaptive_reserve_gb = self._memory_state()
+        if available_gb > 0:
+            print(f"[memory] epoch={epoch + 1} available={available_gb:.1f} GiB reserve={adaptive_reserve_gb:.1f} GiB")
+
+
 # Internal defaults: keep CLI simple while auto-balancing loader throughput
 # and memory usage at runtime.
 _LOADER_TUNE_ADJUST_EVERY = 200
@@ -142,6 +183,18 @@ def get_args() -> argparse.Namespace:
 
     # -- Data -----------------------------------------------------------------
     parser.add_argument("--data_path_train", type=str, required=True, help="Path to train dataset")
+    parser.add_argument(
+        "--data_path_val",
+        type=str,
+        default=None,
+        help="Separate validation dataset root; disables the random --val_split",
+    )
+    parser.add_argument(
+        "--classes_file",
+        type=str,
+        default=None,
+        help="Ordered one-label-per-line output schema; noise remains an all-zero folder",
+    )
     parser.add_argument("--max_classes", type=int, default=None, help="Use top N classes by sample count")
     parser.add_argument("--max_samples", type=int, default=None, help="Max samples per class")
     parser.add_argument("--upsample_ratio", type=float, default=0.5, help="Upsample ratio for minority classes")
@@ -233,6 +286,36 @@ def get_args() -> argparse.Namespace:
         default=False,
         help="Quantization-aware fine-tuning (requires pretrained --checkpoint_path)",
     )
+    parser.add_argument(
+        "--qat_calibration_samples",
+        type=int,
+        default=1024,
+        help="Exact stratified samples used for QAT ranges and final INT8 calibration",
+    )
+    parser.add_argument(
+        "--qat_distillation_weight",
+        type=float,
+        default=1.0,
+        help="QAT teacher Bernoulli-KL loss weight",
+    )
+    parser.add_argument(
+        "--qat_cosine_weight",
+        type=float,
+        default=0.10,
+        help="QAT mean teacher/student cosine-loss weight",
+    )
+    parser.add_argument(
+        "--qat_cosine_tail_weight",
+        type=float,
+        default=0.75,
+        help="QAT worst-sample teacher/student cosine-loss weight",
+    )
+    parser.add_argument(
+        "--qat_cosine_tail_fraction",
+        type=float,
+        default=0.10,
+        help="Fraction of each QAT batch included in the worst-sample loss",
+    )
 
     # -- Linear probing -------------------------------------------------------
     parser.add_argument(
@@ -308,18 +391,33 @@ def main():
     hop_length = compute_hop_length(args.sample_rate, args.chunk_duration, args.spec_width)
 
     # Load file paths
-    top_classes = None
+    top_classes = load_classes_file(args.classes_file) if args.classes_file else None
+    if top_classes is not None and args.max_classes is not None:
+        raise ValueError("--classes_file and --max_classes are mutually exclusive")
     if args.max_classes is not None:
         top_classes = get_classes_with_most_samples(args.data_path_train, n_classes=args.max_classes)
         print(f"Selected top {len(top_classes)} classes by sample count.")
     file_paths, classes = load_file_paths_from_directory(
         args.data_path_train, classes=top_classes, max_samples=args.max_samples
     )
+    if top_classes is not None and classes != top_classes:
+        missing = [class_name for class_name in top_classes if class_name not in classes]
+        raise ValueError(f"Training dataset is missing configured classes: {missing}")
 
     # Train/val split
-    split_idx = int(len(file_paths) * (1 - args.val_split))
-    train_paths = file_paths[:split_idx]
-    val_paths = file_paths[split_idx:]
+    if args.data_path_val:
+        train_paths = file_paths
+        val_paths, val_classes = load_file_paths_from_directory(
+            args.data_path_val, classes=classes, max_samples=args.max_samples
+        )
+        if val_classes != classes:
+            missing = [class_name for class_name in classes if class_name not in val_classes]
+            raise ValueError(f"Validation dataset is missing configured classes: {missing}")
+        print("Using separate validation root; --val_split is ignored.")
+    else:
+        split_idx = int(len(file_paths) * (1 - args.val_split))
+        train_paths = file_paths[:split_idx]
+        val_paths = file_paths[split_idx:]
     print(f"Training on {len(train_paths)} files, validating on {len(val_paths)} files.")
 
     # Upsample
@@ -343,7 +441,7 @@ def main():
     common_kwargs["max_inflight_files"] = initial_inflight
 
     train_loader_control: dict | None = {"max_inflight_files": int(initial_inflight)} if args.num_workers > 0 else None
-    extra_callbacks: list[tf.keras.callbacks.Callback] = []
+    extra_callbacks: list[tf.keras.callbacks.Callback] = [HostMemoryGuard()]
     if train_loader_control is not None:
         extra_callbacks.append(
             AdaptiveLoaderTuner(

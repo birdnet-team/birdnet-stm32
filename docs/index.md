@@ -16,9 +16,9 @@ flowchart LR
     A["Train\nDS-CNN"] --> B["Quantize\nINT8 TFLite"] --> C["Deploy\nSTM32N6 NPU"]
 ```
 
-Performance depends on the frontend and model. The verified 24 kHz,
-2.5-second raw configuration averages **12–13 ms NPU time** and **84 ms total**
-including SD-card reads—about 30× faster than real time.
+Performance depends on the frontend, model, and SD card. The v1.0 USNE model's
+verified 24 kHz, 2.5-second raw configuration averages **6 ms NPU time** and
+**78 ms total** including SD-card reads—about 32× faster than real time.
 
 ## Quick start
 
@@ -49,6 +49,13 @@ python -m birdnet_stm32 evaluate \
 See the [Getting Started](getting-started.md) guide for full setup instructions
 and the [Deployment](deployment.md) guide for flashing the STM32N6570-DK.
 
+Pre-trained release assets use one basename across formats. Version 1.0's
+30-species northeastern-US bundle is `BirdNET_Tiny_N6_USNE_30_V1.0`; its eight
+nuisance outputs are excluded from the species count but remain part of the
+ordered output contract. Its frozen-catalog INT8 results are ROC-AUC 0.963227
+and class-macro AP 0.669244. Precision-bearing filenames append `_FP32`,
+`_FP16`, or `_INT8` to the family basename.
+
 ## Key features
 
 - **Five audio frontends**: `librosa` (precomputed mel), `hybrid` (linear STFT +
@@ -63,9 +70,11 @@ and the [Deployment](deployment.md) guide for flashing the STM32N6570-DK.
 - **Post-training quantization**: float32 I/O with INT8 internals, targeting
   >0.95 cosine similarity vs. the float model. Per-channel (default) or
   per-tensor, plus dynamic range mode.
-- **Quantization-aware training (QAT)**: shadow-weight fake-quantization
-  fine-tuning via `--qat` for improved INT8 accuracy. No FakeQuant ops in the
-  saved model — N6 compatible.
+- **Quantization-aware training (QAT)**: per-channel kernel and per-tensor
+  activation INT8 simulation via `--qat`, aligned to final conversion's exact
+  calibration manifest. Frozen-teacher KL plus mean and worst-sample cosine
+  consistency protect mean and tail parity. The saved deployment checkpoint
+  has no FakeQuant ops and remains N6 compatible.
 - **Optuna hyperparameter search**: `--tune --n_trials 20` for automated
   architecture and training hyperparameter optimization.
 - **Comprehensive evaluation**: ROC-AUC, cmAP, F1, species-level AP with

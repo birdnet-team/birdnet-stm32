@@ -10,6 +10,20 @@ python -m birdnet_stm32 train \
   --checkpoint_path checkpoints/my_model.keras
 ```
 
+For a leakage-safe precomputed validation split and stable output order, pass a
+separate validation root and a one-label-per-line classes file:
+
+```bash
+python -m birdnet_stm32 train \
+  --data_path_train data/train \
+  --data_path_val data/validation \
+  --classes_file data/labels.txt
+```
+
+The class file controls model-output order. Folders named `noise`, `silence`,
+`background`, or `other` are still loaded as all-zero examples and must not be
+listed as outputs. When `--data_path_val` is present, `--val_split` is ignored.
+
 The script saves these files alongside the checkpoint:
 
 - `my_model.keras` — trained Keras model
@@ -140,10 +154,21 @@ quantized TFLite model by teaching the weights to survive quantization.
     have the same classes as the pretrained model; use `--linear_probe` to
     adapt to a different class set first.
 
-QAT works by injecting fake-quantization noise into kernel weights during
-training while maintaining full-precision shadow copies. BatchNorm layers are
-frozen to prevent running statistics drift. No FakeQuant ops remain in the
-saved model, so the N6 NPU runs it without issues.
+QAT calibrates activation ranges on the converter's exact deterministic,
+class-stratified training manifest (1,024 samples by default), then trains with
+per-channel INT8 kernel grids and per-tensor INT8 activation grids. The
+simulation includes the quantized waveform input and the kernels and
+elementwise boundaries inside the custom raw frontend. BatchNorm layers are
+frozen. Standard variables are shared with a clean deployment graph; cloned
+frontend variables are synchronized before each checkpoint. Only the clean
+graph is saved, so no FakeQuant ops remain in the model.
+
+A frozen copy of the untouched checkpoint acts as the teacher. QAT minimizes
+the normal label loss, per-output Bernoulli KL divergence, and both mean and
+worst-sample per-sample cosine distance from that teacher. The defaults apply
+the tail loss to the worst 10% of each batch with 0.75 weight; both values are
+configurable. This constrains background and low-confidence probabilities
+while directly optimizing the lower tail that the release parity gate measures.
 
 ```bash
 # Step 1: Normal training
@@ -151,9 +176,12 @@ python -m birdnet_stm32 train --data_path_train data/train \
   --epochs 50 --checkpoint_path checkpoints/model.keras
 
 # Step 2: QAT fine-tuning (lower LR, fewer epochs)
-python -m birdnet_stm32 train --data_path_train data/train --qat \
+python -m birdnet_stm32 train --data_path_train data/train \
+  --data_path_val data/validation --classes_file data/labels.txt --qat \
   --checkpoint_path checkpoints/model.keras \
-  --epochs 10 --learning_rate 0.0001
+  --qat_calibration_samples 1024 \
+  --qat_cosine_tail_fraction 0.10 --qat_cosine_tail_weight 0.75 \
+  --epochs 6 --learning_rate 0.00002
 
 # Step 3: Convert the QAT model
 python -m birdnet_stm32 convert \
@@ -183,7 +211,9 @@ The probe model is saved as `{name}_probe.keras` with a new labels file.
 
 A two-epoch linear warmup reaches `--learning_rate` (default 0.001), followed
 by cosine decay to near-zero over `--epochs` (default 50). Best-checkpoint
-selection and early stopping monitor validation ROC-AUC with patience 10.
+selection and early stopping monitor validation ROC-AUC with patience 10 for
+standard training. QAT instead minimizes validation teacher/student tail loss;
+the paired catalog evaluation remains the release-deciding accuracy gate.
 
 ### Hyperparameter tuning with Optuna
 
@@ -207,6 +237,8 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | Argument | Default | Description |
 |---|---|---|
 | `--data_path_train` | *(required)* | Path to training data |
+| `--data_path_val` | None | Separate validation root; disables random validation splitting |
+| `--classes_file` | None | Ordered one-label-per-line output schema |
 | `--max_classes` | None | Use only the N most populated classes |
 | `--max_samples` | None | Max files per class |
 | `--upsample_ratio` | 0.5 | Minority class upsample ratio |
@@ -246,11 +278,16 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--prefetch_batches` | 2 | Loader prefetch depth in batches |
 | `--epochs` | 50 | Number of epochs |
 | `--learning_rate` | 0.001 | Initial learning rate |
-| `--val_split` | 0.2 | Validation split fraction |
+| `--val_split` | 0.2 | Validation split fraction when `--data_path_val` is not supplied |
 | `--checkpoint_path` | checkpoints/best_model.keras | Output path (.keras) |
 | `--tune` | False | Run Optuna hyperparameter search |
 | `--n_trials` | 20 | Number of Optuna trials |
 | `--qat` | False | Quantization-aware fine-tuning |
+| `--qat_calibration_samples` | 1024 | Exact stratified samples used for QAT and conversion calibration |
+| `--qat_distillation_weight` | 1.0 | Frozen-teacher Bernoulli-KL weight |
+| `--qat_cosine_weight` | 0.10 | Mean teacher/student cosine-loss weight |
+| `--qat_cosine_tail_weight` | 0.75 | Worst-sample cosine-loss weight |
+| `--qat_cosine_tail_fraction` | 0.10 | Fraction of each batch included in the worst-sample loss |
 | `--linear_probe` | False | Freeze backbone and train only classifier head |
 
 ## Data pipeline
@@ -268,6 +305,13 @@ re-opening the same file 3 times across epochs.
 
 The reservoir maintains batch diversity by shuffling samples from many
 different files before yielding them.
+
+Training also checks host-available memory every 25 batches. It aborts before
+available RAM falls below an adaptive reserve (20% of host RAM, bounded between
+2 and 12 GiB), leaving the last completed-epoch checkpoint available for a
+safer restart. This protects the host from multiprocessing and TensorFlow
+memory spikes; it is not a substitute for choosing a conservative worker count
+and batch size.
 
 Tune with:
 

@@ -2,8 +2,7 @@
 *.wav
 samples/
 checkpoints/
-!checkpoints/release/
-!checkpoints/release/**
+/release/
 notes.txt
 deploy.sh
 /dev/

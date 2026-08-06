@@ -210,7 +210,7 @@ def save_benchmark_json(
     report: dict = {
         "model_path": model_path,
         "num_classes": len(classes),
-        "num_files": metrics.get("total_chunks", 0),
+        "num_files": metrics.get("total_files", 0),
     }
 
     # Core metrics (exclude internal arrays)

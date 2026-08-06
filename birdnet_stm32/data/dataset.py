@@ -11,6 +11,20 @@ import tensorflow as tf
 
 # Supported audio filename extensions (lowercase)
 SUPPORTED_AUDIO_EXTS = (".wav", ".mp3", ".flac", ".ogg", ".m4a")
+NOISE_CLASSES = {"noise", "silence", "background", "other"}
+
+
+def load_classes_file(path: str) -> list[str]:
+    """Read an explicitly ordered, one-label-per-line class schema."""
+    with open(path, encoding="utf-8") as handle:
+        classes = [line.strip() for line in handle if line.strip() and not line.lstrip().startswith("#")]
+    if not classes:
+        raise ValueError(f"Classes file is empty: {path}")
+    if len(classes) != len(set(classes)):
+        raise ValueError(f"Classes file contains duplicate labels: {path}")
+    if any(label.lower() in NOISE_CLASSES for label in classes):
+        raise ValueError("Noise-like folders produce all-zero targets and must not appear in the output class list")
+    return classes
 
 
 def get_classes_with_most_samples(
@@ -31,14 +45,12 @@ def get_classes_with_most_samples(
         Up to n_classes class names, sorted by descending sample count.
     """
     classes: dict[str, int] = {}
-    noise_classes = {"noise", "silence", "background", "other"}
-
     for root, _dirs, files in os.walk(directory):
         for fname in files:
             if not fname.lower().endswith(exts):
                 continue
             class_name = os.path.basename(root)
-            if not include_noise and class_name.lower() in noise_classes:
+            if not include_noise and class_name.lower() in NOISE_CLASSES:
                 continue
             classes[class_name] = classes.get(class_name, 0) + 1
 
@@ -79,7 +91,7 @@ def load_file_paths_from_directory(
             full_path = tf.io.gfile.join(root, fname)
             parent_class = os.path.basename(os.path.dirname(full_path))
 
-            if classes is not None and parent_class not in classes:
+            if classes is not None and parent_class not in classes and parent_class.lower() not in NOISE_CLASSES:
                 continue
 
             per_class.setdefault(parent_class, []).append(full_path)
@@ -93,8 +105,10 @@ def load_file_paths_from_directory(
 
     np.random.shuffle(all_paths)
 
-    noise_classes = {"noise", "silence", "background", "other"}
-    classes_out = sorted(c for c in per_class if c.lower() not in noise_classes)
+    if classes is None:
+        classes_out = sorted(c for c in per_class if c.lower() not in NOISE_CLASSES)
+    else:
+        classes_out = [class_name for class_name in classes if class_name in per_class]
 
     return all_paths, classes_out
 
@@ -112,15 +126,19 @@ def upsample_minority_classes(
         ratio: Target fraction of the largest class size (0 < ratio <= 1).
 
     Returns:
-        Augmented list of file paths with upsampled minority classes.
+        Augmented list with output classes upsampled and all original
+        noise-like paths retained unchanged.
     """
     assert 0 < ratio <= 1, "Ratio must be in (0, 1]."
     class_to_paths: dict[str, list[str]] = {cls: [] for cls in classes}
+    noise_paths: list[str] = []
 
     for path in file_paths:
         class_name = os.path.basename(os.path.dirname(path))
         if class_name in class_to_paths:
             class_to_paths[class_name].append(path)
+        elif class_name.lower() in NOISE_CLASSES:
+            noise_paths.append(path)
 
     max_size = max(len(paths) for paths in class_to_paths.values())
     target_size = int(max_size * ratio)
@@ -134,5 +152,8 @@ def upsample_minority_classes(
             paths.extend(additional)
         augmented_paths.extend(paths)
 
+    # Noise-like folders intentionally have no output neuron. Keep their
+    # all-zero examples unchanged while balancing the positive classes.
+    augmented_paths.extend(noise_paths)
     np.random.shuffle(augmented_paths)
     return augmented_paths

@@ -3,6 +3,8 @@ title: "BirdNET-STM32: Bird Sound Classification for Edge Deployment"
 message: >-
   If you use this software, please cite it using the metadata from this file.
 type: software
+version: 1.0.0
+date-released: 2026-08-05
 authors:
   - family-names: Kahl
     given-names: Stefan

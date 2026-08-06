@@ -6,11 +6,16 @@ import pytest
 tf = pytest.importorskip("tensorflow", reason="TensorFlow required for QAT tests")
 
 from birdnet_stm32.training.qat import (
-    QATCallback,
+    FakeQuantActivation,
     _channel_axis,
+    _DistilledQATModel,
+    _is_activation_boundary,
     _is_quantizable,
+    build_qat_model,
+    calibrate_activation_ranges,
     fake_quantize_weights,
     freeze_batch_norm,
+    sync_frontend_weights,
 )
 
 # ---------------------------------------------------------------------------
@@ -114,11 +119,151 @@ class TestLayerFiltering:
         layer = tf.keras.layers.ReLU(name="relu")
         assert _is_quantizable(layer) is False
 
-    def test_is_quantizable_audio_frontend_skipped(self):
-        """Layers named 'audio_frontend*' should be skipped."""
+    def test_audio_frontend_kernel_is_quantized(self):
+        """Frontend kernels must see the same INT8 noise as deployment."""
         layer = tf.keras.layers.Conv2D(8, 3, name="audio_frontend_conv")
         layer.build((None, 16, 16, 1))
-        assert _is_quantizable(layer) is False
+        assert _is_quantizable(layer) is True
+
+    def test_bn_followed_by_inference_dropout_and_relu_is_fused(self):
+        inputs = tf.keras.Input(shape=(4, 4, 2))
+        x = tf.keras.layers.BatchNormalization(name="bn")(inputs)
+        x = tf.keras.layers.SpatialDropout2D(0.1, name="drop")(x)
+        outputs = tf.keras.layers.ReLU(max_value=6, name="relu")(x)
+        model = tf.keras.Model(inputs, outputs)
+
+        assert _is_activation_boundary(model.get_layer("bn")) is False
+
+    def test_bn_followed_by_inference_dropout_and_add_stays_boundary(self):
+        inputs = tf.keras.Input(shape=(4, 4, 2))
+        x = tf.keras.layers.BatchNormalization(name="bn")(inputs)
+        x = tf.keras.layers.SpatialDropout2D(0.1, name="drop")(x)
+        outputs = tf.keras.layers.Add(name="add")([inputs, x])
+        model = tf.keras.Model(inputs, outputs)
+
+        assert _is_activation_boundary(model.get_layer("bn")) is True
+
+
+class TestActivationQAT:
+    """Exercise the activation side of the QAT graph."""
+
+    def test_fake_quant_activation_uses_int8_grid(self):
+        layer = FakeQuantActivation(-1.0, 2.0)
+        values = tf.linspace(-1.0, 2.0, 1000)
+        quantized = layer(values).numpy()
+        assert np.unique(quantized).size <= 256
+        assert quantized.min() >= -1.01
+        assert quantized.max() <= 2.01
+
+    def test_calibration_and_shared_weight_graph(self):
+        inputs = tf.keras.Input(shape=(4, 4, 1), name="input")
+        x = tf.keras.layers.Conv2D(4, 3, padding="same", use_bias=False, name="conv")(inputs)
+        x = tf.keras.layers.BatchNormalization(name="bn")(x)
+        x = tf.keras.layers.ReLU(max_value=6, name="relu")(x)
+        x = tf.keras.layers.GlobalAveragePooling2D(name="gap")(x)
+        outputs = tf.keras.layers.Dense(2, activation="sigmoid", name="pred")(x)
+        deployment = tf.keras.Model(inputs, outputs)
+
+        rng = np.random.default_rng(3)
+        samples = rng.normal(size=(4, 4, 4, 1)).astype(np.float32)
+        labels = np.zeros((4, 2), dtype=np.float32)
+        dataset = tf.data.Dataset.from_tensor_slices((samples, labels)).batch(2)
+        ranges = calibrate_activation_ranges(deployment, dataset, max_samples=4)
+        qat_model = build_qat_model(deployment, ranges)
+
+        assert {"__input__", "relu", "gap", "pred"} <= ranges.keys()
+        assert "bn" not in ranges  # folded into Conv + ReLU by TFLite
+        inner_model = next(layer for layer in qat_model.layers if isinstance(layer, tf.keras.Model))
+        assert inner_model.get_layer("conv_quantized_kernel").target is deployment.get_layer("conv")
+        assert qat_model.get_layer("input_fake_quant") is not None
+        assert any(layer.name.endswith("_fake_quant") for layer in inner_model.layers)
+
+    def test_calibration_accepts_converter_style_single_input_lists(self):
+        """QAT must consume the exact tensor iterator used by conversion."""
+        inputs = tf.keras.Input(shape=(4,), name="input")
+        outputs = tf.keras.layers.Dense(2, activation="sigmoid", name="pred")(inputs)
+        deployment = tf.keras.Model(inputs, outputs)
+        samples = np.random.default_rng(17).normal(size=(4, 4)).astype(np.float32)
+
+        ranges = calibrate_activation_ranges(
+            deployment,
+            ([sample[None]] for sample in samples),
+            max_samples=4,
+        )
+
+        assert ranges["__input__"][0] <= float(samples.min())
+        assert ranges["__input__"][1] >= float(samples.max())
+
+    def test_raw_frontend_is_quantized_and_synced_to_clean_model(self):
+        """QAT must cover opaque frontend kernels without polluting deployment."""
+        from birdnet_stm32.models.frontend import AudioFrontendLayer
+
+        inputs = tf.keras.Input(shape=(2000, 1), name="raw_audio_input")
+        x = AudioFrontendLayer(
+            mode="raw",
+            mel_bins=8,
+            spec_width=8,
+            sample_rate=8000,
+            chunk_duration=0.25,
+            mag_scale="pwl",
+            name="audio_frontend",
+        )(inputs)
+        x = tf.keras.layers.GlobalAveragePooling2D(name="gap")(x)
+        outputs = tf.keras.layers.Dense(2, activation="sigmoid", name="pred")(x)
+        deployment = tf.keras.Model(inputs, outputs)
+
+        rng = np.random.default_rng(11)
+        samples = rng.uniform(-1.0, 1.0, size=(4, 2000, 1)).astype(np.float32)
+        dataset = tf.data.Dataset.from_tensor_slices((samples, np.zeros((4, 2), np.float32))).batch(2)
+        ranges = calibrate_activation_ranges(deployment, dataset, max_samples=4)
+        qat_model = build_qat_model(deployment, ranges)
+
+        assert "audio_frontend_fb_re" in ranges
+        assert "audio_frontend_mag_pwl_add_3" in ranges
+        clean_frontend = deployment.get_layer("audio_frontend")
+        qat_frontend = next(
+            layer
+            for layer in qat_model._flatten_layers(include_self=False, recursive=True)  # noqa: SLF001
+            if layer.__class__.__name__ == "AudioFrontendLayer"
+        )
+        assert qat_frontend is not clean_frontend
+        assert qat_frontend._quantization_hook is not None  # noqa: SLF001
+        assert clean_frontend._quantization_hook is None  # noqa: SLF001
+
+        updated = qat_frontend.get_weights()
+        updated[0] = updated[0] + 0.01
+        qat_frontend.set_weights(updated)
+        sync_frontend_weights(qat_model, deployment)
+        for qat_weight, clean_weight in zip(
+            qat_frontend.get_weights(),
+            clean_frontend.get_weights(),
+            strict=True,
+        ):
+            np.testing.assert_array_equal(qat_weight, clean_weight)
+
+    def test_distillation_loss_is_finite_and_reported(self):
+        """The QAT objective must constrain probabilities beyond hard labels."""
+        inputs = tf.keras.Input(shape=(4,), name="input")
+        outputs = tf.keras.layers.Dense(2, activation="sigmoid", name="pred")(inputs)
+        deployment = tf.keras.Model(inputs, outputs)
+        teacher = tf.keras.models.clone_model(deployment)
+        teacher.set_weights(deployment.get_weights())
+        samples = np.random.default_rng(5).normal(size=(8, 4)).astype(np.float32)
+        targets = np.zeros((8, 2), np.float32)
+        dataset = tf.data.Dataset.from_tensor_slices((samples, targets)).batch(4)
+        ranges = calibrate_activation_ranges(deployment, dataset, max_samples=8)
+        student = build_qat_model(deployment, ranges)
+        distilled = _DistilledQATModel(student, teacher)
+        distilled.compile(optimizer="adam", loss="binary_crossentropy")
+
+        metrics = distilled.train_on_batch(samples, targets, return_dict=True)
+        assert np.isfinite(metrics["loss"])
+        assert np.isfinite(metrics["distillation_kl"])
+        assert np.isfinite(metrics["distillation_cosine_loss"])
+        assert np.isfinite(metrics["distillation_cosine_tail_loss"])
+        assert metrics["distillation_kl"] >= -1e-6
+        assert 0 <= metrics["distillation_cosine_loss"] <= 2
+        assert metrics["distillation_cosine_loss"] <= metrics["distillation_cosine_tail_loss"] <= 2
 
 
 # ---------------------------------------------------------------------------
@@ -150,100 +295,6 @@ class TestFreezeBatchNorm:
         x = tf.keras.layers.Dense(2)(inp)
         model = tf.keras.Model(inp, x)
         assert freeze_batch_norm(model) == 0
-
-
-# ---------------------------------------------------------------------------
-# QATCallback
-# ---------------------------------------------------------------------------
-
-
-class TestQATCallback:
-    """Test shadow-weight QAT callback mechanics."""
-
-    @pytest.fixture
-    def tiny_model(self):
-        """Build a minimal model with Conv2D, BN, Dense."""
-        inp = tf.keras.Input(shape=(4, 4, 1))
-        x = tf.keras.layers.Conv2D(8, 3, padding="same", use_bias=False, name="conv")(inp)
-        x = tf.keras.layers.BatchNormalization(name="bn")(x)
-        x = tf.keras.layers.ReLU()(x)
-        x = tf.keras.layers.GlobalAveragePooling2D()(x)
-        x = tf.keras.layers.Dense(3, activation="softmax", name="pred")(x)
-        return tf.keras.Model(inp, x)
-
-    @pytest.fixture
-    def tiny_data(self):
-        """Generate random training data for the tiny model."""
-        rng = np.random.default_rng(42)
-        X = rng.standard_normal((8, 4, 4, 1)).astype(np.float32)
-        y = np.eye(3, dtype=np.float32)[rng.integers(0, 3, size=8)]
-        return X, y
-
-    def test_callback_identifies_layers(self, tiny_model, tiny_data):
-        """QATCallback should identify Conv2D and Dense as quantizable."""
-        X, y = tiny_data
-        tiny_model.compile(optimizer="adam", loss="categorical_crossentropy")
-        cb = QATCallback(num_bits=8, per_channel=True)
-        tiny_model.fit(X, y, epochs=1, batch_size=8, callbacks=[cb], verbose=0)
-        # Should have found conv and pred layers
-        assert len(cb._qat_layers) == 2
-        names = {lyr.name for lyr in cb._qat_layers}
-        assert "conv" in names
-        assert "pred" in names
-
-    def test_callback_weights_change(self, tiny_model, tiny_data):
-        """Weights should be updated after QAT training."""
-        X, y = tiny_data
-        tiny_model.compile(optimizer="adam", loss="categorical_crossentropy")
-        cb = QATCallback(num_bits=8, per_channel=True)
-
-        w_before = [w.numpy().copy() for w in tiny_model.trainable_weights]
-        tiny_model.fit(X, y, epochs=1, batch_size=8, callbacks=[cb], verbose=0)
-        w_after = [w.numpy() for w in tiny_model.trainable_weights]
-
-        # At least some weights should have changed
-        changed = any(not np.array_equal(a, b) for a, b in zip(w_before, w_after, strict=False))
-        assert changed
-
-    def test_callback_preserves_fp_precision(self, tiny_model, tiny_data):
-        """After training, weights should be full-precision (not quantized grid)."""
-        X, y = tiny_data
-        tiny_model.compile(optimizer="adam", loss="categorical_crossentropy")
-        cb = QATCallback(num_bits=8, per_channel=True)
-        tiny_model.fit(X, y, epochs=2, batch_size=4, callbacks=[cb], verbose=0)
-
-        # Get the conv kernel
-        conv = tiny_model.get_layer("conv")
-        kernel = conv.kernel.numpy()
-        # Fake-quantize it
-        fq = fake_quantize_weights(kernel, num_bits=8, per_channel=True, channel_axis=-1)
-        # The stored kernel should NOT exactly equal its fake-quantized version
-        # (it should retain FP precision from shadow weights)
-        assert not np.array_equal(kernel, fq)
-
-    def test_callback_no_bn_quantized(self, tiny_model, tiny_data):
-        """BatchNorm layers should not appear in QAT layers."""
-        X, y = tiny_data
-        tiny_model.compile(optimizer="adam", loss="categorical_crossentropy")
-        cb = QATCallback()
-        tiny_model.fit(X, y, epochs=1, batch_size=8, callbacks=[cb], verbose=0)
-        for layer in cb._qat_layers:
-            assert not isinstance(layer, tf.keras.layers.BatchNormalization)
-
-    def test_callback_skips_bias_quantization(self, tiny_model, tiny_data):
-        """Biases should not be tracked for fake-quantization."""
-        X, y = tiny_data
-        tiny_model.compile(optimizer="adam", loss="categorical_crossentropy")
-        cb = QATCallback()
-
-        # Manually trigger on_train_begin to populate _qat_layers
-        cb.set_model(tiny_model)
-        cb.on_train_begin()
-        # Simulate one batch
-        cb.on_train_batch_begin(0)
-        # Check tracked variables — none should be biases
-        for var, _, _ in cb._tracked:
-            assert "bias" not in var.name
 
 
 class TestQuantizationGridMatchesTFLite:

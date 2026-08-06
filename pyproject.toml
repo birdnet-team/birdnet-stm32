@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "birdnet-stm32"
-version = "0.5.0"
+version = "1.0.0"
 description = "Bird sound classification for edge deployment on STM32N6570-DK with NPU"
 readme = "README.md"
 license = "MIT"
@@ -15,7 +15,7 @@ authors = [
 ]
 keywords = ["bioacoustics", "bird", "audio", "classification", "stm32", "edge", "tflite", "quantization"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -34,11 +34,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "build>=1.2",
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "ruff>=0.4.0",
     "pre-commit>=3.7.0",
     "mypy>=1.10.0",
+    "pyserial>=3.5",
 ]
 docs = [
     "mkdocs-material>=9.5",
@@ -52,7 +54,13 @@ deploy = [
 tune = [
     "optuna>=3.6",
 ]
+release = [
+    "tf2onnx>=1.17.0",
+    "onnx>=1.22.0",
+    "onnxruntime>=1.28.0",
+]
 all = [
+    "build>=1.2",
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "ruff>=0.4.0",
@@ -64,6 +72,9 @@ all = [
     "mkdocs-literate-nav>=0.6",
     "pyserial>=3.5",
     "optuna>=3.6",
+    "tf2onnx>=1.17.0",
+    "onnx>=1.22.0",
+    "onnxruntime>=1.28.0",
 ]
 
 [project.scripts]

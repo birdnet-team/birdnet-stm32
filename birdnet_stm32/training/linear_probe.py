@@ -6,6 +6,7 @@ Only the final dropout + dense layer are retrained, making training fast
 and requiring very little data.
 """
 
+import argparse
 import math
 import os
 
@@ -19,7 +20,7 @@ from birdnet_stm32.training.config import ModelConfig
 from birdnet_stm32.training.trainer import compute_hop_length, train_model
 
 
-def run_linear_probe(args) -> None:
+def run_linear_probe(args: argparse.Namespace) -> None:
     """Run linear probing on a pretrained model with a new dataset.
 
     Loads the model from ``args.checkpoint_path``, freezes all layers except

@@ -50,6 +50,7 @@ class MagnitudeScalingLayer(layers.Layer):
         self.pcen_K = int(pcen_K)
         self.pcen_pool_width = max(1, int(pcen_pool_width))
         self.is_trainable = bool(is_trainable)
+        self._quantization_hook = None
 
         # DB constants
         self._db_eps = 1e-6
@@ -177,32 +178,55 @@ class MagnitudeScalingLayer(layers.Layer):
             return self._apply_db(x)
         return x
 
+    def set_quantization_hook(self, hook) -> None:
+        """Install or remove a training-only internal quantization hook."""
+        self._quantization_hook = hook
+
+    def _quantized_call(self, layer, inputs):
+        """Call a kernel layer through the QAT hook when one is installed."""
+        if self._quantization_hook is None:
+            return layer(inputs)
+        return self._quantization_hook.kernel(layer, inputs)
+
+    def _quantized_activation(self, name: str, inputs):
+        """Mark an internal tensor as an INT8 activation boundary for QAT."""
+        if self._quantization_hook is None:
+            return inputs
+        return self._quantization_hook.activation(name, inputs)
+
     def _apply_pcen(self, x):
         """PCEN-like compression using only pool/conv/ReLU/Add ops."""
         m = x
         for pool in self._pcen_pools:
             m = pool(m)
-        agc = self._pcen_agc_dw(m) if self._pcen_agc_dw is not None else m
-        y0 = tf.nn.relu(x - agc)
-        b1 = self._pcen_k1_dw(y0) if self._pcen_k1_dw is not None else y0
-        y_shift = self._pcen_shift_dw(y0) if self._pcen_shift_dw is not None else y0
-        relu = tf.nn.relu(y_shift)
-        b2 = self._pcen_k2mk1_dw(relu) if self._pcen_k2mk1_dw is not None else relu
-        return tf.nn.relu(b1 + b2)
+        agc = self._quantized_call(self._pcen_agc_dw, m) if self._pcen_agc_dw is not None else m
+        agc = self._quantized_activation(f"{self.name}_pcen_agc", agc)
+        y0 = self._quantized_activation(f"{self.name}_pcen_relu0", tf.nn.relu(x - agc))
+        b1 = self._quantized_call(self._pcen_k1_dw, y0) if self._pcen_k1_dw is not None else y0
+        b1 = self._quantized_activation(f"{self.name}_pcen_branch1", b1)
+        y_shift = self._quantized_call(self._pcen_shift_dw, y0) if self._pcen_shift_dw is not None else y0
+        relu = self._quantized_activation(f"{self.name}_pcen_relu1", tf.nn.relu(y_shift))
+        b2 = self._quantized_call(self._pcen_k2mk1_dw, relu) if self._pcen_k2mk1_dw is not None else relu
+        b2 = self._quantized_activation(f"{self.name}_pcen_branch2", b2)
+        return self._quantized_activation(f"{self.name}_pcen_output", tf.nn.relu(b1 + b2))
 
     def _apply_pwl(self, x):
         """Piecewise-linear compression via 1x1 depthwise branches."""
         branches = []
         if self._pwl_k0_dw is not None:
-            branches.append(self._pwl_k0_dw(x))
+            branch = self._quantized_call(self._pwl_k0_dw, x)
+            branches.append(self._quantized_activation(self._pwl_k0_dw.name, branch))
         for shift_dw, k_dw in zip(self._pwl_shift_dws, self._pwl_k_dws, strict=True):
-            relu = tf.nn.relu(shift_dw(x))
-            branches.append(k_dw(relu))
+            shifted = self._quantized_call(shift_dw, x)
+            relu = self._quantized_activation(f"{shift_dw.name}_relu", tf.nn.relu(shifted))
+            branch = self._quantized_call(k_dw, relu)
+            branches.append(self._quantized_activation(k_dw.name, branch))
         if not branches:
             return x
         y = branches[0]
         for j, b in enumerate(branches[1:], start=1):
-            y = tf.add(y, b, name=f"{self.name}_pwl_add_{j}")
+            name = f"{self.name}_pwl_add_{j}"
+            y = self._quantized_activation(name, tf.add(y, b, name=name))
         return y
 
     def _apply_db(self, x):

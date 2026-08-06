@@ -245,7 +245,7 @@ def load_dataset(
     mel_bins: int = 64,
     num_workers: int = 8,
     max_chunks_per_file: int = 1,
-    **kwargs,
+    **kwargs: object,
 ) -> tf.data.Dataset:
     """Build a high-throughput tf.data pipeline with multiprocessing workers.
 

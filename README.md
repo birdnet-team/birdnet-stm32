@@ -5,7 +5,7 @@
   <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.12%2B-blue.svg" alt="Python 3.12+"></a>
   <a href="https://birdnet-team.github.io/birdnet-stm32"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Docs"></a>
-  <a href="https://github.com/birdnet-team/birdnet-stm32/releases/tag/v0.5.0"><img src="https://img.shields.io/badge/version-0.5.0-orange.svg" alt="Version"></a>
+  <a href="https://github.com/birdnet-team/birdnet-stm32/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/version-1.0.0-orange.svg" alt="Version"></a>
 </p>
 
 Bird sound classification for edge deployment on the [STM32N6570-DK](https://www.st.com/en/evaluation-tools/stm32n6570-dk.html) development board with neural processing unit (NPU).
@@ -13,11 +13,12 @@ Bird sound classification for edge deployment on the [STM32N6570-DK](https://www
 <img src="https://my.avnet.com/wcm/connect/c651fc2f-a5b2-489c-9d63-d3f064753690/STMicroelectronics+STM32N6570-DK.jpg?MOD=AJPERES&CACHEID=ROOTWORKSPACE-c651fc2f-a5b2-489c-9d63-d3f064753690-phBdXih" alt="STM32N6570-DK board" style="width: 100%;" />
 
 A compact DS-CNN trained on raw waveforms or spectral features, quantized to
-INT8 via post-training quantization, and deployed using ST's X-CUBE-AI
-toolchain. The standalone firmware supports raw waveform, hybrid STFT, and
-precomputed-mel deployment paths. In the verified 24 kHz, 2.5-second raw
-configuration, inference takes **12–13 ms on the NPU** and about **84 ms total**
-including SD-card input.
+INT8 with post-training quantization or quantization-aware fine-tuning, and
+deployed using ST's X-CUBE-AI toolchain. The standalone firmware supports raw
+waveform, hybrid STFT, and precomputed-mel deployment paths. In a verified
+24 kHz, 2.5-second raw configuration, inference takes **12–13 ms on the NPU**
+and about **84 ms total** including SD-card input; exact timing depends on the
+model and SD card.
 
 ## Quick start
 
@@ -70,6 +71,21 @@ Prepare the SD card as follows:
 
 See the [full documentation](https://birdnet-team.github.io/birdnet-stm32) for detailed guides on [dataset preparation](https://birdnet-team.github.io/birdnet-stm32/dataset/), [training](https://birdnet-team.github.io/birdnet-stm32/training/), [conversion](https://birdnet-team.github.io/birdnet-stm32/conversion/), [evaluation](https://birdnet-team.github.io/birdnet-stm32/evaluation/), and [deployment](https://birdnet-team.github.io/birdnet-stm32/deployment/).
 
+## Pre-trained models
+
+Release model families use the basename
+`BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>`. The first USNE
+bundle is `BirdNET_Tiny_N6_USNE_30_V1.0`: 30 northeastern-US bird species plus
+eight nuisance outputs. The species count in the filename excludes nuisance
+outputs. Model files add an uppercase precision suffix, including
+`BirdNET_Tiny_N6_USNE_30_V1.0_FP32.keras` and
+`BirdNET_Tiny_N6_USNE_30_V1.0_INT8.tflite`. Download the model, config, and
+labels from the same GitHub release and keep them together; the config and
+ordered labels are part of the model contract. On the frozen 5,861-file catalog
+test, the v1.0 INT8 model reached ROC-AUC 0.963227 and class-macro AP 0.669244.
+The custom Magpie RT firmware processed 8/8 board-test files without error at
+6 ms mean NPU time and 78 ms total per 2.5-second window.
+
 ## Features
 
 ### Training
@@ -78,8 +94,8 @@ See the [full documentation](https://birdnet-team.github.io/birdnet-stm32) for d
 - **Magnitude scaling**: `pwl` (piecewise-linear, quantization-friendly), `pcen`, `db`, `none`
 - **Model**: DS-CNN with configurable width (`--alpha`) and depth (`--depth_multiplier`), SE attention and inverted residuals (on by default; disable with `--no_se`, `--no_inverted_residual`), and optional attention pooling (`--use_attention_pooling`)
 - **Augmentation**: Dirichlet multi-source mixup with multi-label union targets for overlapping vocalizations, SpecAugment (on by default), smart crop for long recordings
-- **Optimization**: linear warmup into cosine LR decay, Adam/SGD/AdamW, gradient clipping (on by default), mixed precision (FP16). Best checkpoint and early stopping track validation ROC-AUC
-- **QAT**: quantization-aware fine-tuning via `--qat` — shadow-weight fake-quantization, no FakeQuant ops in saved model
+- **Optimization**: linear warmup into cosine LR decay, Adam/SGD/AdamW, gradient clipping (on by default), mixed precision (FP16). Standard training checkpoints track validation ROC-AUC; QAT checkpoints track lower-tail teacher/student parity and retain ROC-AUC for the task-accuracy gate
+- **QAT**: native Keras 3 quantization-aware fine-tuning via `--qat` — uses the converter's exact calibration manifest to simulate the INT8 input, per-channel kernels, fused activation boundaries, and otherwise-opaque raw-frontend internals; frozen-teacher KL plus mean and configurable worst-sample cosine consistency protect probability calibration and lower-tail parity while a clean deployment model is checkpointed
 - **Linear probing**: `--linear_probe` freezes a pretrained backbone and trains only the classifier head
 - **Hyperparameter tuning**: Optuna search via `--tune --n_trials N`
 
@@ -87,9 +103,9 @@ See the [full documentation](https://birdnet-team.github.io/birdnet-stm32) for d
 
 - **Post-training quantization**: INT8 internals, float32 I/O, per-channel (default) or per-tensor
 - **Dynamic range quantization**: `--quantization dynamic` — no calibration data needed
-- **Validation**: cosine similarity, MSE, Pearson r between Keras and TFLite outputs
-- **Batch validation**: `--batch_validate N` for worst-case metrics across seeds
-- **ONNX export**: `--export_onnx` (requires `tf2onnx`)
+- **Validation**: mean and tail cosine similarity, MSE, MAE, and Pearson r on a deterministic held-out calibration split
+- **Atomic quality gate**: failed conversions never promote a release-looking `.tflite`
+- **ONNX export**: `--export_onnx` uses the Keras 3 exporter, ONNX checker, and ONNX Runtime parity gate (requires `tf2onnx`, `onnx`, and `onnxruntime`)
 
 ### Evaluation
 
@@ -143,5 +159,3 @@ Without these partnerships, this project would not have been possible.
 Thank you!
 
 ![Logos of all partners](https://tuc.cloud/index.php/s/KSdWfX5CnSRpRgQ/download/box_logos.png)
-
-

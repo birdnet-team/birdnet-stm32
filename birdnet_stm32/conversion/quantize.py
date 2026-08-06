@@ -6,6 +6,8 @@ float32 I/O and INT8 internal ops for STM32N6 NPU deployment.
 
 import os
 import random
+from collections import defaultdict
+from collections.abc import Callable, Iterable, Iterator
 
 import numpy as np
 import tensorflow as tf
@@ -16,12 +18,53 @@ from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
 from birdnet_stm32.models.frontend import normalize_frontend_name
 
 
-def representative_data_gen(file_paths: list[str], cfg: dict, num_samples: int = 100, snr_threshold: float = 0.01):
+def stratified_sample_paths(
+    file_paths: list[str],
+    num_samples: int,
+    *,
+    seed: int,
+    exclude: set[str] | None = None,
+) -> list[str]:
+    """Select an exact, deterministic, class-balanced audio manifest."""
+    excluded = exclude or set()
+    grouped: dict[str, list[str]] = defaultdict(list)
+    for path in file_paths:
+        if path not in excluded:
+            grouped[os.path.basename(os.path.dirname(path))].append(path)
+
+    rng = random.Random(seed)
+    class_names = sorted(grouped)
+    rng.shuffle(class_names)
+    for paths in grouped.values():
+        rng.shuffle(paths)
+
+    selected: list[str] = []
+    offsets = {name: 0 for name in class_names}
+    while len(selected) < num_samples:
+        added = False
+        for name in class_names:
+            offset = offsets[name]
+            paths = grouped[name]
+            if offset < len(paths):
+                selected.append(paths[offset])
+                offsets[name] = offset + 1
+                added = True
+                if len(selected) == num_samples:
+                    break
+        if not added:
+            break
+    return selected
+
+
+def representative_data_gen(
+    file_paths: list[str], cfg: dict, num_samples: int = 100, snr_threshold: float = 0.0
+) -> Iterator[list[np.ndarray]]:
     """Build a representative dataset generator for TFLite PTQ calibration.
 
     Yields one input tensor per iteration in the exact shape expected by the model.
-    Filters out near-silent chunks (below snr_threshold) to avoid widening INT8
-    quantization ranges with uninformative data.
+    Includes quiet and nuisance recordings by default because they are part of
+    the deployed input distribution and every requested calibration path must
+    contribute deterministically. Callers may opt into energy filtering.
 
     Args:
         file_paths: Audio file paths to sample from.
@@ -44,7 +87,10 @@ def representative_data_gen(file_paths: list[str], cfg: dict, num_samples: int =
 
     if len(file_paths) == 0:
         raise ValueError("No audio files found for representative dataset generation.")
-    sampled_paths = random.sample(file_paths, min(num_samples, len(file_paths)))
+    # The caller owns sampling.  Keeping this iterator ordered makes calibration
+    # reproducible and allows conversion and diagnostics to use the exact same
+    # file manifest.
+    sampled_paths = file_paths[: min(num_samples, len(file_paths))]
     # Bound calibration read length to a few chunks per file: longer reads waste
     # I/O and only the centre chunk is kept downstream.
     rep_max_duration = float(cfg.get("max_duration", 0)) or max(30.0, cd * 5.0)
@@ -110,7 +156,7 @@ def representative_data_gen(file_paths: list[str], cfg: dict, num_samples: int =
 
 def convert_to_tflite(
     model: tf.keras.Model,
-    rep_data_gen,
+    rep_data_gen: Callable[[], Iterable[list[np.ndarray]]],
     output_path: str,
     quantization: str = "ptq",
     per_tensor: bool = False,
