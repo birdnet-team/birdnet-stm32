@@ -25,6 +25,7 @@ tests/
 ├── test_activity.py             # Activity detection logic
 ├── test_audio_io.py             # Audio loading, resampling, chunking
 ├── test_augmentation.py         # Audio augmentation pipeline
+├── test_cli_defaults.py         # CLI default settings
 ├── test_config.py               # ModelConfig serialization
 ├── test_conversion.py           # TFLite conversion pipeline
 ├── test_data_pipeline.py        # Frontend-aware generator and calibration data
@@ -38,12 +39,15 @@ tests/
 ├── test_metrics.py              # ROC-AUC, cmAP, F1 computation
 ├── test_optimizer.py            # Optimizer configuration
 ├── test_pooling.py              # avg/max/lme pooling
+├── test_pruning.py              # Gradual magnitude pruning
 ├── test_qat.py                  # Quantization-aware training
 ├── test_quantization_sim.py     # Quantization simulation utilities
 ├── test_runners.py              # Evaluation runner pipeline
 ├── test_spec_augment.py         # SpecAugment / frequency masking
+├── test_split.py                # Backbone/classifier split and chained inference
 ├── test_spectrogram.py          # Spectrogram computation, shapes
 ├── test_threshold_opt.py        # Threshold optimization
+├── test_train_memory_guard.py   # Host memory guard during training
 └── test_train_to_eval.py        # End-to-end train → evaluate integration
 ```
 
