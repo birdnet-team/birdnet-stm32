@@ -30,6 +30,15 @@ def get_args() -> argparse.Namespace:
     """Parse command-line arguments for evaluation."""
     parser = argparse.ArgumentParser(description="Evaluate model on test audio (file-level pooling).")
     parser.add_argument("--model_path", type=str, required=True, help="Path to .keras or .tflite model")
+    parser.add_argument(
+        "--classifier_path",
+        type=str,
+        default="",
+        help=(
+            "Optional .tflite classifier head. Supply it with the .tflite backbone in --model_path "
+            "to evaluate a split model as one chained pipeline."
+        ),
+    )
     parser.add_argument("--model_config", type=str, default="", help="Path to model config JSON")
     parser.add_argument("--data_path_test", type=str, required=True, help="Path to test dataset root")
     parser.add_argument("--max_files", type=int, default=-1, help="Max test files per class")
@@ -104,8 +113,13 @@ def main():
     if not files:
         raise RuntimeError(f"No test audio found in {args.data_path_test}")
 
-    # Load model
-    runner = load_model_runner(args.model_path)
+    # Load model. A split conversion is evaluated as the chained pair so the
+    # numbers describe what the board would actually run.
+    if args.classifier_path:
+        if not os.path.isfile(args.classifier_path):
+            raise FileNotFoundError(f"Classifier head not found: {args.classifier_path}")
+        print(f"Chaining backbone {args.model_path} with classifier head {args.classifier_path}")
+    runner = load_model_runner(args.model_path, args.classifier_path)
 
     # Evaluate
     metrics, per_file, y_true, y_scores = evaluate(
