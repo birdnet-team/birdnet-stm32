@@ -58,6 +58,12 @@ python -m birdnet_stm32 train --data_path_train data/train \
     use the canonical basename for the deployable checkpoint and preserve the
     source checkpoint with an `_original_FP32.keras` suffix.
 
+## Pruning
+
+Gradual magnitude pruning (`--prune`) is a separate compression step that
+shares this module's teacher-consistency objective and runs before QAT. See
+[Pruning](pruning.md).
+
 ## Representative dataset
 
 The calibration dataset is critical for PTQ quality:

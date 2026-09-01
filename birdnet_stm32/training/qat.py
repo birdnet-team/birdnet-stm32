@@ -15,6 +15,8 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers
 
+from birdnet_stm32.training.distillation import DistilledModel, all_layers, validate_loss_weights
+
 QUANTIZABLE_TYPES = (layers.Conv2D, layers.DepthwiseConv2D, layers.Dense)
 ACTIVATION_BOUNDARY_TYPES = (
     layers.BatchNormalization,
@@ -48,12 +50,6 @@ def fake_quantize_weights(
         amax = np.max(np.abs(w))
     scale = np.maximum(amax / qmax, 1e-12)
     return (np.clip(np.round(w / scale), -qmax, qmax) * scale).astype(np.float32)
-
-
-def _all_layers(model: tf.keras.Model) -> list[tf.keras.layers.Layer]:
-    """Return every nested layer exactly once."""
-    flattened = model._flatten_layers(include_self=False, recursive=True)  # noqa: SLF001
-    return list(dict.fromkeys(flattened))
 
 
 def _channel_axis(layer: tf.keras.layers.Layer) -> int:
@@ -220,66 +216,9 @@ class _FrontendQuantizationHook:
         return self._kernels[layer.name](inputs)
 
 
-class _DistilledQATModel(tf.keras.Model):
-    """Train a quantized student against labels and a frozen float teacher."""
-
-    def __init__(
-        self,
-        student: tf.keras.Model,
-        teacher: tf.keras.Model,
-        distillation_weight: float = 1.0,
-        cosine_weight: float = 0.10,
-        cosine_tail_weight: float = 0.75,
-        cosine_tail_fraction: float = 0.10,
-    ):
-        super().__init__(inputs=student.inputs, outputs=student.outputs, name=student.name)
-        teacher.trainable = False
-        self.teacher = teacher
-        self.distillation_weight = float(distillation_weight)
-        self.cosine_weight = float(cosine_weight)
-        self.cosine_tail_weight = float(cosine_tail_weight)
-        self.cosine_tail_fraction = float(cosine_tail_fraction)
-        self.distillation_metric = tf.keras.metrics.Mean(name="distillation_kl")
-        self.cosine_metric = tf.keras.metrics.Mean(name="distillation_cosine_loss")
-        self.cosine_tail_metric = tf.keras.metrics.Mean(name="distillation_cosine_tail_loss")
-
-    def compute_loss(self, x, y, y_pred, sample_weight=None, training=True):
-        """Add multi-label Bernoulli KL divergence to supervised BCE."""
-        supervised = super().compute_loss(
-            x=x,
-            y=y,
-            y_pred=y_pred,
-            sample_weight=sample_weight,
-            training=training,
-        )
-        teacher_pred = tf.stop_gradient(self.teacher(x, training=False))
-        epsilon = tf.cast(tf.keras.backend.epsilon(), y_pred.dtype)
-        teacher_pred = tf.clip_by_value(teacher_pred, epsilon, 1.0 - epsilon)
-        y_pred = tf.clip_by_value(y_pred, epsilon, 1.0 - epsilon)
-        cross_entropy = tf.keras.losses.binary_crossentropy(teacher_pred, y_pred)
-        teacher_entropy = tf.keras.losses.binary_crossentropy(teacher_pred, teacher_pred)
-        divergence = tf.reduce_mean(cross_entropy - teacher_entropy)
-        self.distillation_metric.update_state(divergence)
-        teacher_direction = tf.math.l2_normalize(teacher_pred, axis=-1)
-        student_direction = tf.math.l2_normalize(y_pred, axis=-1)
-        per_sample_cosine_loss = 1.0 - tf.reduce_sum(teacher_direction * student_direction, axis=-1)
-        cosine_loss = tf.reduce_mean(per_sample_cosine_loss)
-        self.cosine_metric.update_state(cosine_loss)
-        tail_count = tf.maximum(
-            1,
-            tf.cast(
-                tf.math.ceil(tf.cast(tf.size(per_sample_cosine_loss), tf.float32) * self.cosine_tail_fraction),
-                tf.int32,
-            ),
-        )
-        cosine_tail_loss = tf.reduce_mean(tf.math.top_k(per_sample_cosine_loss, k=tail_count).values)
-        self.cosine_tail_metric.update_state(cosine_tail_loss)
-        return (
-            supervised
-            + self.distillation_weight * divergence
-            + self.cosine_weight * cosine_loss
-            + self.cosine_tail_weight * cosine_tail_loss
-        )
+# The teacher-consistency objective is shared with gradual magnitude pruning;
+# the alias keeps the QAT-specific name used across this module and its tests.
+_DistilledQATModel = DistilledModel
 
 
 def calibrate_activation_ranges(
@@ -294,7 +233,7 @@ def calibrate_activation_ranges(
     probe = tf.keras.Model(model.inputs, [layer.output for layer in boundaries])
     ranges = {layer.name: [float("inf"), -float("inf")] for layer in boundaries}
     ranges["__input__"] = [float("inf"), -float("inf")]
-    frontends = [layer for layer in _all_layers(model) if layer.__class__.__name__ == "AudioFrontendLayer"]
+    frontends = [layer for layer in all_layers(model) if layer.__class__.__name__ == "AudioFrontendLayer"]
     collector = _ActivationRangeCollector()
     for frontend in frontends:
         frontend.set_quantization_hook(collector)
@@ -379,11 +318,11 @@ def sync_frontend_weights(qat_model: tf.keras.Model, deployment_model: tf.keras.
     """Copy separately cloned custom-frontend weights into the clean model."""
     qat_frontends = {
         layer.name: layer
-        for layer in _all_layers(qat_model)
+        for layer in all_layers(qat_model)
         if layer.__class__.__name__ == "AudioFrontendLayer" and getattr(layer, "_quantization_hook", None) is not None
     }
     deployment_frontends = {
-        layer.name: layer for layer in _all_layers(deployment_model) if layer.__class__.__name__ == "AudioFrontendLayer"
+        layer.name: layer for layer in all_layers(deployment_model) if layer.__class__.__name__ == "AudioFrontendLayer"
     }
     if qat_frontends.keys() != deployment_frontends.keys():
         raise ValueError("QAT and deployment frontend layers do not match")
@@ -393,7 +332,7 @@ def sync_frontend_weights(qat_model: tf.keras.Model, deployment_model: tf.keras.
 
 def freeze_batch_norm(model: tf.keras.Model) -> int:
     """Freeze all BatchNormalization layers, including nested frontend BN."""
-    batch_norms = [layer for layer in _all_layers(model) if isinstance(layer, layers.BatchNormalization)]
+    batch_norms = [layer for layer in all_layers(model) if isinstance(layer, layers.BatchNormalization)]
     for layer in batch_norms:
         layer.trainable = False
     return len(batch_norms)
@@ -417,6 +356,7 @@ def run_qat(args: argparse.Namespace) -> None:
     from birdnet_stm32.models.frontend import AudioFrontendLayer
     from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
     from birdnet_stm32.training.config import ModelConfig
+    from birdnet_stm32.training.pruning import SparsityMaskEnforcer, collect_sparsity_masks
     from birdnet_stm32.training.trainer import train_model
 
     if not os.path.isfile(args.checkpoint_path):
@@ -509,6 +449,23 @@ def run_qat(args: argparse.Namespace) -> None:
 
     n_frozen = freeze_batch_norm(deployment_model)
     print(f"[QAT] Frozen {n_frozen} BatchNorm layers")
+
+    # A pruned checkpoint carries its mask as exact zeros. Gradient updates
+    # would quietly refill those slots, so re-apply the mask after every step.
+    extra_callbacks: list[tf.keras.callbacks.Callback] = []
+    if getattr(args, "qat_preserve_sparsity", True):
+        sparsity_masks = collect_sparsity_masks(deployment_model)
+        if sparsity_masks:
+            enforcer = SparsityMaskEnforcer(deployment_model, sparsity_masks)
+            enforcer.enforce()
+            extra_callbacks.append(enforcer)
+            pruned = sum(int(mask.size - np.count_nonzero(mask)) for mask in sparsity_masks.values())
+            total = sum(int(mask.size) for mask in sparsity_masks.values())
+            print(
+                f"[QAT] Preserving pruning masks on {len(sparsity_masks)} layers "
+                f"({pruned:,}/{total:,} weights held at zero)"
+            )
+
     calibration_count = int(args.qat_calibration_samples)
     calibration_paths = stratified_sample_paths(calibration_source_paths, calibration_count, seed=42)
     if len(calibration_paths) != calibration_count:
@@ -532,10 +489,7 @@ def run_qat(args: argparse.Namespace) -> None:
         "cosine_tail_weight": float(args.qat_cosine_tail_weight),
         "cosine_tail_fraction": float(args.qat_cosine_tail_fraction),
     }
-    if any(loss_weights[name] < 0 for name in loss_weights if name != "cosine_tail_fraction"):
-        raise ValueError("QAT consistency-loss weights must be non-negative")
-    if not 0 < loss_weights["cosine_tail_fraction"] <= 1:
-        raise ValueError("QAT cosine tail fraction must be in (0, 1]")
+    validate_loss_weights(loss_weights)
     qat_student = build_qat_model(deployment_model, activation_ranges)
     qat_model = _DistilledQATModel(qat_student, teacher_model, **loss_weights)
     print(
@@ -573,6 +527,7 @@ def run_qat(args: argparse.Namespace) -> None:
         checkpoint_sync=lambda: sync_frontend_weights(qat_model, deployment_model),
         checkpoint_monitor="val_distillation_cosine_tail_loss",
         checkpoint_mode="min",
+        extra_callbacks=extra_callbacks,
     )
     print(f"[QAT] Clean quantization-ready checkpoint saved to {qat_path}")
     print(f"[QAT] Activation calibration ranges saved to {ranges_path}")

@@ -192,6 +192,161 @@ python -m birdnet_stm32 convert \
 
 The QAT model is saved as `{name}_qat.keras` alongside the original.
 
+When the input checkpoint came from `--prune`, QAT re-applies the pruning
+mask after every step so the sparsity survives; see [Pruning](#pruning).
+
+### Pruning
+
+Use `--prune` to fine-tune a pretrained model while a growing fraction of its
+convolution weights is forced to zero. Like `--qat`, it is a separate step that
+starts from a converged checkpoint.
+
+!!! warning "Pruning requires a pretrained model"
+    Magnitude pruning decides which weights to keep by looking at the weights
+    themselves, so it is meaningless on a randomly initialized network. Train
+    normally first. The dataset must have the same classes as the pretrained
+    model, in the same order.
+
+```bash
+# Step 1: normal training
+python -m birdnet_stm32 train --data_path_train data/train \
+  --data_path_val data/validation --classes_file data/labels.txt \
+  --epochs 50 --checkpoint_path checkpoints/model.keras
+
+# Step 2: prune the backbone to 50% and the shipped head to 75%
+python -m birdnet_stm32 train --data_path_train data/train \
+  --data_path_val data/validation --classes_file data/labels.txt --prune \
+  --checkpoint_path checkpoints/model.keras \
+  --prune_final_sparsity 0.5 --prune_head_sparsity 0.75 \
+  --epochs 12 --learning_rate 0.0002
+
+# Step 3: QAT on the pruned checkpoint (sparsity is preserved automatically)
+python -m birdnet_stm32 train --data_path_train data/train \
+  --data_path_val data/validation --classes_file data/labels.txt --qat \
+  --checkpoint_path checkpoints/model_pruned.keras \
+  --epochs 6 --learning_rate 0.00002
+
+# Step 4: convert
+python -m birdnet_stm32 convert \
+  --checkpoint_path checkpoints/model_pruned_qat.keras \
+  --model_config checkpoints/model_pruned_model_config.json \
+  --data_path_train data/train
+```
+
+The step writes `{name}_pruned.keras`, a matching
+`{name}_pruned_model_config.json`, and `{name}_pruned_pruning_report.json` with
+the per-layer sparsity breakdown and the accuracy-gate result.
+
+#### What gets pruned
+
+Pruning removes individual weights (unstructured sparsity) from the dense
+convolution kernels — the expand, project, and embedding 1×1 convolutions,
+which hold roughly 70% of the parameters of a default DS-CNN. Four groups are
+exempt because they are small but highly sensitive:
+
+| Exempt | Why |
+|---|---|
+| Depthwise kernels | 9 weights per channel; nothing is redundant |
+| Squeeze-and-excite `Dense` gates | Tiny gain modulators, not spare capacity |
+| Audio frontend | Mel mixers and Gabor filterbanks are signal-processing filters, not spare capacity |
+| Any kernel below `--prune_min_layer_params` (default 1024) | Rounding error in the budget, first place accuracy breaks |
+
+The classifier head is **not** exempt. `convert --split_head` can ship it as
+its own artifact (see
+[Backbone and classifier split](conversion.md#backbone-and-classifier-split)),
+in which case its weights are the entire cost of an over-the-air model update —
+and zeroed INT8 weights are the only ones that compress. Pruning it by default
+means the head is already small whenever you do export it separately.
+`--prune_head_sparsity` gives the head its own target so it can be compressed
+harder than the backbone:
+
+```bash
+--prune_final_sparsity 0.5 --prune_head_sparsity 0.75
+```
+
+The head follows the same cubic ramp and the same accuracy gate; it just aims
+at a different endpoint. Pass `--no_prune_head` to leave it dense.
+
+#### How sparsity is reached
+
+Sparsity follows the cubic ramp of Zhu & Gupta: it rises quickly at first,
+while the surviving weights still have most of the run to compensate, and
+flattens as it approaches the target. The ramp occupies the first
+`--prune_ramp_fraction` (default 0.5) of the run; the mask is then frozen and
+the remaining epochs fine-tune the surviving weights against a fixed
+architecture.
+
+Masks are re-derived from the current weight magnitudes at every update
+(`--prune_frequency`, default every 100 steps) and are applied in the forward
+pass only. The underlying variables stay dense during the ramp, so a weight
+that was masked early can re-enter the network if it recovers. Only the final,
+frozen mask is baked into the saved checkpoint.
+
+!!! tip "Leave room after the ramp"
+    `--prune_ramp_fraction` must leave at least one epoch after the ramp: the
+    post-ramp epochs are the only ones eligible for best-checkpoint selection,
+    and they are where the surviving weights recover. If the ramp consumes the
+    whole run the step warns and falls back to the final-epoch weights.
+
+`--prune_scope layerwise` (default) gives every prunable layer the same
+sparsity. `--prune_scope global` ranks all prunable weights against one
+threshold, so layers with genuinely redundant weights absorb more of the
+budget; no single layer is taken past 95%. Global scope usually wins above
+about 60% sparsity and is the first thing to try when the accuracy gate fails.
+
+#### Protecting accuracy
+
+Four mechanisms keep the pruned model on the unpruned model's decision surface:
+
+1. A frozen copy of the pre-pruning checkpoint acts as a teacher. Pruning
+   minimizes the label loss plus per-output Bernoulli KL divergence and both
+   mean and worst-sample cosine distance from that teacher — the same
+   objective QAT uses, controlled by the `--prune_*` loss weights.
+2. BatchNorm layers are frozen, so removing weights cannot shift the
+   normalization statistics the rest of the network was trained against.
+3. Checkpoint selection and early stopping do not start until the ramp has
+   finished. A mid-ramp epoch always scores better and would otherwise win
+   with sparsity it never reached.
+4. The step ends by scoring the pruned model and the unpruned teacher on the
+   same `--prune_eval_samples` (default 1024) held-out samples and **fails**
+   if macro ROC-AUC dropped by more than `--prune_max_auc_drop` (default
+   0.005). The checkpoint is kept for inspection, but the command exits with
+   an error rather than handing you a quietly degraded model.
+
+If the gate fails, lower `--prune_final_sparsity`, raise `--epochs`, or switch
+to `--prune_scope global`.
+
+#### What pruning buys on STM32N6
+
+Be clear about the trade before spending a training run on it:
+
+| | Effect |
+|---|---|
+| `.tflite` size | **Unchanged.** TFLite stores INT8 weights densely; a zero costs the same byte as any other value. |
+| Compressed / OTA size | **Smaller** — around 20% off the gzipped model at 50% sparsity, and more off a hard-pruned classifier head. |
+| NPU latency | **Unchanged.** ST Neural-ART executes dense kernels; it does not skip zero weights. |
+| Robustness | Slightly better, in the way any capacity reduction with distillation regularizes. |
+
+The compressed-size row is the one that matters for a satellite-updated
+classifier head: pruning is what turns the head's INT8 weights into bytes gzip
+can actually collapse.
+
+Unstructured pruning is therefore a *storage and regularization* tool here, not
+a latency tool. To make the model faster on the NPU, reduce `--alpha` or
+`--depth_multiplier` and retrain; that removes whole channels, which the NPU
+actually skips.
+
+#### Pruning and QAT together
+
+Run pruning first, then QAT. QAT detects the pruned zeros in the checkpoint it
+loads and re-applies them after every training step, so quantization-aware
+fine-tuning cannot silently refill the pruned weights. The `[QAT] Preserving
+pruning masks` line confirms it. Pass `--no_qat_preserve_sparsity` to disable
+that behaviour.
+
+Symmetric per-channel INT8 quantization maps zero to zero exactly, so the
+sparsity survives conversion unchanged.
+
 ### Linear probing
 
 Use `--linear_probe` to freeze a pretrained backbone and train only a new
@@ -214,6 +369,8 @@ by cosine decay to near-zero over `--epochs` (default 50). Best-checkpoint
 selection and early stopping monitor validation ROC-AUC with patience 10 for
 standard training. QAT instead minimizes validation teacher/student tail loss;
 the paired catalog evaluation remains the release-deciding accuracy gate.
+Pruning keeps the ROC-AUC monitor but ignores every epoch before its sparsity
+ramp finishes.
 
 ### Hyperparameter tuning with Optuna
 
@@ -288,6 +445,21 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--qat_cosine_weight` | 0.10 | Mean teacher/student cosine-loss weight |
 | `--qat_cosine_tail_weight` | 0.75 | Worst-sample cosine-loss weight |
 | `--qat_cosine_tail_fraction` | 0.10 | Fraction of each batch included in the worst-sample loss |
+| `--no_qat_preserve_sparsity` | False | Let QAT refill weights a previous `--prune` run zeroed |
+| `--prune` | False | Gradual magnitude pruning |
+| `--prune_final_sparsity` | 0.5 | Target fraction of prunable weights zeroed |
+| `--prune_scope` | layerwise | `layerwise` or `global` sparsity allocation |
+| `--prune_ramp_fraction` | 0.5 | Fraction of the run spent ramping up to the target |
+| `--prune_frequency` | 100 | Steps between mask recomputations during the ramp |
+| `--prune_min_layer_params` | 1024 | Smallest kernel (in weights) eligible for pruning |
+| `--no_prune_head` | False | Leave the classifier head dense |
+| `--prune_head_sparsity` | -1 | Separate target for the classifier head (-1 follows `--prune_final_sparsity`) |
+| `--prune_max_auc_drop` | 0.005 | Largest tolerated macro ROC-AUC regression |
+| `--prune_eval_samples` | 1024 | Validation samples scored by the accuracy gate |
+| `--prune_distillation_weight` | 1.0 | Frozen-teacher Bernoulli-KL weight |
+| `--prune_cosine_weight` | 0.10 | Mean teacher/student cosine-loss weight |
+| `--prune_cosine_tail_weight` | 0.75 | Worst-sample cosine-loss weight |
+| `--prune_cosine_tail_fraction` | 0.10 | Fraction of each batch included in the worst-sample loss |
 | `--linear_probe` | False | Freeze backbone and train only classifier head |
 
 ## Data pipeline

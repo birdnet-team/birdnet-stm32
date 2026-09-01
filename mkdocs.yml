@@ -103,6 +103,7 @@ nav:
       - Audio Frontends: dev/audio-frontends.md
       - Model: dev/model.md
       - Quantization: dev/quantization.md
+      - Pruning: dev/pruning.md
       - Implementation Notes: dev/implementation.md
       - Adding a Frontend: dev/adding-a-frontend.md
       - Adding a Model: dev/adding-a-model.md

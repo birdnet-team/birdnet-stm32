@@ -16,6 +16,12 @@ Public model families use this exact basename:
   `BirdNET_Tiny_N6_USNE_30_V1.0_FP32.keras` and
   `BirdNET_Tiny_N6_USNE_30_V1.0_INT8.tflite`. The token describes stored model
   computation; the INT8 TFLite model still has float32 audio I/O.
+- Split deployment artifacts append `_backbone` or `_classifier` after the
+  precision token, such as `BirdNET_Tiny_N6_USNE_30_V1.0_INT8_backbone.tflite`
+  and `..._INT8_classifier.tflite`. The classifier keeps its own
+  `_classifier_labels.txt`, since it is the half that defines the class set and
+  the half that is distributed on its own. Compressed copies append `.gz` to
+  the full artifact name.
 - Shared sidecars append `_model_config.json` or `_labels.txt` to the family
   basename. Precision-specific validation data and reports append the precision
   before their descriptive suffix, such as `_INT8_validation_data.npz`.

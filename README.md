@@ -131,6 +131,7 @@ for toolchain setup and troubleshooting.
 - **Augmentation**: Dirichlet multi-source mixup with multi-label union targets for overlapping vocalizations, SpecAugment (on by default), smart crop for long recordings
 - **Optimization**: linear warmup into cosine LR decay, Adam/SGD/AdamW, gradient clipping (on by default), mixed precision (FP16). Standard training checkpoints track validation ROC-AUC; QAT checkpoints track lower-tail teacher/student parity and retain ROC-AUC for the task-accuracy gate
 - **QAT**: native Keras 3 quantization-aware fine-tuning via `--qat` — uses the converter's exact calibration manifest to simulate the INT8 input, per-channel kernels, fused activation boundaries, and otherwise-opaque raw-frontend internals; frozen-teacher KL plus mean and configurable worst-sample cosine consistency protect probability calibration and lower-tail parity while a clean deployment model is checkpointed
+- **Pruning**: gradual magnitude pruning via `--prune` — a cubic sparsity ramp over the dense convolution kernels with masks re-derived from live magnitudes, the same frozen-teacher consistency objective as QAT, checkpoint selection deferred until the ramp completes, and a held-out macro ROC-AUC gate that fails the run rather than shipping a degraded model. Unstructured sparsity shrinks the compressed model (~20% off gzip at 50%); it does not change `.tflite` size or NPU latency. QAT preserves a pruned checkpoint's zeros automatically
 - **Linear probing**: `--linear_probe` freezes a pretrained backbone and trains only the classifier head
 - **Hyperparameter tuning**: Optuna search via `--tune --n_trials N`
 
@@ -138,6 +139,7 @@ for toolchain setup and troubleshooting.
 
 - **Post-training quantization**: INT8 internals, float32 I/O, per-channel (default) or per-tensor
 - **Dynamic range quantization**: `--quantization dynamic` — no calibration data needed
+- **Backbone/classifier split**: `--split_head` also emits the backbone (audio to embeddings) and the classifier head (embeddings to scores) as separate gated artifacts with deterministic `.gz` copies, so a species-list change can be pushed over a narrowband satellite link as a few kB instead of the whole model. The head is calibrated on the quantized backbone's embeddings, and the chained pair must clear the same parity gates as the monolithic model
 - **Validation**: mean and tail cosine similarity, MSE, MAE, and Pearson r on a deterministic held-out calibration split
 - **Atomic quality gate**: failed conversions never promote a release-looking `.tflite`
 - **ONNX export**: `--export_onnx` uses the Keras 3 exporter, ONNX checker, and ONNX Runtime parity gate (requires `tf2onnx`, `onnx`, and `onnxruntime`)

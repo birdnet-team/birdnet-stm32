@@ -18,6 +18,12 @@ This produces:
 - `my_model_quantized_labels.txt` — ordered output labels
 - `my_model_quantized_validation_data.npz` — validation inputs for
   on-device comparison
+Passing `--split_head` adds the
+[backbone/classifier split](#backbone-and-classifier-split) artifacts:
+
+- `my_model_quantized_backbone.tflite` (+ `.gz`) — audio → embeddings
+- `my_model_quantized_classifier.tflite` (+ `.gz`) — embeddings → scores
+- `my_model_quantized_classifier_labels.txt` — the head's own label list
 
 ## How it works
 
@@ -30,7 +36,124 @@ flowchart TD
     E --> F{"Mean + p05\nparity pass?"}
     F -->|Yes| G["Atomic promote\n.tflite + .npz"]
     F -->|No| H["Diagnostic report only"]
+    G -->|"--split_head"| I["Split at the embedding layer\nbackbone + classifier head"]
+    I --> J{"Chained\nparity pass?"}
+    J -->|Yes| K["Atomic promote\nboth halves + .gz"]
+    J -->|No| H
 ```
+
+## Backbone and classifier split
+
+With `--split_head`, conversion also emits the model as two artifacts: a
+**backbone** that maps audio to an embedding vector, and a **classifier head**
+that maps that embedding to per-class probabilities.
+
+The reason is the update path. The backbone is generic feature extraction and
+is flashed once. The head is the only part that changes when the species list
+changes — and on a remote deployment it has to arrive over a narrowband
+satellite link, where the whole model is far too large to send. Shipping the
+head alone turns a ~400 kB update into a few kB.
+
+```mermaid
+flowchart LR
+    A["audio"] --> B["backbone.tflite
+flashed once"]
+    B --> C["embeddings
+(256 floats)"]
+    C --> D["classifier.tflite
+sent over the air"]
+    D --> E["per-class scores"]
+```
+
+### Where the split happens
+
+At the pooling layer that produces the embedding vector (`gap`, or `attn_pool`
+with `--use_attention_pooling`). Everything after it — dropout, then the
+classifier `Dense` — is rebuilt onto a clean `embeddings` input as a standalone
+model with its own copy of the weights. The backbone keeps the audio frontend
+and the whole convolutional body.
+
+### How each half is quantized
+
+The backbone is calibrated on the same representative audio as the whole model.
+The head is then calibrated on the embeddings the **quantized** backbone
+produces for that audio — not on float embeddings, which is not what the board
+will feed it.
+
+The two extra conversions roughly double the wall-clock cost of `convert`:
+the representative dataset is decoded again for the backbone, and once more to
+produce the head's calibration embeddings. That cost is why the split is
+opt-in rather than automatic.
+
+### Gates
+
+Three parity measurements are reported, and the third is a hard gate:
+
+| Measurement | Compared against | Gated |
+|---|---|---|
+| Whole model | Keras vs. TFLite | Yes — `--min_cosine_sim`, `--min_cosine_p05` |
+| Backbone | Keras embeddings vs. TFLite embeddings | Reported |
+| **Chained** | Keras whole model vs. TFLite backbone → TFLite head | **Yes — same thresholds** |
+
+Both halves are staged in temporary files and promoted together only after the
+chained gate passes, so a failed split never leaves a half-valid pair behind.
+
+### Running a split model
+
+Evaluation takes the head as a second argument and chains the two:
+
+```bash
+python -m birdnet_stm32 evaluate \
+  --model_path checkpoints/my_model_quantized_backbone.tflite \
+  --classifier_path checkpoints/my_model_quantized_classifier.tflite \
+  --model_config checkpoints/my_model_model_config.json \
+  --data_path_test data/test
+```
+
+### Making the head small
+
+The head is a single `Dense` of `embedding_dim × num_classes`. For the default
+256-d embedding and 30 species that is 7,680 INT8 weights, plus roughly 2 kB of
+TFLite flatbuffer overhead that does not shrink with the model.
+
+`--prune` targets the head by default and `--prune_head_sparsity` compresses it
+harder than the backbone, which is what makes the gzipped head small — zeroed
+INT8 weights compress, random ones do not. See
+[Pruning](training.md#pruning).
+
+```bash
+# Prune the backbone to 50% and the shipped head to 75%
+python -m birdnet_stm32 train --data_path_train data/train \
+  --data_path_val data/validation --classes_file data/labels.txt --prune \
+  --checkpoint_path checkpoints/model.keras \
+  --prune_final_sparsity 0.5 --prune_head_sparsity 0.75 \
+  --epochs 12 --learning_rate 0.0002
+```
+
+Measured on a 10-species, 256-d model — same architecture, same conversion
+settings, only the head's sparsity differs:
+
+| Classifier head | INT8 sparsity | `.tflite` | gzipped |
+|---|---|---|---|
+| Dense | 0.4% | 4,704 B | 3,631 B |
+| `--prune_head_sparsity 0.75` | 75.0% | 4,704 B | **2,067 B** |
+
+Pruning does not change the `.tflite` itself — TFLite stores INT8 weights
+densely — but it cuts the transmitted payload by 43%.
+
+Note the floor: 2,560 INT8 weights in a 4,704 B file means roughly 2 kB is
+flatbuffer scaffolding that no amount of sparsity removes. The wider the
+embedding and the more species, the smaller that fixed cost is as a fraction.
+
+The conversion report records `size_bytes`, `gzip_bytes`, and `int8_sparsity`
+for both halves under `split`, so an update budget can be checked directly.
+
+!!! warning "Firmware runs one network today"
+    The firmware and `stedgeai` deployment path compile a single network. Using
+    the split pair on-device requires running two networks back to back and
+    passing the embedding buffer between them, which is not implemented yet.
+    The split artifacts are produced, validated, and measured; wiring them into
+    the firmware is separate work.
 
 ## Validation metrics
 
@@ -73,6 +196,7 @@ After conversion, the script reports:
 | `--per_tensor` | off | Use per-tensor quantization instead of per-channel |
 | `--batch_validate` | 0 | Run validation N times with different seeds, report worst-case |
 | `--export_onnx` | off | Export and validate ONNX (requires `tf2onnx`, `onnx`, and `onnxruntime`) |
+| `--split_head` | off | Also emit the backbone/classifier pair (see [Backbone and classifier split](#backbone-and-classifier-split)) |
 | `--report_json` | None | Save structured JSON conversion report |
 
 ## Quantization details

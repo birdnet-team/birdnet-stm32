@@ -122,3 +122,7 @@ nodes. Standard PTQ then calibrates and quantizes the hardened deployment
 graph; held-out parity and task-level accuracy remain mandatory gates.
 
 See `birdnet_stm32/training/qat.py` for the implementation.
+
+Gradual magnitude pruning shares that module's teacher-consistency losses
+and runs as its own step before QAT; see
+`birdnet_stm32/training/pruning.py` and [Pruning](pruning.md).

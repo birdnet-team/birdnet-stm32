@@ -1,10 +1,13 @@
 """Unit tests for training utilities."""
 
+import os
+
+import numpy as np
 import pytest
 
 tf = pytest.importorskip("tensorflow", reason="TensorFlow required for trainer tests")
 
-from birdnet_stm32.training.trainer import VALID_OPTIMIZERS, WarmupCosineDecay, _build_optimizer
+from birdnet_stm32.training.trainer import VALID_OPTIMIZERS, WarmupCosineDecay, _build_optimizer, train_model
 
 
 class TestBuildOptimizer:
@@ -75,3 +78,38 @@ class TestWarmupCosineDecay:
         sched = WarmupCosineDecay(initial_learning_rate=0.5, decay_steps=20, warmup_steps=4, offset_steps=8)
         rebuilt = WarmupCosineDecay(**sched.get_config())
         assert float(rebuilt(3)) == pytest.approx(float(sched(3)), rel=1e-6)
+
+
+class TestCheckpointStartEpoch:
+    """Compression schedules must not checkpoint a half-perturbed model."""
+
+    def _run(self, tmp_path, start_epoch: int) -> str:
+        tf.keras.utils.set_random_seed(0)
+        inputs = tf.keras.Input(shape=(4,), name="input")
+        outputs = tf.keras.layers.Dense(2, activation="sigmoid", name="pred")(inputs)
+        model = tf.keras.Model(inputs, outputs)
+
+        rng = np.random.default_rng(0)
+        samples = rng.standard_normal((8, 4)).astype(np.float32)
+        labels = np.tile(np.array([[1, 0], [0, 1]], np.float32), (4, 1))
+        dataset = tf.data.Dataset.from_tensor_slices((samples, labels)).batch(4).repeat()
+
+        checkpoint_path = str(tmp_path / "model.keras")
+        train_model(
+            model,
+            dataset,
+            dataset,
+            epochs=2,
+            checkpoint_path=checkpoint_path,
+            steps_per_epoch=2,
+            val_steps=2,
+            checkpoint_start_epoch=start_epoch,
+        )
+        return checkpoint_path
+
+    def test_no_checkpoint_before_the_start_epoch(self, tmp_path):
+        """Every epoch of this run is ineligible, so nothing may be saved."""
+        assert not os.path.isfile(self._run(tmp_path, start_epoch=5))
+
+    def test_checkpoint_written_when_every_epoch_is_eligible(self, tmp_path):
+        assert os.path.isfile(self._run(tmp_path, start_epoch=0))

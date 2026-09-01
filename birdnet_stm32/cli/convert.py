@@ -18,10 +18,18 @@ from birdnet_stm32.conversion.quantize import (
     representative_data_gen,
     stratified_sample_paths,
 )
-from birdnet_stm32.conversion.validate import cosine_similarity, validate_models
+from birdnet_stm32.conversion.split import (
+    count_parameters,
+    embedding_dimension,
+    find_embedding_layer,
+    size_record,
+    split_model,
+)
+from birdnet_stm32.conversion.validate import cosine_similarity, parity_metrics, validate_models
 from birdnet_stm32.data.dataset import load_file_paths_from_directory
 from birdnet_stm32.models.frontend import AudioFrontendLayer, hybrid_fft_bins, normalize_frontend_name
 from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
+from birdnet_stm32.models.runners import ChainedTFLiteRunner, TFLiteRunner
 from birdnet_stm32.training.config import ModelConfig
 
 random.seed(42)
@@ -75,6 +83,15 @@ def get_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Also export an ONNX model (requires tf2onnx).",
+    )
+    parser.add_argument(
+        "--split_head",
+        action="store_true",
+        default=False,
+        help=(
+            "Also emit the model as a separate backbone and classifier head, so the head "
+            "can be updated over a narrowband link without reflashing the backbone."
+        ),
     )
     parser.add_argument(
         "--report_json",
@@ -173,6 +190,147 @@ def _export_and_validate_onnx(model, output_path: str, validation_gen) -> dict:
     finally:
         if temporary_path and os.path.exists(temporary_path):
             os.unlink(temporary_path)
+
+
+def _convert_split_head(
+    model,
+    cfg: dict,
+    args: argparse.Namespace,
+    rep_data_gen,
+    rep_data_gen_val,
+) -> dict:
+    """Convert and gate the backbone/classifier pair beside the whole model.
+
+    The head is calibrated on embeddings produced by the *quantized* backbone,
+    which is the exact input distribution it sees on the board. Both halves are
+    staged and promoted together only after the chained pipeline clears the
+    same parity gate the monolithic model had to clear.
+
+    Args:
+        model: Loaded monolithic Keras model.
+        cfg: Model config dict.
+        args: Parsed CLI arguments.
+        rep_data_gen: Calibration data generator.
+        rep_data_gen_val: Disjoint validation data generator.
+
+    Returns:
+        Report dict with parity metrics, sizes, and artifact paths.
+
+    Raises:
+        RuntimeError: If the chained pipeline fails the parity gate.
+    """
+    backbone, classifier = split_model(model)
+    embedding_layer_name = find_embedding_layer(model).name
+    base = os.path.splitext(args.output_path)[0]
+    backbone_path = f"{base}_backbone.tflite"
+    classifier_path = f"{base}_classifier.tflite"
+    output_dir = os.path.dirname(os.path.abspath(args.output_path))
+    print(
+        f"\nSplitting at '{embedding_layer_name}': backbone "
+        f"{count_parameters(backbone):,} params -> {embedding_dimension(backbone)}-d embeddings, "
+        f"classifier head {count_parameters(classifier):,} params"
+    )
+
+    staged: list[str] = []
+    try:
+        for _ in range(2):
+            with tempfile.NamedTemporaryFile(
+                prefix=".splitting-", suffix=".tflite", dir=output_dir, delete=False
+            ) as handle:
+                staged.append(handle.name)
+        tmp_backbone, tmp_classifier = staged
+
+        convert_to_tflite(
+            backbone,
+            rep_data_gen,
+            tmp_backbone,
+            quantization=args.quantization,
+            per_tensor=args.per_tensor,
+        )
+
+        # Calibrate the head on what the quantized backbone actually emits, not
+        # on float embeddings the board will never produce.
+        backbone_runner = TFLiteRunner(tmp_backbone)
+        embeddings = [backbone_runner.predict(np.asarray(sample[0], np.float32)) for sample in rep_data_gen()]
+        if not embeddings:
+            raise RuntimeError("Backbone produced no calibration embeddings for the classifier head")
+
+        def head_rep_gen():
+            for embedding in embeddings:
+                yield [np.asarray(embedding, np.float32)]
+
+        convert_to_tflite(
+            classifier,
+            head_rep_gen,
+            tmp_classifier,
+            quantization=args.quantization,
+            per_tensor=args.per_tensor,
+        )
+
+        chained = ChainedTFLiteRunner(tmp_backbone, tmp_classifier)
+        print("\n--- Backbone parity (Keras vs TFLite embeddings) ---")
+        backbone_metrics = parity_metrics(
+            lambda inputs: backbone(inputs, training=False).numpy(),
+            backbone_runner.predict,
+            rep_data_gen_val,
+            label="backbone",
+        )
+        print("\n--- Chained parity (Keras whole model vs TFLite backbone + head) ---")
+        chained_metrics = parity_metrics(
+            lambda inputs: model(inputs, training=False).numpy(),
+            chained.predict,
+            rep_data_gen_val,
+            label="chained",
+        )
+
+        failures = []
+        if args.min_cosine_sim > 0 and chained_metrics["cosine_mean"] < args.min_cosine_sim:
+            failures.append(f"chained mean cosine {chained_metrics['cosine_mean']:.6f} < {args.min_cosine_sim:.4f}")
+        if args.min_cosine_p05 > 0 and chained_metrics["cosine_p05"] < args.min_cosine_p05:
+            failures.append(f"chained p05 cosine {chained_metrics['cosine_p05']:.6f} < {args.min_cosine_p05:.4f}")
+        if failures:
+            raise RuntimeError("Split-model quality check failed: " + "; ".join(failures))
+
+        os.replace(tmp_backbone, backbone_path)
+        os.replace(tmp_classifier, classifier_path)
+        staged = []
+    finally:
+        for path in staged:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    split_report = {
+        "embedding_layer": embedding_layer_name,
+        "embedding_dim": embedding_dimension(backbone),
+        "backbone_params": count_parameters(backbone),
+        "classifier_params": count_parameters(classifier),
+        "backbone": size_record(backbone_path),
+        "classifier": size_record(classifier_path),
+        "backbone_validation": backbone_metrics,
+        "chained_validation": chained_metrics,
+        "quality_gate_passed": True,
+    }
+
+    # The head defines the class set, so it carries its own labels: an
+    # over-the-air head update ships the species list with it.
+    if cfg.get("class_names"):
+        labels_path = os.path.splitext(classifier_path)[0] + "_labels.txt"
+        with open(labels_path, "w", encoding="utf-8") as handle:
+            handle.writelines(f"{name}\n" for name in cfg["class_names"])
+        split_report["classifier_labels"] = os.path.basename(labels_path)
+
+    head = split_report["classifier"]
+    print(
+        f"\nBackbone saved to {backbone_path} "
+        f"({split_report['backbone']['size_bytes']:,} B, "
+        f"{split_report['backbone']['gzip_bytes']:,} B gzipped)"
+    )
+    print(
+        f"Classifier head saved to {classifier_path} "
+        f"({head['size_bytes']:,} B, {head['gzip_bytes']:,} B gzipped, "
+        f"{head['int8_sparsity']:.1%} of its INT8 weights are zero)"
+    )
+    return split_report
 
 
 def main():
@@ -337,6 +495,11 @@ def main():
         val_path = os.path.splitext(args.output_path)[0] + "_validation_data.npz"
         np.savez_compressed(val_path, data=validation_data)
         print(f"Validation data saved to {val_path}")
+
+        # Backbone / classifier split. Opt-in: the firmware still runs a single
+        # network, so the pair is produced only when it is asked for.
+        if args.split_head:
+            report["split"] = _convert_split_head(model, cfg, args, rep_data_gen, rep_data_gen_val)
 
         # ONNX export
         if args.export_onnx:

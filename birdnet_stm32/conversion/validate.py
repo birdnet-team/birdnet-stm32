@@ -50,56 +50,46 @@ def pearson_correlation(a: np.ndarray, b: np.ndarray, eps: float = 1e-12) -> flo
     return float(np.dot(a, b) / denom)
 
 
-def validate_models(
-    keras_model: tf.keras.Model,
-    tflite_model_path: str,
+def parity_metrics(
+    reference: Callable[[np.ndarray], np.ndarray],
+    candidate: Callable[[np.ndarray], np.ndarray],
     rep_data_gen: Callable[[], Iterable[list[np.ndarray]]],
+    label: str = "",
 ) -> dict[str, float]:
-    """Compare Keras vs. TFLite predictions and print summary statistics.
+    """Compare two prediction functions sample by sample and summarize the gap.
 
-    Runs the TFLite interpreter without delegates to minimize numeric differences.
+    Tail statistics are included alongside the means so a high average cannot
+    hide a handful of badly quantized inputs.
 
     Args:
-        keras_model: Loaded Keras model.
-        tflite_model_path: Path to the converted .tflite model.
-        rep_data_gen: Callable returning an iterable of [input_tensor].
+        reference: Callable mapping one input batch to the reference output.
+        candidate: Callable mapping the same batch to the candidate output.
+        rep_data_gen: Callable returning an iterable of ``[input_tensor]``.
+        label: Optional prefix for the printed summary lines.
 
     Returns:
         Distribution statistics for cosine similarity, MSE, MAE, and Pearson
-        correlation.  Tail statistics are included so a high mean cannot hide
-        badly quantized inputs.
+        correlation.
     """
-    # Go through the shared runner so INT8-I/O models are quantized/dequantized
-    # exactly the way evaluation and deployment will do it.
-    from birdnet_stm32.models.runners import TFLiteRunner
-
-    runner = TFLiteRunner(tflite_model_path)
-    in_det = runner.interpreter.get_input_details()[0]
-    out_det = runner.interpreter.get_output_details()[0]
-
-    print(
-        f"TFLite input shape: {in_det['shape']} ({np.dtype(in_det['dtype']).name}), "
-        f"output shape: {out_det['shape']} ({np.dtype(out_det['dtype']).name})"
-    )
-
     cos_list, mse_list, mae_list, pcc_list = [], [], [], []
 
     for sample in rep_data_gen():
-        yk = keras_model(sample[0], training=False).numpy()
-        yt = runner.predict(np.asarray(sample[0], dtype=np.float32))
-
-        a = yk.reshape(-1).astype(np.float64)
-        b = yt.reshape(-1).astype(np.float64)
+        inputs = np.asarray(sample[0], dtype=np.float32)
+        a = np.asarray(reference(inputs)).reshape(-1).astype(np.float64)
+        b = np.asarray(candidate(inputs)).reshape(-1).astype(np.float64)
 
         cos_list.append(cosine_similarity(a, b))
         mse_list.append(float(np.mean((a - b) ** 2)))
         mae_list.append(float(np.mean(np.abs(a - b))))
         pcc_list.append(pearson_correlation(a, b))
 
+    prefix = f"{label} " if label else ""
+
     def _summ(name: str, vals: list[float]):
         if vals:
             print(
-                f"{name}: mean={np.mean(vals):.6f}  std={np.std(vals):.6f}  min={np.min(vals):.6f}  max={np.max(vals):.6f}"
+                f"{prefix}{name}: mean={np.mean(vals):.6f}  std={np.std(vals):.6f}  "
+                f"min={np.min(vals):.6f}  max={np.max(vals):.6f}"
             )
 
     _summ("cosine", cos_list)
@@ -135,3 +125,42 @@ def validate_models(
     metrics.update(_stats("mae", mae_list, float("inf")))
     metrics.update(_stats("pearson", pcc_list, 0.0))
     return metrics
+
+
+def validate_models(
+    keras_model: tf.keras.Model,
+    tflite_model_path: str,
+    rep_data_gen: Callable[[], Iterable[list[np.ndarray]]],
+) -> dict[str, float]:
+    """Compare Keras vs. TFLite predictions and print summary statistics.
+
+    Runs the TFLite interpreter without delegates to minimize numeric differences.
+
+    Args:
+        keras_model: Loaded Keras model.
+        tflite_model_path: Path to the converted .tflite model.
+        rep_data_gen: Callable returning an iterable of [input_tensor].
+
+    Returns:
+        Distribution statistics for cosine similarity, MSE, MAE, and Pearson
+        correlation.  Tail statistics are included so a high mean cannot hide
+        badly quantized inputs.
+    """
+    # Go through the shared runner so INT8-I/O models are quantized/dequantized
+    # exactly the way evaluation and deployment will do it.
+    from birdnet_stm32.models.runners import TFLiteRunner
+
+    runner = TFLiteRunner(tflite_model_path)
+    in_det = runner.interpreter.get_input_details()[0]
+    out_det = runner.interpreter.get_output_details()[0]
+
+    print(
+        f"TFLite input shape: {in_det['shape']} ({np.dtype(in_det['dtype']).name}), "
+        f"output shape: {out_det['shape']} ({np.dtype(out_det['dtype']).name})"
+    )
+
+    return parity_metrics(
+        lambda inputs: keras_model(inputs, training=False).numpy(),
+        runner.predict,
+        rep_data_gen,
+    )

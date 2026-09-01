@@ -95,15 +95,60 @@ class TFLiteRunner:
         return self.interpreter.get_tensor(self.output_index)
 
 
-def load_model_runner(model_path: str) -> KerasRunner | TFLiteRunner:
+class ChainedTFLiteRunner:
+    """Run a split backbone and classifier head as one model.
+
+    Conversion can emit the classifier head as its own artifact so it can be
+    updated over a narrowband link without reflashing the backbone. Evaluation
+    and deployment then need the two halves to behave like the model they came
+    from, which is what this runner provides.
+    """
+
+    def __init__(self, backbone_path: str, classifier_path: str):
+        """Initialize with the two halves of a split model.
+
+        Args:
+            backbone_path: Path to the .tflite backbone (audio -> embeddings).
+            classifier_path: Path to the .tflite head (embeddings -> scores).
+        """
+        self.backbone = TFLiteRunner(backbone_path)
+        self.classifier = TFLiteRunner(classifier_path)
+
+    def predict(self, x_batch: np.ndarray) -> np.ndarray:
+        """Run the backbone and feed its embeddings to the classifier head.
+
+        Args:
+            x_batch: Input batch in the backbone's expected shape and dtype.
+
+        Returns:
+            Model outputs [B, C] as float32.
+        """
+        embeddings = self.backbone.predict(x_batch)
+        return self.classifier.predict(np.asarray(embeddings, dtype=np.float32))
+
+
+def load_model_runner(
+    model_path: str,
+    classifier_path: str = "",
+) -> KerasRunner | TFLiteRunner | ChainedTFLiteRunner:
     """Load a .keras or .tflite model and return a runner with predict().
 
     Args:
-        model_path: Path to a saved model (.keras or .tflite).
+        model_path: Path to a saved model (.keras or .tflite). When
+            ``classifier_path`` is given, this is the .tflite backbone.
+        classifier_path: Optional .tflite classifier head. Supplying it runs
+            the split pair as one chained model.
 
     Returns:
-        KerasRunner or TFLiteRunner instance.
+        KerasRunner, TFLiteRunner, or ChainedTFLiteRunner instance.
+
+    Raises:
+        ValueError: If a classifier head is paired with a non-TFLite backbone.
     """
+    if classifier_path:
+        if not model_path.lower().endswith(".tflite"):
+            raise ValueError("A classifier head can only be chained onto a .tflite backbone")
+        return ChainedTFLiteRunner(model_path, classifier_path)
     if model_path.lower().endswith(".tflite"):
         return TFLiteRunner(model_path)
     model = tf.keras.models.load_model(
