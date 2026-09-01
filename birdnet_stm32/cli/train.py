@@ -275,7 +275,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true", default=False, help="Resume training from checkpoint")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for deterministic training")
 
-    # -- Tuning & QAT --------------------------------------------------------
+    # -- Tuning, pruning & QAT -----------------------------------------------
     parser.add_argument(
         "--tune", action="store_true", default=False, help="Run Optuna hyperparameter search instead of single training"
     )
@@ -316,6 +316,100 @@ def get_args() -> argparse.Namespace:
         default=0.10,
         help="Fraction of each QAT batch included in the worst-sample loss",
     )
+    parser.add_argument(
+        "--no_qat_preserve_sparsity",
+        action="store_true",
+        default=False,
+        help="Let QAT refill weights that a previous --prune run zeroed",
+    )
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        default=False,
+        help="Gradual magnitude pruning (requires pretrained --checkpoint_path)",
+    )
+    parser.add_argument(
+        "--prune_final_sparsity",
+        type=float,
+        default=0.5,
+        help="Target fraction of prunable weights zeroed by the end of the ramp",
+    )
+    parser.add_argument(
+        "--prune_scope",
+        type=str,
+        default="layerwise",
+        choices=["layerwise", "global"],
+        help="Give every prunable layer the same sparsity, or rank all weights together",
+    )
+    parser.add_argument(
+        "--prune_ramp_fraction",
+        type=float,
+        default=0.5,
+        help="Fraction of the pruning run spent ramping up to the target sparsity",
+    )
+    parser.add_argument(
+        "--prune_frequency",
+        type=int,
+        default=100,
+        help="Training steps between mask recomputations during the ramp",
+    )
+    parser.add_argument(
+        "--prune_min_layer_params",
+        type=int,
+        default=1024,
+        help="Smallest kernel (in weights) eligible for pruning",
+    )
+    parser.add_argument(
+        "--no_prune_head",
+        action="store_true",
+        default=False,
+        help="Leave the classifier head dense (it is pruned by default; conversion ships it separately)",
+    )
+    parser.add_argument(
+        "--prune_head_sparsity",
+        type=float,
+        default=-1.0,
+        help=(
+            "Separate target sparsity for the classifier head "
+            "(default -1 follows --prune_final_sparsity). Raise it to shrink an over-the-air head update."
+        ),
+    )
+    parser.add_argument(
+        "--prune_max_auc_drop",
+        type=float,
+        default=0.005,
+        help="Largest tolerated macro ROC-AUC regression before pruning fails",
+    )
+    parser.add_argument(
+        "--prune_eval_samples",
+        type=int,
+        default=1024,
+        help="Validation samples scored by the pruning accuracy gate",
+    )
+    parser.add_argument(
+        "--prune_distillation_weight",
+        type=float,
+        default=1.0,
+        help="Pruning teacher Bernoulli-KL loss weight",
+    )
+    parser.add_argument(
+        "--prune_cosine_weight",
+        type=float,
+        default=0.10,
+        help="Pruning mean teacher/student cosine-loss weight",
+    )
+    parser.add_argument(
+        "--prune_cosine_tail_weight",
+        type=float,
+        default=0.75,
+        help="Pruning worst-sample teacher/student cosine-loss weight",
+    )
+    parser.add_argument(
+        "--prune_cosine_tail_fraction",
+        type=float,
+        default=0.10,
+        help="Fraction of each pruning batch included in the worst-sample loss",
+    )
 
     # -- Linear probing -------------------------------------------------------
     parser.add_argument(
@@ -331,7 +425,15 @@ def get_args() -> argparse.Namespace:
     args.use_se = not args.no_se
     args.use_inverted_residual = not args.no_inverted_residual
     args.spec_augment = not args.no_spec_augment
+    args.qat_preserve_sparsity = not args.no_qat_preserve_sparsity
+    args.prune_head = not args.no_prune_head
     args.deterministic = True  # always deterministic
+
+    # The compression steps run one at a time against a converged checkpoint;
+    # the documented order is prune, then QAT, then convert.
+    exclusive = [name for name in ("tune", "prune", "qat", "linear_probe") if getattr(args, name)]
+    if len(exclusive) > 1:
+        raise SystemExit(f"Options are mutually exclusive, run them as separate steps: {exclusive}")
 
     return args
 
@@ -372,6 +474,13 @@ def main():
         from birdnet_stm32.training.tuner import run_tuning
 
         run_tuning(args)
+        return
+
+    # Gradual magnitude pruning
+    if args.prune:
+        from birdnet_stm32.training.pruning import run_pruning
+
+        run_pruning(args)
         return
 
     # Quantization-aware fine-tuning

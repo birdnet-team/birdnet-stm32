@@ -125,6 +125,7 @@ def train_model(
     checkpoint_sync: Callable[[], None] | None = None,
     checkpoint_monitor: str = _MONITOR,
     checkpoint_mode: str = _MONITOR_MODE,
+    checkpoint_start_epoch: int = 0,
 ) -> tf.keras.callbacks.History:
     """Train a model with cosine LR schedule, early stopping, and checkpointing.
 
@@ -162,6 +163,10 @@ def train_model(
             and early stopping.
         checkpoint_mode: Whether a larger (``max``) or smaller (``min``)
             monitored value is better.
+        checkpoint_start_epoch: First epoch (0-based) eligible for checkpoint
+            selection and early stopping. Compression schedules use this so a
+            model that has not yet reached its target sparsity or quantization
+            noise cannot win on the strength of the perturbation it is missing.
 
     Returns:
         Keras training history.
@@ -175,6 +180,7 @@ def train_model(
         val_steps = 1
     if checkpoint_mode not in {"min", "max"}:
         raise ValueError("checkpoint_mode must be 'min' or 'max'")
+    checkpoint_start_epoch = max(0, int(checkpoint_start_epoch))
 
     os.makedirs(os.path.dirname(checkpoint_path) or ".", exist_ok=True)
 
@@ -276,7 +282,7 @@ def train_model(
 
         def on_epoch_end(self, epoch, logs=None):
             value = (logs or {}).get(checkpoint_monitor)
-            if value is None:
+            if value is None or epoch < checkpoint_start_epoch:
                 return
             improved = value > self.best if checkpoint_mode == "max" else value < self.best
             if improved:
@@ -293,9 +299,17 @@ def train_model(
 
     csv_path = checkpoint_path.replace(".keras", "_history.csv")
 
+    class _DelayedModelCheckpoint(tf.keras.callbacks.ModelCheckpoint):
+        """Ignore epochs before ``checkpoint_start_epoch`` when selecting."""
+
+        def on_epoch_end(self, epoch, logs=None):
+            if epoch < checkpoint_start_epoch:
+                return
+            super().on_epoch_end(epoch, logs)
+
     checkpoint_callback: tf.keras.callbacks.Callback
     if checkpoint_model is None or checkpoint_model is model:
-        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+        checkpoint_callback = _DelayedModelCheckpoint(
             checkpoint_path,
             monitor=checkpoint_monitor,
             save_best_only=True,
@@ -311,6 +325,7 @@ def train_model(
             patience=patience,
             restore_best_weights=True,
             mode=checkpoint_mode,
+            start_from_epoch=checkpoint_start_epoch,
         ),
         checkpoint_callback,
         _SaveTrainState(),
