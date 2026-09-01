@@ -5,10 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-09-01
 
 ### Added
 
+- `birdnet_stm32 convert --split_head` additionally emits the model as a
+  backbone (audio to embeddings) and a separate classifier head (embeddings to
+  scores). The head is the only part that changes with the species list, so
+  shipping it alone turns a model update over a narrowband satellite link from
+  hundreds of kilobytes into a few. Each half is written with a deterministic
+  `.gz` beside it and the head carries its own labels file. The flag is
+  opt-in: the firmware still runs a single network, and the split costs two
+  extra calibration passes.
+- The head is calibrated on embeddings from the *quantized* backbone, and the
+  chained pipeline must clear the same cosine gates as the monolithic model
+  before either half is promoted. Backbone and chained parity, both file
+  sizes, and the INT8 sparsity of each half are recorded under `split` in the
+  conversion report.
+- `birdnet_stm32/conversion/split.py`: split point discovery, model splitting,
+  reproducible gzip packaging, and TFLite weight-sparsity measurement.
+- `ChainedTFLiteRunner` and `birdnet_stm32 evaluate --classifier_path`: score a
+  split model as the chained pipeline the board would run.
+- `--prune_head_sparsity` gives the classifier head its own pruning target so
+  the shipped artifact can be compressed harder than the backbone.
+- Gradual magnitude pruning as a separate training step (`--prune`), mirroring
+  `--qat`: it fine-tunes a converged checkpoint while a cubic sparsity ramp
+  grows binary masks over the dense convolution kernels, then holds the mask
+  fixed for the rest of the run. Masks are re-derived from live weight
+  magnitudes and applied in the forward pass only, so masked weights can
+  revive during the ramp; only the final mask is baked into the saved
+  checkpoint. Depthwise kernels, `Dense` layers, the audio frontend, and any
+  kernel below `--prune_min_layer_params` are exempt.
+- Pruning reuses QAT's frozen-teacher consistency objective (Bernoulli KL plus
+  mean and worst-sample cosine distance) and ends with a held-out macro
+  ROC-AUC comparison against the unpruned teacher. The run fails when the drop
+  exceeds `--prune_max_auc_drop` (default 0.005) instead of emitting a quietly
+  degraded checkpoint. `{name}_pruned_pruning_report.json` records the
+  per-layer sparsity breakdown and the gate result.
+- `--prune_scope global` ranks all prunable weights against one threshold so
+  redundant layers absorb more of the budget, capped at 95% per layer.
+- `birdnet_stm32.training.distillation`: the teacher-consistency model and loss
+  weights shared by QAT and pruning.
+- `train_model(checkpoint_start_epoch=...)`: defers checkpoint selection and
+  early stopping, so a compression schedule cannot checkpoint a model that has
+  not yet reached its target perturbation.
 - `LICENSE-MODELS.md`: the Apache License 2.0, now covering all trained model
   artifacts (checkpoints, `.tflite`/`.onnx` exports, labels, model config).
   Source code remains under the MIT License.
@@ -23,6 +63,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Pruning now includes the classifier head by default (`--no_prune_head` opts
+  out), so the head is already compressed whenever it is exported on its own:
+  zeroed INT8 weights are the only ones gzip can collapse. Squeeze-and-excite
+  `Dense` gates stay exempt. Previously all `Dense` layers were exempt.
+- `--prune_scope global` selects weights by rank rather than by a magnitude
+  threshold, so it reaches the requested sparsity exactly even when many
+  weights tie.
+- QAT detects a pruned checkpoint's exact zeros and re-applies them after every
+  training step, so quantization-aware fine-tuning no longer silently refills
+  pruned weights. Disable with `--no_qat_preserve_sparsity`.
+- `--tune`, `--prune`, `--qat`, and `--linear_probe` are now rejected when
+  combined in one invocation; they are separate steps.
 - Release bundles are now models-only: all model formats, labels, model config,
   the STM32N6 compiler report, the model card, and the two license documents.
   Benchmark, conversion, and board reports, fixed validation inputs,
