@@ -20,7 +20,7 @@ That choice is deliberate and has a cost:
 Structured channel pruning would reduce MACs and latency, but the DS-CNN's
 residual adds tie the block output widths together, `_make_divisible(8)` fixes
 the NPU-aligned channel counts, and `ModelConfig` carries a single global
-`expansion_factor` rather than per-block widths. Removing channels therefore
+a single global width multiplier rather than per-block widths. Removing channels therefore
 means rebuilding the architecture, not masking it. Reducing `--alpha` or
 `--depth_multiplier` and retraining is the supported way to buy latency today.
 
@@ -30,8 +30,7 @@ means rebuilding the architecture, not masking it. Reducing `--alpha` or
 
 1. It is a `Conv2D` and not a `DepthwiseConv2D`, **or** it is the `Dense` layer
    that produces the model output (`classifier_head_layer()` finds it by
-   matching against `model.outputs`, so squeeze-and-excite `Dense` gates never
-   qualify).
+   matching against `model.outputs`, so no other `Dense` layer qualifies).
 2. It is not owned by an `AudioFrontendLayer` (checked by identity over the
    frontend's nested layers, not by name).
 3. Its kernel holds at least `min_layer_params` weights (default 1024).

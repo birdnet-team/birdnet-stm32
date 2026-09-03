@@ -68,7 +68,6 @@ class TestModelConfig:
             num_classes=3,
             class_names=["a", "b", "c"],
             alpha=0.5,
-            use_se=True,
         )
         path = tmp_path / "cfg.json"
         cfg.save(path)
@@ -133,4 +132,35 @@ class TestModelConfig:
         cfg = ModelConfig.load(path)
         assert cfg.sample_rate == 22050
         assert cfg.num_classes == 10
-        assert cfg.use_se is True  # default (on since v0.9.0)
+
+
+def test_config_ignores_removed_architecture_keys(tmp_path):
+    """Shipped v1.0/v1.1 configs record use_se and friends; they must still load.
+
+    Squeeze-and-excite and inverted-residual blocks were removed after A1 showed
+    that backbone could not reach the INT8 parity gates. Their keys survive in
+    already-published model configs, so loading has to tolerate them rather than
+    raise on an unexpected field.
+    """
+    import json
+
+    from birdnet_stm32.training.config import ModelConfig
+
+    path = tmp_path / "legacy.json"
+    path.write_text(
+        json.dumps(
+            {
+                "sample_rate": 24000,
+                "num_classes": 38,
+                "class_names": [f"c{i}" for i in range(38)],
+                "use_se": False,
+                "se_reduction": 8,
+                "use_inverted_residual": False,
+                "expansion_factor": 2,
+            }
+        )
+    )
+    cfg = ModelConfig.load(path)
+    assert cfg.sample_rate == 24000
+    assert cfg.num_classes == 38
+    assert not hasattr(cfg, "use_se")

@@ -60,6 +60,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   index, and getting-started pages.
 - Release bundles now ship `LICENSE-MODELS.md` and `ACCEPTABLE_USE.md`, and
   `manifest.json` records `"license": "Apache-2.0"`.
+- `birdnet_stm32 convert --backbone_path <backbone.tflite>` converts *only* a
+  new classifier head, calibrating it on embeddings the given already-quantized
+  backbone emits. This is the deployment half of the split workflow: a device
+  was flashed with one backbone and must keep it, so reconverting would
+  recalibrate activation ranges against whatever data the new classes arrived
+  with and silently produce a backbone the device does not have. The monolithic
+  model is still converted alongside, which is what the board flashes.
+- `birdnet_stm32/conversion/split.py` gains `backbone_fingerprint()`, a SHA-256
+  over a backbone's float weights in graph order, written beside the artifact as
+  `<backbone>.tflite.fingerprint.json` whenever `--split_head` produces one. A
+  head-only conversion verifies it and refuses a mismatch, so a head calibrated
+  against a backbone that moved during fine-tuning cannot ship to a device
+  flashed with the original. `--allow_backbone_mismatch` forces it for
+  diagnostics.
+- `--qat_checkpoint_monitor` selects which validation metric decides the kept
+  QAT epoch.
+- `--model_config` supplies the architecture config for `--qat`, `--prune`, and
+  `--linear_probe`. A QAT checkpoint writes no config of its own, so probing one
+  previously failed looking for a sibling that never existed.
+- `birdnet_stm32 evaluate --benchmark` now records `per_class_ap`, keyed by
+  class name so a later reordering cannot misattribute scores. A macro average
+  over a hundred classes says nothing about which of them carry it.
+- A 100-output northeastern-US model: 90 bird species plus 10 non-bird outputs,
+  up from 30 species and 8 non-bird outputs. Every output carries a canonical
+  BirdNET taxonomy identifier, and the non-bird set follows that taxonomy's
+  anthropogenic and geophony classes rather than a local convention. The bundle
+  adds the backbone/classifier split artifacts alongside the monolithic model,
+  so a species-list update ships as kilobytes. Its model card records the
+  measured accuracy, the per-step compression budgets it was gated against, and
+  the on-board timing; broadband non-bird outputs are documented there as the
+  weakest classes.
 
 ### Changed
 
@@ -75,6 +106,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pruned weights. Disable with `--no_qat_preserve_sparsity`.
 - `--tune`, `--prune`, `--qat`, and `--linear_probe` are now rejected when
   combined in one invocation; they are separate steps.
+- QAT keeps the epoch with the lowest `val_distillation_kl` instead of the
+  lowest `val_distillation_cosine_tail_loss`. The tail loss measures numerical
+  *parity*; minimising it was right for a backbone whose p05 parity was the
+  failure. Where parity is already comfortable the two criteria move in opposite
+  directions over a run — tail loss falls monotonically while teacher KL rises —
+  so selecting on parity kept the worst epoch for per-class precision, an effect
+  that grows with class count. Pass
+  `--qat_checkpoint_monitor val_distillation_cosine_tail_loss` to restore the
+  previous behaviour.
+- `--linear_probe` honours `--data_path_val` and `--classes_file`. It previously
+  ignored both, taking a random slice of the training set as validation and its
+  class order from a directory listing. Since the head's output order *is* the
+  labels file that ships with it, that order has to come from a schema.
 - Release bundles are now models-only: all model formats, labels, model config,
   the STM32N6 compiler report, the model card, and the two license documents.
   Benchmark, conversion, and board reports, fixed validation inputs,
@@ -87,6 +131,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- Squeeze-and-excite attention and inverted-residual blocks, along with the
+  `--no_se`, `--se_reduction`, `--no_inverted_residual` and `--expansion_factor`
+  flags and the matching `ModelConfig` fields. That backbone could not reach the
+  INT8 parity gates: per-channel PTQ landed far below the 0.95 minimum and QAT
+  did not recover the lower tail, with the dominant residual errors at the signed
+  linear projection and the `Add` boundaries inside an inverted-residual block.
+  Both were *enabled by default*, so every training run had to pass two negative
+  flags to get the architecture that actually ships. Rebuilding a model without
+  them produces a parameter-for-parameter identical graph.
+  `ModelConfig.from_dict` already drops unknown keys, so previously published
+  model configs still load.
+- The architecture options above are no longer part of the `--tune` search
+  space, which cannot now propose a model that fails conversion.
 - `TERMS_OF_USE.md`, superseded by `ACCEPTABLE_USE.md`. The previous binding
   prohibitions are now stated as project guidance rather than license
   conditions.

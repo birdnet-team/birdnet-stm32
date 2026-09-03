@@ -22,6 +22,23 @@ but are part of the ordered output contract.
 | `<basename>_INT8_stedgeai_report.txt` | Memory footprint and NPU operator coverage |
 | `<basename>_model_card.md` | Contract, provenance, measured accuracy, and on-board timing |
 
+A bundle whose model was exported split carries these as well. The firmware runs
+a single network, so `_INT8.tflite` above is still what you flash; these exist
+so a species-list change can be pushed without resending the whole model.
+
+| File | Use it for |
+|---|---|
+| `<basename>_INT8_backbone.tflite` | Audio to embeddings. Flashed once and reused across heads |
+| `<basename>_INT8_classifier.tflite` | Embeddings to scores. The only part that changes with the species list |
+| `<basename>_INT8_backbone.tflite.gz`, `<basename>_INT8_classifier.tflite.gz` | The same two, gzipped; the head is what an over-the-air update carries |
+| `<basename>_INT8_backbone.tflite.fingerprint.json` | Identity of the backbone. A replacement head must be calibrated against a matching one |
+| `<basename>_INT8_classifier_labels.txt` | The head's own ordered labels, so an updated head brings its species list with it |
+
+Chaining the backbone into the classifier reproduces `_INT8.tflite`; both halves
+are gated on that equivalence before either is published. To build a further
+head for an already-flashed backbone, see
+[Updating the head against a flashed backbone](conversion.md#updating-the-head-against-a-flashed-backbone).
+
 `LICENSE-MODELS.md` and `ACCEPTABLE_USE.md` ship alongside — see
 [License & Acceptable Use](license.md).
 
@@ -48,7 +65,9 @@ Everything the firmware needs is in the bundle; no extra downloads.
 3. Compile, flash, and run:
 
     ```bash
-    BUNDLE=~/Downloads/BirdNET_Tiny_N6_USNE_30_V1.0
+    # Wherever the extracted bundle lives; the globs below pick the files out
+    # of it, so nothing depends on which region or version you downloaded.
+    BUNDLE=~/Downloads/<bundle>
 
     python -m birdnet_stm32 board-test \
       --model_path    "$BUNDLE"/*_INT8.tflite \

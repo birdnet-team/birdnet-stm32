@@ -525,8 +525,16 @@ def run_qat(args: argparse.Namespace) -> None:
         gradient_clip_norm=args.grad_clip,
         checkpoint_model=deployment_model,
         checkpoint_sync=lambda: sync_frontend_weights(qat_model, deployment_model),
-        checkpoint_monitor="val_distillation_cosine_tail_loss",
-        checkpoint_mode="min",
+        # Which epoch to keep. The worst-sample cosine loss is a *parity*
+        # measure; minimising it was the right call for a backbone whose p05
+        # parity was the failure. When parity is comfortable and per-class
+        # precision is the constraint, that criterion actively selects the
+        # wrong epoch: cosine tail loss falls monotonically while teacher KL,
+        # which is what preserves the output distribution, rises. Selecting on
+        # the metric that is not failing is how a run converges on a checkpoint
+        # nobody wanted.
+        checkpoint_monitor=getattr(args, "qat_checkpoint_monitor", "") or "val_distillation_kl",
+        checkpoint_mode="max" if getattr(args, "qat_checkpoint_monitor", "").endswith("roc_auc") else "min",
         extra_callbacks=extra_callbacks,
     )
     print(f"[QAT] Clean quantization-ready checkpoint saved to {qat_path}")

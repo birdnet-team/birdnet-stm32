@@ -174,10 +174,8 @@ def get_args() -> argparse.Namespace:
     """Parse command-line arguments for training.
 
     Sensible defaults are chosen so that most users only need to specify
-    ``--data_path_train``.  Architecture features that improve accuracy
-    (SE attention, inverted residuals, SpecAugment, deterministic seeding,
-    gradient clipping) are **on by default** and can be disabled with
-    ``--no_*`` flags when experimenting.
+    ``--data_path_train``. SpecAugment, deterministic seeding, and gradient
+    clipping are enabled by default.
     """
     parser = argparse.ArgumentParser(description="Train STM32N6 audio classifier")
 
@@ -194,6 +192,17 @@ def get_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Ordered one-label-per-line output schema; noise remains an all-zero folder",
+    )
+    parser.add_argument(
+        "--model_config",
+        type=str,
+        default="",
+        help=(
+            "Architecture config for --qat, --prune, and --linear_probe. Defaults to the "
+            "checkpoint's sibling _model_config.json; pass it explicitly when fine-tuning a "
+            "checkpoint that inherited its architecture from an earlier step, such as a QAT "
+            "checkpoint, which writes no config of its own."
+        ),
     )
     parser.add_argument("--max_classes", type=int, default=None, help="Use top N classes by sample count")
     parser.add_argument("--max_samples", type=int, default=None, help="Max samples per class")
@@ -229,10 +238,6 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--alpha", type=float, default=1.0, help="Width multiplier")
     parser.add_argument("--depth_multiplier", type=int, default=1, help="Depth multiplier")
     parser.add_argument("--frontend_trainable", action="store_true", default=False)
-    parser.add_argument("--no_se", action="store_true", default=False, help="Disable SE channel attention")
-    parser.add_argument("--se_reduction", type=int, default=8, help="SE channel reduction factor")
-    parser.add_argument("--no_inverted_residual", action="store_true", default=False, help="Use plain DS blocks")
-    parser.add_argument("--expansion_factor", type=int, default=2, help="Expansion factor for inverted residuals")
     parser.add_argument(
         "--use_attention_pooling", action="store_true", default=False, help="Use attention pooling instead of GAP"
     )
@@ -309,6 +314,19 @@ def get_args() -> argparse.Namespace:
         type=float,
         default=0.75,
         help="QAT worst-sample teacher/student cosine-loss weight",
+    )
+    parser.add_argument(
+        "--qat_checkpoint_monitor",
+        type=str,
+        default="",
+        help=(
+            "Validation metric deciding which QAT epoch is kept. Defaults to "
+            "val_distillation_kl, which favours teacher fidelity and so per-class "
+            "precision. Use val_distillation_cosine_tail_loss instead when numerical "
+            "parity is the binding constraint rather than accuracy; on a backbone whose "
+            "parity is already comfortable the two criteria move in opposite directions, "
+            "and selecting on parity keeps the worst epoch for cmAP."
+        ),
     )
     parser.add_argument(
         "--qat_cosine_tail_fraction",
@@ -422,8 +440,6 @@ def get_args() -> argparse.Namespace:
     args = parser.parse_args()
 
     # Derive positive flags from --no_* flags
-    args.use_se = not args.no_se
-    args.use_inverted_residual = not args.no_inverted_residual
     args.spec_augment = not args.no_spec_augment
     args.qat_preserve_sparsity = not args.no_qat_preserve_sparsity
     args.prune_head = not args.no_prune_head
@@ -621,10 +637,6 @@ def main():
         mag_scale=args.mag_scale,
         frontend_trainable=args.frontend_trainable,
         dropout_rate=args.dropout,
-        use_se=args.use_se,
-        se_reduction=args.se_reduction,
-        use_inverted_residual=args.use_inverted_residual,
-        expansion_factor=args.expansion_factor,
         use_attention_pooling=args.use_attention_pooling,
     )
     # Per-layer MACs and N6 compatibility, rather than a plain Keras summary:
@@ -649,10 +661,6 @@ def main():
         class_names=classes,
         frontend_trainable=args.frontend_trainable,
         n_mfcc=args.n_mfcc,
-        use_se=args.use_se,
-        se_reduction=args.se_reduction,
-        use_inverted_residual=args.use_inverted_residual,
-        expansion_factor=args.expansion_factor,
         use_attention_pooling=args.use_attention_pooling,
         dropout_rate=args.dropout,
     )

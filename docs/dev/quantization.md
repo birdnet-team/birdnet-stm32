@@ -30,8 +30,10 @@ The implementation is native Keras 3 (`birdnet_stm32/training/qat.py`):
    raw-frontend internals on asymmetric per-tensor INT8 grids.
 5. Fine-tune at a low learning rate, while checkpointing the clean model that
    shares standard variables and receives synchronized frontend variables.
-   Select QAT checkpoints by validation tail loss; record ROC-AUC and enforce
-   the task-accuracy gate during paired float/INT8 evaluation.
+   Select QAT checkpoints by validation teacher KL (see
+   [Choosing which epoch to keep](#choosing-which-epoch-to-keep)); record
+   ROC-AUC and enforce the task-accuracy gate during paired float/INT8
+   evaluation.
 6. Add Bernoulli KL plus mean and worst-sample per-sample cosine consistency
    against a frozen copy of the untouched float checkpoint. By default the
    tail term targets the worst 10% of each batch with 0.75 weight, preserving
@@ -48,6 +50,39 @@ python -m birdnet_stm32 train --data_path_train data/train \
   --qat_cosine_tail_fraction 0.10 --qat_cosine_tail_weight 0.75 \
   --epochs 10 --learning_rate 0.0001
 ```
+
+### Choosing which epoch to keep
+
+`--qat_checkpoint_monitor` decides which epoch survives a QAT run. It defaults
+to `val_distillation_kl`, the Bernoulli KL against the frozen float teacher.
+
+The two candidate criteria measure different things and, over a run, move in
+opposite directions:
+
+| Metric | Measures | Behaviour during QAT |
+|---|---|---|
+| `val_distillation_cosine_tail_loss` | Numerical **parity** of the worst samples | Falls monotonically |
+| `val_distillation_kl` | **Fidelity** to the float teacher's output distribution | Often rises |
+
+Minimising tail loss is right when p05 parity is the binding failure. When
+parity already clears its gate, selecting on it keeps the *last* epoch, which is
+the worst one for per-class precision — the run converges on a checkpoint that
+scores well on the metric that was never in danger. The effect grows with class
+count, and shows up as macro AP falling several points while ROC-AUC barely
+moves, since ranking survives a small output-distribution shift that per-class
+precision does not.
+
+Watch both columns in `<checkpoint>_qat_history.csv`. If teacher KL climbs from
+epoch to epoch while tail loss falls, the selection metric and the failing
+metric have come apart, and the default is the one to keep.
+
+Rebalancing the *loss* toward KL is not a substitute for choosing the right
+epoch, and can be worse than the problem: weighting KL heavily enough to
+dominate the objective buys teacher fidelity at the cost of parity, and a model
+that drifts further from its float parent under INT8 can end up less accurate
+than the tail-weighted run it replaced. Change the selection metric before
+touching the loss weights, and judge either change on the INT8 model's task
+metrics rather than on the parity proxy.
 
 !!! tip "When to use QAT"
     Use QAT when PTQ cosine similarity is below 0.95 despite trying PWL

@@ -92,6 +92,14 @@ Every file shares one basename, `BirdNET_Tiny_N6_<REGION>_<SPECIES>_V<VERSION>`:
 | `<basename>_INT8_stedgeai_report.txt` | Memory footprint and NPU operator coverage |
 | `<basename>_model_card.md` | Contract, provenance, measured accuracy, and on-board timing |
 
+A bundle whose model was exported split also carries
+`<basename>_INT8_backbone.tflite` and `<basename>_INT8_classifier.tflite` (each
+with a `.gz`, plus the backbone's `.fingerprint.json` and the head's own
+labels). The firmware runs a single network, so `_INT8.tflite` is still what you
+flash; the pair exists so a species-list change can be pushed as a few kilobytes
+instead of the whole model. See the
+[conversion guide](https://birdnet-team.github.io/birdnet-stm32/conversion/#backbone-and-classifier-split).
+
 The TFLite model, config, and labels are a single contract — keep them together
 and never mix files across bundles. Models are licensed under the
 [Apache License 2.0](LICENSE-MODELS.md); the bundle also carries the
@@ -108,7 +116,9 @@ Everything the firmware needs is in the bundle — no extra downloads.
 3. Compile, flash, and run on the NPU:
 
    ```bash
-   BUNDLE=~/Downloads/BirdNET_Tiny_N6_USNE_30_V1.0
+   # The globs below pick files out of the bundle, so this does not depend on
+   # which region or version you downloaded.
+   BUNDLE=~/Downloads/<bundle>
 
    python -m birdnet_stm32 board-test \
      --model_path    "$BUNDLE"/*_INT8.tflite \
@@ -127,7 +137,7 @@ for toolchain setup and troubleshooting.
 
 - **Audio frontends**: `hybrid` (linear STFT + learned mel mixer), `raw` (waveform → learned Gabor quadrature filterbank), `librosa` (precomputed mel), `mfcc`, and `log_mel`. The standalone firmware supports `raw`, `hybrid`, and `librosa`.
 - **Magnitude scaling**: `pwl` (piecewise-linear, quantization-friendly), `pcen`, `db`, `none`
-- **Model**: DS-CNN with configurable width (`--alpha`) and depth (`--depth_multiplier`), SE attention and inverted residuals (on by default; disable with `--no_se`, `--no_inverted_residual`), and optional attention pooling (`--use_attention_pooling`)
+- **Model**: DS-CNN with configurable width (`--alpha`) and depth (`--depth_multiplier`) built from plain depthwise separable blocks, plus optional attention pooling (`--use_attention_pooling`)
 - **Augmentation**: Dirichlet multi-source mixup with multi-label union targets for overlapping vocalizations, SpecAugment (on by default), smart crop for long recordings
 - **Optimization**: linear warmup into cosine LR decay, Adam/SGD/AdamW, gradient clipping (on by default), mixed precision (FP16). Standard training checkpoints track validation ROC-AUC; QAT checkpoints track lower-tail teacher/student parity and retain ROC-AUC for the task-accuracy gate
 - **QAT**: native Keras 3 quantization-aware fine-tuning via `--qat` — uses the converter's exact calibration manifest to simulate the INT8 input, per-channel kernels, fused activation boundaries, and otherwise-opaque raw-frontend internals; frozen-teacher KL plus mean and configurable worst-sample cosine consistency protect probability calibration and lower-tail parity while a clean deployment model is checkpointed
