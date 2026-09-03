@@ -23,9 +23,11 @@ The default name is `best_model`. Use `--checkpoint_path` to give each
 experiment a descriptive internal name.
 
 Public release names are separate from experiment names. Use
-`BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>` for release assets;
-for example, `BirdNET_Tiny_N6_USNE_30_V1.0`. The species count covers bird
-species only and excludes nuisance/background outputs. Precision-bearing
+`BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>` for release assets:
+a version 1.2 model for the northeastern United States covering 60 bird species
+would be `BirdNET_Tiny_N6_USNE_60_V1.2`. The species count covers bird species
+only and excludes nuisance/background outputs, so a model with that name may
+well have more than 60 outputs. Precision-bearing
 release files append `_FP32`, `_FP16`, or `_INT8` to that family basename.
 
 ## Evaluation run naming

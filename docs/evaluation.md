@@ -139,10 +139,28 @@ The JSON report contains:
     "latency_mean_ms": 12.3,
     "latency_p95_ms": 14.1
   },
+  "per_class_ap": {
+    "northern_cardinal": 0.9142,
+    "wind": 0.1191
+  },
   "species": [ ... ],
   "config": { ... }
 }
 ```
+
+`per_class_ap` maps each class name to its average precision. It is keyed by
+name rather than index so that reordering the class list cannot silently
+misattribute scores, and it is written whenever `--benchmark` is used —
+`--species_report` adds bootstrap confidence intervals under `species`, but is
+not required for the per-class numbers.
+
+Beyond a few dozen outputs, the macro average stops being informative on its
+own: `cmAP` over a hundred classes averages a well-supplied species against one
+with a few hundred recordings and says nothing about which is carrying it. Group
+`per_class_ap` by whatever stratification matters for the model — output tier,
+available training data, taxonomic group — and compare within strata. A
+regression confined to one stratum and one spread evenly across all of them call
+for different responses, and a single average distinguishes neither.
 
 To include latency stats in the benchmark, combine with `--benchmark_latency`:
 

@@ -12,7 +12,11 @@ import os
 
 import tensorflow as tf
 
-from birdnet_stm32.data.dataset import load_file_paths_from_directory, upsample_minority_classes
+from birdnet_stm32.data.dataset import (
+    load_classes_file,
+    load_file_paths_from_directory,
+    upsample_minority_classes,
+)
 from birdnet_stm32.data.generator import load_dataset
 from birdnet_stm32.models.frontend import AudioFrontendLayer, normalize_frontend_name
 from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
@@ -33,8 +37,10 @@ def run_linear_probe(args: argparse.Namespace) -> None:
     if not os.path.isfile(args.checkpoint_path):
         raise FileNotFoundError(f"Pretrained model not found: {args.checkpoint_path}")
 
-    # Load pretrained model config
-    cfg_path = os.path.splitext(args.checkpoint_path)[0] + "_model_config.json"
+    # Load pretrained model config. A QAT checkpoint writes no config of its
+    # own — the architecture is the base model's — so probing one requires the
+    # base config to be named explicitly.
+    cfg_path = getattr(args, "model_config", "") or os.path.splitext(args.checkpoint_path)[0] + "_model_config.json"
     if not os.path.isfile(cfg_path):
         raise FileNotFoundError(f"Model config not found: {cfg_path}. Train a full model first.")
     old_cfg = ModelConfig.load(cfg_path)
@@ -50,10 +56,16 @@ def run_linear_probe(args: argparse.Namespace) -> None:
         },
     )
 
-    # Discover new classes from the user's dataset
-    file_paths, classes = load_file_paths_from_directory(args.data_path_train)
+    # Class order defines the head's output order, so an explicit list wins
+    # over directory discovery: the shipped labels file has to match the head
+    # it travels with, and a directory listing is not a schema.
+    top_classes = load_classes_file(args.classes_file) if args.classes_file else None
+    file_paths, classes = load_file_paths_from_directory(args.data_path_train, classes=top_classes)
     if not classes:
         raise ValueError("No classes found in the training data.")
+    if top_classes is not None and classes != top_classes:
+        missing = [name for name in top_classes if name not in classes]
+        raise ValueError(f"Training dataset is missing configured classes: {missing}")
     print(f"[linear-probe] {len(classes)} target classes, {len(file_paths)} files")
 
     # Find the embeddings layer (just before dropout/dense head)
@@ -92,9 +104,17 @@ def run_linear_probe(args: argparse.Namespace) -> None:
     audio_frontend = normalize_frontend_name(old_cfg.audio_frontend)
     hop_length = compute_hop_length(old_cfg.sample_rate, old_cfg.chunk_duration, old_cfg.spec_width)
 
-    split_idx = int(len(file_paths) * (1 - args.val_split))
-    train_paths = file_paths[:split_idx]
-    val_paths = file_paths[split_idx:]
+    if args.data_path_val:
+        train_paths = file_paths
+        val_paths, val_classes = load_file_paths_from_directory(args.data_path_val, classes=classes)
+        if val_classes != classes:
+            missing = [name for name in classes if name not in val_classes]
+            raise ValueError(f"Validation dataset is missing configured classes: {missing}")
+        print("[linear-probe] Using separate validation root; --val_split is ignored.")
+    else:
+        split_idx = int(len(file_paths) * (1 - args.val_split))
+        train_paths = file_paths[:split_idx]
+        val_paths = file_paths[split_idx:]
     print(f"[linear-probe] Training on {len(train_paths)} files, validating on {len(val_paths)} files.")
 
     if args.upsample_ratio and 0 < args.upsample_ratio < 1.0:
@@ -156,10 +176,6 @@ def run_linear_probe(args: argparse.Namespace) -> None:
         class_names=classes,
         frontend_trainable=old_cfg.frontend_trainable,
         n_mfcc=old_cfg.n_mfcc,
-        use_se=old_cfg.use_se,
-        se_reduction=old_cfg.se_reduction,
-        use_inverted_residual=old_cfg.use_inverted_residual,
-        expansion_factor=old_cfg.expansion_factor,
         use_attention_pooling=old_cfg.use_attention_pooling,
         dropout_rate=args.dropout,
     )

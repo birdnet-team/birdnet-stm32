@@ -16,9 +16,12 @@ flowchart LR
     A["Train\nDS-CNN"] --> B["Quantize\nINT8 TFLite"] --> C["Deploy\nSTM32N6 NPU"]
 ```
 
-Performance depends on the frontend, model, and SD card. The v1.0 USNE model's
-verified 24 kHz, 2.5-second raw configuration averages **6 ms NPU time** and
-**78 ms total** including SD-card reads—about 32× faster than real time.
+Performance depends on the frontend, model, and SD card. A compact DS-CNN in the
+verified 24 kHz, 2.5-second raw configuration averages **under 10 ms NPU time**
+and **well under 100 ms total** including SD-card reads — comfortably faster
+than real time, with SD reads dominating rather than inference. See
+[Pretrained models](pretrained-models.md) for the figures measured on a given
+release.
 
 ## Quick start
 
@@ -61,8 +64,7 @@ what a bundle contains and how to run one on the board.
   quantization-friendly. The firmware supports `raw`, `hybrid`, and `librosa`;
   `mfcc` and `log_mel` remain host-preprocessed paths.
 - **Scalable DS-CNN**: width (`alpha`) and depth (`depth_multiplier`) knobs,
-  SE attention and inverted residual blocks by default (disable with
-  `--no_se` / `--no_inverted_residual`), plus optional attention pooling
+  plain depthwise separable blocks, plus optional attention pooling
   (`--use_attention_pooling`).
 - **Post-training quantization**: float32 I/O with INT8 internals, targeting
   >0.95 cosine similarity vs. the float model. Per-channel (default) or

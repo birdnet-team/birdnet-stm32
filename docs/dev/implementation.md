@@ -17,6 +17,11 @@ Depthwise-separable convolutions (DS-CNN) are the backbone because:
 The 4-stage design with stride-2 downsampling gives a 16× spatial reduction,
 which is sufficient for mel spectrograms of typical size (64×256).
 
+Plain DS blocks are the only option the builder offers. Inverted-residual and
+squeeze-and-excite variants were available once and were removed: their extra
+requantization boundaries put INT8 parity out of reach of the release gates.
+See [Removed: inverted residual and squeeze-and-excite blocks](model.md#removed-inverted-residual-and-squeeze-and-excite-blocks).
+
 ## Why PWL over PCEN/dB?
 
 | Scaling | Quantization behavior | N6 compatibility | Notes |
@@ -116,6 +121,12 @@ distance to the label loss. The default tail objective targets the worst 10%
 of each batch. Background and low-confidence probabilities remain
 calibrated while the lower parity tail is optimized directly; hard-label BCE
 alone barely penalizes those errors.
+
+Which epoch is kept is a separate decision from how the loss is weighted, and
+the two can pull apart: the tail objective is a parity measure, so selecting on
+it once parity is comfortable keeps the epoch that drifted furthest from the
+float teacher. Selection therefore defaults to validation teacher KL. See
+[Choosing which epoch to keep](quantization.md#choosing-which-epoch-to-keep).
 
 The saved `.keras` model contains only standard float32 weights — no FakeQuant
 nodes. Standard PTQ then calibrates and quantizes the hardened deployment

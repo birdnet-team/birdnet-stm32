@@ -43,20 +43,8 @@ def _build_search_space(trial: optuna.Trial, args: argparse.Namespace) -> dict:
         "weight_decay": trial.suggest_float("weight_decay", 1e-5, 1e-2, log=True),
         "grad_clip": trial.suggest_float("grad_clip", 0.0, 5.0, step=1.0),
         # Architecture blocks
-        "use_se": trial.suggest_categorical("use_se", [True, False]),
-        "use_inverted_residual": trial.suggest_categorical("use_inverted_residual", [True, False]),
         "use_attention_pooling": trial.suggest_categorical("use_attention_pooling", [True, False]),
     }
-    # Conditional: SE reduction only matters when SE is enabled
-    if hp["use_se"]:
-        hp["se_reduction"] = trial.suggest_categorical("se_reduction", [4, 8, 16])
-    else:
-        hp["se_reduction"] = 8
-    # Conditional: expansion factor only matters with inverted residuals
-    if hp["use_inverted_residual"]:
-        hp["expansion_factor"] = trial.suggest_int("expansion_factor", 2, 4)
-    else:
-        hp["expansion_factor"] = 2
     return hp
 
 
@@ -138,10 +126,6 @@ def _objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
         mag_scale=args.mag_scale,
         frontend_trainable=args.frontend_trainable,
         dropout_rate=hp["dropout"],
-        use_se=hp["use_se"],
-        se_reduction=hp["se_reduction"],
-        use_inverted_residual=hp["use_inverted_residual"],
-        expansion_factor=hp["expansion_factor"],
         use_attention_pooling=hp["use_attention_pooling"],
     )
 

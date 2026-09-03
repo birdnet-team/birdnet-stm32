@@ -27,10 +27,10 @@ Public model families use:
 BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>
 ```
 
-For example, `BirdNET_Tiny_N6_USNE_30_V1.0` identifies the version 1.0 model
-for the northeastern United States with 30 bird species. `SPECIES_COUNT` does
-not include nuisance or background outputs; those remain in the ordered labels
-and model config.
+So `BirdNET_Tiny_N6_USNE_60_V1.2` would identify a version 1.2 model for the
+northeastern United States covering 60 bird species. `SPECIES_COUNT` does not
+include nuisance or background outputs; those remain in the ordered labels and
+model config, so the output count is generally higher than the name suggests.
 
 Every precision-bearing filename appends `_FP32`, `_FP16`, or `_INT8` to that
 family basename. The precision token describes stored model computation, not
@@ -71,12 +71,17 @@ requires all of the following:
    retain its compatibility/memory report.
 7. Run the custom firmware on the physical board and retain the board report.
 
-For the v1 USNE compact-model comparison, A1 is the accuracy reference
-(ROC-AUC 0.972374, class-macro AP 0.733490). The accepted compact-model floors
-are 0.952374 ROC-AUC and 0.680000 class-macro AP. Once selected, full-INT8
-inference may lose at most 0.01 ROC-AUC or 0.015 class-macro AP relative to
-that candidate's own float checkpoint. These v1 thresholds record an explicit
-size/accuracy decision; the mean/p05 cosine gates remain 0.95/0.90.
+Accuracy floors are derived per release, not carried over. Freeze the float
+baseline's catalog metrics *before* any compression runs, and gate every
+compressed candidate against that frozen reference. A floor set after seeing a
+compressed result is not a gate.
+
+Each compression step gets its own stated budget. Full-INT8 inference may lose
+at most 0.01 ROC-AUC or 0.015 class-macro AP relative to the candidate's own
+float checkpoint. Give QAT a separate budget: it is a larger and more
+class-count-dependent cost than the INT8 step, and reusing a budget measured on
+a model with far fewer outputs will fail a healthy model. The mean/p05 cosine
+gates remain 0.95/0.90 regardless.
 
 The converter promotes its temporary TFLite file only after mean and tail
 parity gates pass. A failed report is diagnostic only. Audit calibration first;

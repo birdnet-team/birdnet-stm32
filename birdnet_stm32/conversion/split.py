@@ -13,6 +13,8 @@ standalone model with its own weights.
 """
 
 import gzip
+import hashlib
+import json
 import os
 import shutil
 
@@ -116,6 +118,57 @@ def split_model(model: tf.keras.Model) -> tuple[tf.keras.Model, tf.keras.Model]:
 def embedding_dimension(backbone: tf.keras.Model) -> int:
     """Return the width of the embedding vector a backbone emits."""
     return int(backbone.output_shape[-1])
+
+
+def backbone_fingerprint(backbone: tf.keras.Model) -> str:
+    """Return a SHA-256 over a backbone's float weights in graph order.
+
+    A head shipped over the air only works if the receiver's flashed backbone
+    is the one the head was calibrated against. Comparing this fingerprint is
+    how a later head-only conversion proves the backbone did not move: weight
+    values are hashed together with each tensor's name and shape, so a
+    reordered or resized graph cannot collide with the original.
+    """
+    digest = hashlib.sha256()
+    for weight in backbone.weights:
+        digest.update(weight.name.encode("utf-8"))
+        value = np.ascontiguousarray(weight.numpy())
+        digest.update(str(value.shape).encode("utf-8"))
+        digest.update(value.tobytes())
+    return digest.hexdigest()
+
+
+def file_sha256(path: str) -> str:
+    """Return the SHA-256 digest of a file's exact bytes."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_fingerprint(backbone_path: str, fingerprint: str, embedding_dim: int) -> str:
+    """Record a backbone's fingerprint beside the artifact it identifies."""
+    path = backbone_path + ".fingerprint.json"
+    payload = {
+        "backbone": os.path.basename(backbone_path),
+        "weights_sha256": fingerprint,
+        "artifact_sha256": file_sha256(backbone_path),
+        "embedding_dim": embedding_dim,
+    }
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+        handle.write("\n")
+    return path
+
+
+def read_fingerprint(backbone_path: str) -> dict | None:
+    """Return the recorded fingerprint for a backbone, or None if absent."""
+    path = backbone_path + ".fingerprint.json"
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
 
 
 def count_parameters(model: tf.keras.Model) -> int:

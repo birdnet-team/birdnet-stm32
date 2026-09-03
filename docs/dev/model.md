@@ -26,17 +26,20 @@ flowchart TD
 When `stride=1` and input/output channels match, a **residual skip connection**
 is added.
 
-#### Inverted residual blocks (default; disable with `--no_inverted_residual`)
+#### Removed: inverted residual and squeeze-and-excite blocks
 
-When enabled, each DS block is replaced by an inverted residual block
-(MobileNetV2-style): expand → depthwise 3×3 → project, with ReLU6
-activations and a residual skip when stride=1 and channels match. Controlled
-by `--expansion_factor` (default 2).
+Earlier versions could build a MobileNetV2-style backbone with inverted
+residual blocks and squeeze-and-excite attention. Both were removed because
+that backbone could not reach the INT8 parity gates: per-channel PTQ landed far
+below the 0.95 minimum, and quantization-aware training did not recover the
+lower tail. The dominant residual errors sit at the signed linear projection and
+the `Add` boundaries inside an inverted-residual block, where the requantization
+step has to reconcile two differently scaled tensors.
 
-#### SE channel attention (default; disable with `--no_se`)
-
-Adds a squeeze-and-excitation block after each DS or inverted residual block.
-The SE ratio is set via `--se_reduction` (default 8).
+Plain depthwise separable blocks have no such boundary and quantize cleanly, so
+they are the only path the builder offers. Removing the options also removed a
+trap: they were enabled by default, which made the quantization-hostile
+architecture the one you got unless you opted out.
 
 ### Stage configuration
 
@@ -67,8 +70,6 @@ model a soft spatial attention mechanism while remaining NPU-compatible.
 All reusable building blocks live in `birdnet_stm32/models/blocks.py`:
 
 - `_make_divisible(v, divisor)` — round channel counts to multiples of `divisor`
-- `se_block(x, ratio)` — squeeze-and-excitation channel attention
-- `inverted_residual_block(x, filters, stride, expansion)` — MobileNetV2-style block
 - `AttentionPooling` — Keras Layer that learns per-channel spatial attention weights
 
 ## Scaling knobs

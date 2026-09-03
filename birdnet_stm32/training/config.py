@@ -31,10 +31,6 @@ class ModelConfig:
         class_names: Ordered list of class label strings.
         frontend_trainable: Whether frontend weights are trainable.
         n_mfcc: Number of MFCC coefficients (mfcc frontend only).
-        use_se: Whether SE channel attention is enabled.
-        se_reduction: SE reduction factor.
-        use_inverted_residual: Whether inverted residual blocks are used.
-        expansion_factor: Inverted residual expansion factor.
         use_attention_pooling: Whether attention pooling replaces GAP.
         dropout_rate: Dropout rate before classifier head.
     """
@@ -54,10 +50,6 @@ class ModelConfig:
     embeddings_size: int = 256
     alpha: float = 1.0
     depth_multiplier: int = 1
-    use_se: bool = True
-    se_reduction: int = 8
-    use_inverted_residual: bool = True
-    expansion_factor: int = 2
     use_attention_pooling: bool = False
     dropout_rate: float = 0.5
     frontend_trainable: bool = False

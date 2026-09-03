@@ -3,8 +3,7 @@
 The model consists of:
 - An AudioFrontendLayer (from frontend.py) for feature extraction.
 - A stem convolution to lift channels.
-- Four stages of depthwise-separable or inverted-residual blocks with stride-2 downsampling.
-- Optional squeeze-and-excite (SE) channel attention per block.
+- Four stages of depthwise-separable blocks with stride-2 downsampling.
 - Global average pooling (or attention pooling), dropout, and a dense classifier head.
 
 Scaling is controlled via alpha (width multiplier) and depth_multiplier (block repeats).
@@ -19,8 +18,6 @@ from tensorflow.keras import layers, regularizers
 from birdnet_stm32.models.blocks import (
     _make_divisible,
     attention_pooling,
-    inverted_residual_block,
-    se_block,
 )
 from birdnet_stm32.models.frontend import AudioFrontendLayer, hybrid_fft_bins, normalize_frontend_name
 
@@ -100,10 +97,6 @@ def build_dscnn_model(
     dropout_rate: float = 0.5,
     n_mfcc: int = 20,
     weight_decay: float = 1e-4,
-    use_se: bool = True,
-    se_reduction: int = 8,
-    use_inverted_residual: bool = True,
-    expansion_factor: int = 2,
     use_attention_pooling: bool = False,
 ) -> tf.keras.Model:
     """Build a DS-CNN model with a selectable audio frontend.
@@ -124,10 +117,6 @@ def build_dscnn_model(
         dropout_rate: Dropout rate before the classifier head.
         n_mfcc: Number of MFCC coefficients (only used when audio_frontend='mfcc').
         weight_decay: L2 regularization weight for DS-CNN blocks.
-        use_se: Add SE channel attention after each block.
-        se_reduction: SE channel reduction factor.
-        use_inverted_residual: Use inverted residual blocks instead of DS blocks.
-        expansion_factor: Expansion factor for inverted residual hidden dim.
         use_attention_pooling: Use attention pooling instead of GAP.
 
     Returns:
@@ -207,40 +196,9 @@ def build_dscnn_model(
         out_ch = _make_divisible(int(bf * alpha), 8)
         reps = max(1, int(math.ceil(br * depth_multiplier)))
 
-        if use_inverted_residual:
-            x = inverted_residual_block(
-                x,
-                out_ch,
-                expansion=expansion_factor,
-                stride_f=sf,
-                stride_t=st,
-                use_se=use_se,
-                se_reduction=se_reduction,
-                weight_decay=weight_decay,
-                name=f"stage{si}_ir1",
-            )
-            for bi in range(2, reps + 1):
-                x = inverted_residual_block(
-                    x,
-                    out_ch,
-                    expansion=expansion_factor,
-                    stride_f=1,
-                    stride_t=1,
-                    use_se=use_se,
-                    se_reduction=se_reduction,
-                    weight_decay=weight_decay,
-                    name=f"stage{si}_ir{bi}",
-                )
-        else:
-            x = ds_conv_block(x, out_ch, stride_f=sf, stride_t=st, name=f"stage{si}_ds1", weight_decay=weight_decay)
-            if use_se:
-                x = se_block(x, reduction=se_reduction, name=f"stage{si}_se1")
-            for bi in range(2, reps + 1):
-                x = ds_conv_block(
-                    x, out_ch, stride_f=1, stride_t=1, name=f"stage{si}_ds{bi}", weight_decay=weight_decay
-                )
-                if use_se:
-                    x = se_block(x, reduction=se_reduction, name=f"stage{si}_se{bi}")
+        x = ds_conv_block(x, out_ch, stride_f=sf, stride_t=st, name=f"stage{si}_ds1", weight_decay=weight_decay)
+        for bi in range(2, reps + 1):
+            x = ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name=f"stage{si}_ds{bi}", weight_decay=weight_decay)
 
     # Final 1x1 conv to embeddings
     emb_ch = _make_divisible(int(embeddings_size), 8)

@@ -1,6 +1,7 @@
 """ASCII visualization, CSV/JSON export, and optional HTML report for evaluation results."""
 
 import json
+import math
 import os
 
 import numpy as np
@@ -223,6 +224,18 @@ def save_benchmark_json(
         else:
             core[k] = v
     report["metrics"] = core
+
+    # Per-class AP, keyed by name so a later reordering of the class list
+    # cannot silently misattribute scores. A macro average over a hundred
+    # classes says nothing about which of them are carrying it.
+    per_class = metrics.get("ap_per_class")
+    if per_class is not None and len(per_class) == len(classes):
+        report["per_class_ap"] = {
+            name: (
+                None if value is None or (isinstance(value, float) and math.isnan(value)) else round(float(value), 6)
+            )
+            for name, value in zip(classes, per_class, strict=True)
+        }
 
     if species_data:
         report["species"] = species_data

@@ -247,7 +247,6 @@ exempt because they are small but highly sensitive:
 | Exempt | Why |
 |---|---|
 | Depthwise kernels | 9 weights per channel; nothing is redundant |
-| Squeeze-and-excite `Dense` gates | Tiny gain modulators, not spare capacity |
 | Audio frontend | Mel mixers and Gabor filterbanks are signal-processing filters, not spare capacity |
 | Any kernel below `--prune_min_layer_params` (default 1024) | Rounding error in the budget, first place accuracy breaks |
 
@@ -357,18 +356,43 @@ it to a different set of species with limited data.
 ```bash
 python -m birdnet_stm32 train --data_path_train data/my_species \
   --linear_probe --checkpoint_path checkpoints/pretrained.keras \
+  --data_path_val data/my_species_val \
+  --classes_file data/my_species/labels.txt \
   --epochs 20 --learning_rate 0.001
 ```
 
-The probe model is saved as `{name}_probe.keras` with a new labels file.
+The probe model is saved as `{name}_probe.keras` with a new labels file and
+`{name}_probe_model_config.json`.
+
+Pass `--classes_file` whenever the head will be shipped. The head's output order
+*is* its labels file, and without an explicit schema that order comes from a
+directory listing, which is not a contract. `--data_path_val` gives the probe a
+fixed validation root instead of a random slice of the training set, so repeated
+runs are comparable.
+
+Probing a checkpoint from an earlier compression step needs `--model_config`:
+a QAT checkpoint writes no config of its own, since its architecture is the base
+model's.
+
+```bash
+python -m birdnet_stm32 train --data_path_train data/my_species \
+  --linear_probe --checkpoint_path checkpoints/pretrained_qat.keras \
+  --model_config checkpoints/pretrained_model_config.json \
+  --classes_file data/my_species/labels.txt --epochs 20
+```
+
+To ship the resulting head on its own, convert it against the backbone already
+on the device — see
+[Updating the head against a flashed backbone](conversion.md#updating-the-head-against-a-flashed-backbone).
 
 ### Learning rate
 
 A two-epoch linear warmup reaches `--learning_rate` (default 0.001), followed
 by cosine decay to near-zero over `--epochs` (default 50). Best-checkpoint
 selection and early stopping monitor validation ROC-AUC with patience 10 for
-standard training. QAT instead minimizes validation teacher/student tail loss;
-the paired catalog evaluation remains the release-deciding accuracy gate.
+standard training. QAT instead minimizes validation teacher KL, configurable
+with `--qat_checkpoint_monitor`; the paired catalog evaluation remains the
+release-deciding accuracy gate.
 Pruning keeps the ROC-AUC monitor but ignores every epoch before its sparsity
 ramp finishes.
 
@@ -377,9 +401,8 @@ ramp finishes.
 Use `--tune` to run an automated hyperparameter search using Optuna (requires
 `pip install -e ".[tune]"`). The tuner explores alpha, depth_multiplier,
 embeddings_size, learning_rate, dropout, batch_size, mixup_alpha, optimizer,
-weight_decay, grad_clip, use_se,
-use_inverted_residual, use_attention_pooling, se_reduction, and
-expansion_factor. It maximizes `val_roc_auc` with MedianPruner.
+weight_decay, grad_clip, and use_attention_pooling.
+It maximizes `val_roc_auc` with MedianPruner.
 
 ```bash
 python -m birdnet_stm32 train \
@@ -419,10 +442,6 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--dropout` | 0.5 | Dropout rate before classifier head |
 | `--optimizer` | adam | `adam`, `sgd`, or `adamw` |
 | `--weight_decay` | 0.0 | Weight decay (adamw only) |
-| `--no_se` | False | Disable SE channel attention (on by default) |
-| `--se_reduction` | 8 | SE channel reduction factor |
-| `--no_inverted_residual` | False | Use plain DS blocks (inverted residuals on by default) |
-| `--expansion_factor` | 2 | Expansion factor for inverted residuals |
 | `--use_attention_pooling` | False | Use attention pooling instead of GAP |
 | `--n_mfcc` | 20 | Number of MFCC coefficients (mfcc frontend only) |
 | `--grad_clip` | 1.0 | Max gradient norm for clipping (0 = disabled) |
@@ -461,6 +480,8 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--prune_cosine_tail_weight` | 0.75 | Worst-sample cosine-loss weight |
 | `--prune_cosine_tail_fraction` | 0.10 | Fraction of each batch included in the worst-sample loss |
 | `--linear_probe` | False | Freeze backbone and train only classifier head |
+| `--model_config` | *(inferred)* | Architecture config for `--qat`, `--prune`, `--linear_probe`; required when the checkpoint has no sibling config |
+| `--qat_checkpoint_monitor` | `val_distillation_kl` | Validation metric selecting the kept QAT epoch |
 
 ## Data pipeline
 
