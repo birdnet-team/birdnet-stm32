@@ -2,14 +2,19 @@
 
 <p align="center">
   <img src="birdnet-logo.png" alt="BirdNET Live" width="250"><br>
-  <a href="LICENSE.md"><img src="https://img.shields.io/badge/Code-MIT-green.svg" alt="Code license: MIT"></a>
-  <a href="LICENSE-MODELS.md"><img src="https://img.shields.io/badge/Models-Apache--2.0-green.svg" alt="Model license: Apache 2.0"></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.12%2B-blue.svg" alt="Python 3.12+"></a>
-  <a href="https://birdnet-team.github.io/birdnet-stm32"><img src="https://img.shields.io/badge/docs-mkdocs-blue.svg" alt="Docs"></a>
-  <a href="https://github.com/birdnet-team/birdnet-stm32/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/version-1.0.0-orange.svg" alt="Version"></a>
+  <a href="LICENSE.md"><img src="https://img.shields.io/badge/code-MIT-green.svg" alt="Code license: MIT"></a>
+  <a href="LICENSE-MODELS.md"><img src="https://img.shields.io/badge/models-Apache--2.0-green.svg" alt="Model license: Apache 2.0"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12%2B-blue.svg?logo=python&logoColor=white" alt="Python 3.12+"></a>
+  <a href="https://github.com/birdnet-team/birdnet-stm32/actions/workflows/test.yml"><img src="https://github.com/birdnet-team/birdnet-stm32/actions/workflows/test.yml/badge.svg?branch=master" alt="Tests"></a>
+  <a href="https://github.com/birdnet-team/birdnet-stm32/actions/workflows/lint.yml"><img src="https://github.com/birdnet-team/birdnet-stm32/actions/workflows/lint.yml/badge.svg?branch=master" alt="Lint"></a>
+  <a href="https://birdnet-team.github.io/birdnet-stm32"><img src="https://github.com/birdnet-team/birdnet-stm32/actions/workflows/docs.yml/badge.svg?branch=master" alt="Documentation build"></a>
+  <a href="https://github.com/birdnet-team/birdnet-stm32/releases/latest"><img src="https://img.shields.io/github/v/release/birdnet-team/birdnet-stm32?display_name=tag&sort=semver" alt="Latest release"></a>
+  <a href="https://github.com/birdnet-team/birdnet-stm32/releases/latest"><img src="https://img.shields.io/badge/classes-100-orange.svg" alt="Latest release classes: 100"></a>
 </p>
 
 Bird sound classification for edge deployment on the [STM32N6570-DK](https://www.st.com/en/evaluation-tools/stm32n6570-dk.html) development board with neural processing unit (NPU).
+
+**[Read the full BirdNET-STM32 documentation](https://birdnet-team.github.io/birdnet-stm32)** for setup, training, conversion, evaluation, and deployment guides.
 
 <img src="https://my.avnet.com/wcm/connect/c651fc2f-a5b2-489c-9d63-d3f064753690/STMicroelectronics+STM32N6570-DK.jpg?MOD=AJPERES&CACHEID=ROOTWORKSPACE-c651fc2f-a5b2-489c-9d63-d3f064753690-phBdXih" alt="STM32N6570-DK board" style="width: 100%;" />
 
