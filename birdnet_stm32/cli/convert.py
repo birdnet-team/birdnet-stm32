@@ -19,11 +19,15 @@ from birdnet_stm32.conversion.quantize import (
     stratified_sample_paths,
 )
 from birdnet_stm32.conversion.split import (
+    backbone_fingerprint,
     count_parameters,
     embedding_dimension,
+    file_sha256,
     find_embedding_layer,
+    read_fingerprint,
     size_record,
     split_model,
+    write_fingerprint,
 )
 from birdnet_stm32.conversion.validate import cosine_similarity, parity_metrics, validate_models
 from birdnet_stm32.data.dataset import load_file_paths_from_directory
@@ -91,6 +95,26 @@ def get_args() -> argparse.Namespace:
         help=(
             "Also emit the model as a separate backbone and classifier head, so the head "
             "can be updated over a narrowband link without reflashing the backbone."
+        ),
+    )
+    parser.add_argument(
+        "--backbone_path",
+        type=str,
+        default="",
+        help=(
+            "Convert only the classifier head, calibrating it against this already-quantized "
+            "backbone .tflite instead of building a new one. Use when fine-tuning added classes "
+            "on a frozen backbone that is already flashed to devices."
+        ),
+    )
+    parser.add_argument(
+        "--allow_backbone_mismatch",
+        action="store_true",
+        default=False,
+        help=(
+            "Proceed even when the checkpoint's backbone weights do not match the fingerprint "
+            "recorded for --backbone_path. The resulting head will not work on a device flashed "
+            "with that backbone; for diagnostics only."
         ),
     )
     parser.add_argument(
@@ -299,11 +323,17 @@ def _convert_split_head(
             if os.path.exists(path):
                 os.unlink(path)
 
+    # A later head-only conversion has to prove it is calibrating against this
+    # exact backbone, so its identity is recorded beside the artifact.
+    fingerprint = backbone_fingerprint(backbone)
+    write_fingerprint(backbone_path, fingerprint, embedding_dimension(backbone))
+
     split_report = {
         "embedding_layer": embedding_layer_name,
         "embedding_dim": embedding_dimension(backbone),
         "backbone_params": count_parameters(backbone),
         "classifier_params": count_parameters(classifier),
+        "backbone_weights_sha256": fingerprint,
         "backbone": size_record(backbone_path),
         "classifier": size_record(classifier_path),
         "backbone_validation": backbone_metrics,
@@ -333,9 +363,180 @@ def _convert_split_head(
     return split_report
 
 
+def _convert_head_only(
+    model,
+    cfg: dict,
+    args: argparse.Namespace,
+    rep_data_gen,
+    rep_data_gen_val,
+) -> dict:
+    """Convert only a new classifier head against an already-quantized backbone.
+
+    This is the fine-tuning half of the split workflow. The backbone on the
+    device was flashed once and must not move, so it is *not* reconverted here:
+    the existing ``.tflite`` is loaded as-is and the new head is calibrated on
+    the embeddings that exact file emits. Reconverting would recalibrate the
+    backbone's activation ranges against whatever data the new classes came
+    with, silently producing a backbone the deployed device does not have.
+
+    Args:
+        model: Loaded Keras model whose frozen backbone matches ``--backbone_path``.
+        cfg: Model config dict for the new head's class set.
+        args: Parsed CLI arguments.
+        rep_data_gen: Calibration data generator over the new classes' audio.
+        rep_data_gen_val: Disjoint validation data generator.
+
+    Returns:
+        Report dict with parity metrics, sizes, and artifact paths.
+
+    Raises:
+        RuntimeError: If the backbone identity check or the parity gate fails.
+    """
+    backbone, classifier = split_model(model)
+    embedding_layer_name = find_embedding_layer(model).name
+    fingerprint = backbone_fingerprint(backbone)
+
+    recorded = read_fingerprint(args.backbone_path)
+    artifact_fingerprint = file_sha256(args.backbone_path)
+    identity_verified = False
+    if recorded is None:
+        print(
+            f"WARNING: no fingerprint recorded beside {args.backbone_path}; "
+            "cannot prove the head is calibrated against the flashed backbone"
+        )
+    else:
+        mismatches = []
+        if recorded.get("weights_sha256") != fingerprint:
+            mismatches.append(
+                f"{args.checkpoint_path} carries backbone {fingerprint[:16]}... but the sidecar records "
+                f"{recorded.get('weights_sha256', 'missing')[:16]}..."
+            )
+        recorded_artifact = recorded.get("artifact_sha256")
+        if recorded_artifact is None:
+            print(
+                f"WARNING: {args.backbone_path}.fingerprint.json has no artifact digest; "
+                "cannot prove the TFLite file itself is unchanged"
+            )
+        elif recorded_artifact != artifact_fingerprint:
+            mismatches.append(
+                f"{args.backbone_path} has digest {artifact_fingerprint[:16]}... but the sidecar records "
+                f"{recorded_artifact[:16]}..."
+            )
+
+        if mismatches:
+            message = (
+                "Backbone mismatch: "
+                + "; ".join(mismatches)
+                + ". A head calibrated against a different backbone will not work on the device."
+            )
+            if not args.allow_backbone_mismatch:
+                raise RuntimeError(message)
+            print(f"WARNING: {message}")
+        else:
+            identity_verified = recorded_artifact is not None
+            if identity_verified:
+                print(
+                    f"Backbone identity verified: {fingerprint[:16]}... matches {os.path.basename(args.backbone_path)}"
+                )
+
+    base = os.path.splitext(args.output_path)[0]
+    classifier_path = f"{base}_classifier.tflite"
+    output_dir = os.path.dirname(os.path.abspath(args.output_path))
+    print(
+        f"\nHead-only conversion against '{embedding_layer_name}': reusing "
+        f"{embedding_dimension(backbone)}-d backbone, converting "
+        f"{count_parameters(classifier):,}-param head for {cfg.get('num_classes', '?')} classes"
+    )
+
+    staged = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=".head-only-", suffix=".tflite", dir=output_dir, delete=False
+        ) as handle:
+            staged = handle.name
+
+        backbone_runner = TFLiteRunner(args.backbone_path)
+        embeddings = [backbone_runner.predict(np.asarray(sample[0], np.float32)) for sample in rep_data_gen()]
+        if not embeddings:
+            raise RuntimeError("Backbone produced no calibration embeddings for the classifier head")
+
+        def head_rep_gen():
+            for embedding in embeddings:
+                yield [np.asarray(embedding, np.float32)]
+
+        convert_to_tflite(
+            classifier,
+            head_rep_gen,
+            staged,
+            quantization=args.quantization,
+            per_tensor=args.per_tensor,
+        )
+
+        chained = ChainedTFLiteRunner(args.backbone_path, staged)
+        print("\n--- Chained parity (Keras whole model vs flashed backbone + new head) ---")
+        chained_metrics = parity_metrics(
+            lambda inputs: model(inputs, training=False).numpy(),
+            chained.predict,
+            rep_data_gen_val,
+            label="chained",
+        )
+
+        failures = []
+        if args.min_cosine_sim > 0 and chained_metrics["cosine_mean"] < args.min_cosine_sim:
+            failures.append(f"chained mean cosine {chained_metrics['cosine_mean']:.6f} < {args.min_cosine_sim:.4f}")
+        if args.min_cosine_p05 > 0 and chained_metrics["cosine_p05"] < args.min_cosine_p05:
+            failures.append(f"chained p05 cosine {chained_metrics['cosine_p05']:.6f} < {args.min_cosine_p05:.4f}")
+        if failures:
+            raise RuntimeError("Head-only quality check failed: " + "; ".join(failures))
+
+        os.replace(staged, classifier_path)
+        staged = ""
+    finally:
+        if staged and os.path.exists(staged):
+            os.unlink(staged)
+
+    report = {
+        "mode": "head_only",
+        "embedding_layer": embedding_layer_name,
+        "embedding_dim": embedding_dimension(backbone),
+        "classifier_params": count_parameters(classifier),
+        "backbone_path": os.path.basename(args.backbone_path),
+        "backbone_weights_sha256": fingerprint,
+        "backbone_artifact_sha256": artifact_fingerprint,
+        "backbone_identity_verified": identity_verified,
+        "classifier": size_record(classifier_path),
+        "chained_validation": chained_metrics,
+        "quality_gate_passed": True,
+    }
+
+    if cfg.get("class_names"):
+        labels_path = os.path.splitext(classifier_path)[0] + "_labels.txt"
+        with open(labels_path, "w", encoding="utf-8") as handle:
+            handle.writelines(f"{name}\n" for name in cfg["class_names"])
+        report["classifier_labels"] = os.path.basename(labels_path)
+
+    head = report["classifier"]
+    print(
+        f"\nClassifier head saved to {classifier_path} "
+        f"({head['size_bytes']:,} B, {head['gzip_bytes']:,} B gzipped, "
+        f"{head['int8_sparsity']:.1%} of its INT8 weights are zero)"
+    )
+    print(f"The backbone at {args.backbone_path} was reused unchanged and is not re-emitted.")
+    return report
+
+
 def main():
     """Convert a trained Keras model to quantized TFLite and validate."""
     args = get_args()
+
+    # Building a backbone and reusing one are opposite intents; asking for both
+    # would silently discard whichever ran second.
+    if args.split_head and args.backbone_path:
+        raise SystemExit(
+            "--split_head builds a new backbone and --backbone_path reuses an existing one; pass only one."
+        )
+    if args.backbone_path and not os.path.isfile(args.backbone_path):
+        raise FileNotFoundError(f"Backbone model not found: {args.backbone_path}")
 
     # Resolve config path
     if not args.model_config:
@@ -497,9 +698,13 @@ def main():
         print(f"Validation data saved to {val_path}")
 
         # Backbone / classifier split. Opt-in: the firmware still runs a single
-        # network, so the pair is produced only when it is asked for.
+        # network, so the pair is produced only when it is asked for. The
+        # monolithic model above is converted either way, which is what the
+        # board flashes; the split artifacts are what travels over the air.
         if args.split_head:
             report["split"] = _convert_split_head(model, cfg, args, rep_data_gen, rep_data_gen_val)
+        elif args.backbone_path:
+            report["split"] = _convert_head_only(model, cfg, args, rep_data_gen, rep_data_gen_val)
 
         # ONNX export
         if args.export_onnx:

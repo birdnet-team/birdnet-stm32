@@ -98,6 +98,51 @@ Three parity measurements are reported, and the third is a hard gate:
 Both halves are staged in temporary files and promoted together only after the
 chained gate passes, so a failed split never leaves a half-valid pair behind.
 
+### Updating the head against a flashed backbone
+
+Once a backbone is on a device it must not move. `--backbone_path` converts only
+a new head, calibrating it on embeddings that exact `.tflite` emits:
+
+```bash
+python -m birdnet_stm32 convert \
+  --checkpoint_path checkpoints/my_model_probe.keras \
+  --model_config checkpoints/my_model_model_config.json \
+  --data_path_train data/new_classes/train \
+  --output_path checkpoints/new_head.tflite \
+  --backbone_path release/MyModel_INT8_backbone.tflite
+```
+
+The backbone is **not** reconverted and not re-emitted. Reconverting it would
+recalibrate its activation ranges against whatever data the new classes arrived
+with, producing a backbone that no deployed device has.
+
+Two artifacts come out. `new_head_classifier.tflite` (plus `.gz` and its own
+labels) is the over-the-air payload. `new_head.tflite` is the monolithic
+backbone-plus-head graph, converted alongside so the board can be tested without
+changing firmware that runs a single network.
+
+#### Backbone identity
+
+Whenever `--split_head` writes a backbone it also writes
+`<backbone>.tflite.fingerprint.json`, a SHA-256 over the backbone's float
+weights in graph order. A head-only conversion recomputes that fingerprint from
+its own checkpoint and refuses to proceed on a mismatch:
+
+```
+RuntimeError: Backbone mismatch: probe.keras carries backbone a3e37e27... but
+release/MyModel_INT8_backbone.tflite was built from 121c0428.... A head
+calibrated against a different backbone will not work on a device flashed with
+this one. Was the backbone left frozen during fine-tuning?
+```
+
+That is the check for the mistake this workflow invites: fine-tuning that
+quietly unfreezes the backbone produces a head which scores well in testing and
+is useless on the device. `--allow_backbone_mismatch` overrides it for
+diagnostics and marks the conversion report accordingly.
+
+The chained gate still applies, measured against the flashed backbone rather
+than a freshly built one.
+
 ### Running a split model
 
 Evaluation takes the head as a second argument and chains the two:
@@ -112,9 +157,10 @@ python -m birdnet_stm32 evaluate \
 
 ### Making the head small
 
-The head is a single `Dense` of `embedding_dim × num_classes`. For the default
-256-d embedding and 30 species that is 7,680 INT8 weights, plus roughly 2 kB of
-TFLite flatbuffer overhead that does not shrink with the model.
+The head is a single `Dense` of `embedding_dim × num_classes`, so its weight
+count is exactly that product — a 256-d embedding driving 100 outputs is 25,600
+INT8 weights. On top sits roughly 2 kB of TFLite flatbuffer overhead that does
+not shrink with the model, which dominates for small class counts.
 
 `--prune` targets the head by default and `--prune_head_sparsity` compresses it
 harder than the backbone, which is what makes the gzipped head small — zeroed
@@ -197,6 +243,8 @@ After conversion, the script reports:
 | `--batch_validate` | 0 | Run validation N times with different seeds, report worst-case |
 | `--export_onnx` | off | Export and validate ONNX (requires `tf2onnx`, `onnx`, and `onnxruntime`) |
 | `--split_head` | off | Also emit the backbone/classifier pair (see [Backbone and classifier split](#backbone-and-classifier-split)) |
+| `--backbone_path` | None | Convert only the head against this already-quantized backbone (see [Updating the head against a flashed backbone](#updating-the-head-against-a-flashed-backbone)); mutually exclusive with `--split_head` |
+| `--allow_backbone_mismatch` | off | Proceed when the checkpoint's backbone does not match `--backbone_path`; diagnostics only |
 | `--report_json` | None | Save structured JSON conversion report |
 
 ## Quantization details

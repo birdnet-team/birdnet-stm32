@@ -10,13 +10,17 @@ tf = pytest.importorskip("tensorflow", reason="TensorFlow required for split tes
 
 from birdnet_stm32.conversion.quantize import convert_to_tflite
 from birdnet_stm32.conversion.split import (
+    backbone_fingerprint,
     count_parameters,
     embedding_dimension,
+    file_sha256,
     find_embedding_layer,
     gzip_file,
+    read_fingerprint,
     size_record,
     split_model,
     weight_sparsity,
+    write_fingerprint,
 )
 from birdnet_stm32.models.runners import ChainedTFLiteRunner, TFLiteRunner, load_model_runner
 
@@ -355,3 +359,173 @@ class TestSplitConversion:
 
         assert not list(tmp_path.glob("*.tflite"))
         assert not list(tmp_path.glob(".splitting-*"))
+
+
+# ---------------------------------------------------------------------------
+# Backbone identity and head-only conversion
+# ---------------------------------------------------------------------------
+
+
+class TestBackboneFingerprint:
+    """A head is only valid against the backbone it was calibrated on."""
+
+    def test_same_weights_give_the_same_fingerprint(self):
+        backbone_a, _ = split_model(_tiny_model(seed=3))
+        backbone_b, _ = split_model(_tiny_model(seed=3))
+        assert backbone_fingerprint(backbone_a) == backbone_fingerprint(backbone_b)
+
+    def test_different_weights_give_different_fingerprints(self):
+        backbone_a, _ = split_model(_tiny_model(seed=3))
+        backbone_b, _ = split_model(_tiny_model(seed=4))
+        assert backbone_fingerprint(backbone_a) != backbone_fingerprint(backbone_b)
+
+    def test_retraining_only_the_head_leaves_the_fingerprint_intact(self):
+        """The whole workflow rests on this: a new head, the same backbone."""
+        model = _tiny_model(seed=5)
+        before = backbone_fingerprint(split_model(model)[0])
+        head = model.get_layer("pred")
+        head.set_weights([w + 1.0 for w in head.get_weights()])
+        assert backbone_fingerprint(split_model(model)[0]) == before
+
+    def test_roundtrips_through_the_sidecar_file(self, tmp_path):
+        backbone, _ = split_model(_tiny_model(seed=6))
+        backbone_path = tmp_path / "backbone.tflite"
+        backbone_path.write_bytes(b"quantized-backbone")
+        path = str(backbone_path)
+        fingerprint = backbone_fingerprint(backbone)
+        write_fingerprint(path, fingerprint, embedding_dimension(backbone))
+        recorded = read_fingerprint(path)
+        assert recorded["weights_sha256"] == fingerprint
+        assert recorded["artifact_sha256"] == file_sha256(path)
+
+    def test_missing_sidecar_reads_as_none(self, tmp_path):
+        assert read_fingerprint(str(tmp_path / "absent.tflite")) is None
+
+
+class TestHeadOnlyConversion:
+    """Fine-tuning must reuse the flashed backbone byte for byte."""
+
+    def _args(self, tmp_path, backbone_path, **overrides):
+        import argparse
+
+        defaults = dict(
+            output_path=str(tmp_path / "probe.tflite"),
+            checkpoint_path=str(tmp_path / "probe.keras"),
+            backbone_path=backbone_path,
+            allow_backbone_mismatch=False,
+            quantization="ptq",
+            per_tensor=False,
+            min_cosine_sim=0.90,
+            min_cosine_p05=0.80,
+        )
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
+    def _gen(self, samples):
+        def gen():
+            for row in samples:
+                yield [row[None]]
+
+        return gen
+
+    def _flashed_backbone(self, tmp_path, model, gen):
+        """Quantize and fingerprint a backbone the way a release would."""
+        backbone, _ = split_model(model)
+        path = str(tmp_path / "flashed_backbone.tflite")
+        convert_to_tflite(backbone, gen, path, quantization="ptq", per_tensor=False)
+        write_fingerprint(path, backbone_fingerprint(backbone), embedding_dimension(backbone))
+        return path
+
+    def _retrained_head(self, base_model, num_classes, seed):
+        """Return a model with the same frozen backbone and a fresh head."""
+        embedding = base_model.get_layer("gap").output
+        tf.keras.utils.set_random_seed(seed)
+        outputs = tf.keras.layers.Dense(num_classes, activation="sigmoid", name="new_pred")(embedding)
+        return tf.keras.Model(base_model.input, outputs, name="probe")
+
+    def test_emits_only_a_head_and_verifies_identity(self, tmp_path):
+        from birdnet_stm32.cli.convert import _convert_head_only
+
+        base = _tiny_model(seed=12, width=64)
+        samples = np.random.default_rng(13).standard_normal((24, 8, 8, 4)).astype(np.float32)
+        gen = self._gen(samples)
+        backbone_path = self._flashed_backbone(tmp_path, base, gen)
+        probe = self._retrained_head(base, 10, seed=14)
+        cfg = {"class_names": [f"new_{i}" for i in range(10)], "num_classes": 10}
+
+        report = _convert_head_only(probe, cfg, self._args(tmp_path, backbone_path), gen, gen)
+
+        assert (tmp_path / "probe_classifier.tflite").is_file()
+        assert (tmp_path / "probe_classifier.tflite.gz").is_file()
+        assert (tmp_path / "probe_classifier_labels.txt").read_text().split() == cfg["class_names"]
+        # The backbone is reused, never re-emitted beside the head.
+        assert not (tmp_path / "probe_backbone.tflite").exists()
+        assert report["mode"] == "head_only"
+        assert report["backbone_identity_verified"] is True
+        assert report["classifier_params"] == 64 * 10 + 10
+        assert report["chained_validation"]["cosine_mean"] > 0.9
+
+    def test_rejects_a_head_trained_on_a_moved_backbone(self, tmp_path):
+        """An unfrozen backbone during fine-tuning must not ship silently."""
+        from birdnet_stm32.cli.convert import _convert_head_only
+
+        base = _tiny_model(seed=15, width=64)
+        samples = np.random.default_rng(16).standard_normal((16, 8, 8, 4)).astype(np.float32)
+        gen = self._gen(samples)
+        backbone_path = self._flashed_backbone(tmp_path, base, gen)
+
+        drifted = _tiny_model(seed=15, width=64)
+        stem = drifted.get_layer("stem_conv")
+        stem.set_weights([w + 0.5 for w in stem.get_weights()])
+        probe = self._retrained_head(drifted, 10, seed=17)
+
+        with pytest.raises(RuntimeError, match="Backbone mismatch"):
+            _convert_head_only(probe, {}, self._args(tmp_path, backbone_path), gen, gen)
+        assert not list(tmp_path.glob("probe_classifier*"))
+        assert not list(tmp_path.glob(".head-only-*"))
+
+    def test_rejects_a_replaced_backbone_artifact(self, tmp_path):
+        from birdnet_stm32.cli.convert import _convert_head_only
+
+        base = _tiny_model(seed=24, width=64)
+        samples = np.random.default_rng(25).standard_normal((16, 8, 8, 4)).astype(np.float32)
+        gen = self._gen(samples)
+        backbone_path = self._flashed_backbone(tmp_path, base, gen)
+        replacement, _ = split_model(_tiny_model(seed=26, width=64))
+        convert_to_tflite(replacement, gen, backbone_path, quantization="ptq", per_tensor=False)
+        probe = self._retrained_head(base, 4, seed=27)
+
+        with pytest.raises(RuntimeError, match="Backbone mismatch"):
+            _convert_head_only(probe, {}, self._args(tmp_path, backbone_path), gen, gen)
+
+    def test_mismatch_can_be_forced_for_diagnostics(self, tmp_path):
+        from birdnet_stm32.cli.convert import _convert_head_only
+
+        base = _tiny_model(seed=18, width=64)
+        samples = np.random.default_rng(19).standard_normal((16, 8, 8, 4)).astype(np.float32)
+        gen = self._gen(samples)
+        backbone_path = self._flashed_backbone(tmp_path, base, gen)
+
+        drifted = _tiny_model(seed=18, width=64)
+        stem = drifted.get_layer("stem_conv")
+        stem.set_weights([w + 0.5 for w in stem.get_weights()])
+        probe = self._retrained_head(drifted, 4, seed=20)
+        args = self._args(tmp_path, backbone_path, allow_backbone_mismatch=True, min_cosine_sim=0, min_cosine_p05=0)
+
+        report = _convert_head_only(probe, {}, args, gen, gen)
+        assert report["backbone_identity_verified"] is False
+
+    def test_failed_gate_leaves_no_artifacts_behind(self, tmp_path):
+        from birdnet_stm32.cli.convert import _convert_head_only
+
+        base = _tiny_model(seed=21, width=64)
+        samples = np.random.default_rng(22).standard_normal((16, 8, 8, 4)).astype(np.float32)
+        gen = self._gen(samples)
+        backbone_path = self._flashed_backbone(tmp_path, base, gen)
+        probe = self._retrained_head(base, 6, seed=23)
+        args = self._args(tmp_path, backbone_path, min_cosine_sim=1.1)
+
+        with pytest.raises(RuntimeError, match="Head-only quality check failed"):
+            _convert_head_only(probe, {}, args, gen, gen)
+        assert not list(tmp_path.glob("probe_classifier*"))
+        assert not list(tmp_path.glob(".head-only-*"))
