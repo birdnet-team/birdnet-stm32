@@ -19,8 +19,8 @@ Design notes that matter for keeping accuracy:
   teacher-consistency losses used by QAT.
 * Checkpoint selection and early stopping only start once the ramp has
   finished, so the saved model is always at the requested sparsity.
-* The step ends with a held-out macro ROC-AUC comparison against the teacher
-  and fails if the drop exceeds ``--prune_max_auc_drop``.
+* The step ends with a held-out class-macro AP comparison against the teacher
+  and fails if the cmAP drop exceeds ``--prune_max_cmap_drop``.
 """
 
 import argparse
@@ -33,6 +33,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers
 
+from birdnet_stm32.evaluation.metrics import macro_cmap
 from birdnet_stm32.training.distillation import DistilledModel, all_layers, validate_loss_weights
 
 # Kernels below this size are the stem, the squeeze-and-excite projections and
@@ -594,62 +595,40 @@ def _collect_eval_batches(dataset: Iterable, max_samples: int) -> tuple[np.ndarr
     return np.concatenate(inputs)[:max_samples], np.concatenate(labels)[:max_samples]
 
 
-def macro_roc_auc(labels: np.ndarray, scores: np.ndarray) -> float:
-    """Return macro-averaged ROC-AUC over classes that have both label values.
-
-    Args:
-        labels: Multi-hot label matrix [N, C].
-        scores: Predicted probabilities [N, C].
-
-    Returns:
-        Mean per-class ROC-AUC, or ``nan`` when no class is scorable.
-    """
-    from sklearn.metrics import roc_auc_score
-
-    per_class = []
-    for index in range(labels.shape[1]):
-        column = labels[:, index]
-        positives = int(column.sum())
-        if positives == 0 or positives == column.size:
-            continue
-        per_class.append(float(roc_auc_score(column, scores[:, index])))
-    return float(np.mean(per_class)) if per_class else float("nan")
-
-
 def evaluate_accuracy_gate(
     teacher_model: tf.keras.Model,
     pruned_model: tf.keras.Model,
     dataset: Iterable,
     max_samples: int,
-    max_auc_drop: float,
+    max_cmap_drop: float,
     batch_size: int,
 ) -> dict:
-    """Compare pruned and unpruned macro ROC-AUC on identical validation data.
+    """Compare pruned and unpruned class-macro AP on identical validation data.
 
     Args:
         teacher_model: Frozen pre-pruning checkpoint.
         pruned_model: Masked deployment model.
         dataset: Validation dataset to sample from.
         max_samples: Number of validation samples to score.
-        max_auc_drop: Largest tolerated ROC-AUC regression.
+        max_cmap_drop: Largest tolerated cmAP regression.
         batch_size: Prediction batch size.
 
     Returns:
-        Dict with both AUCs, their difference, the tolerance, and a pass flag.
+        Dict with both cmAPs, their difference, the tolerance, and a pass flag.
     """
     inputs, labels = _collect_eval_batches(dataset, max_samples)
     baseline_scores = teacher_model.predict(inputs, batch_size=batch_size, verbose=0)
     pruned_scores = pruned_model.predict(inputs, batch_size=batch_size, verbose=0)
-    baseline_auc = macro_roc_auc(labels, baseline_scores)
-    pruned_auc = macro_roc_auc(labels, pruned_scores)
-    drop = baseline_auc - pruned_auc
+    baseline_cmap = macro_cmap(labels, baseline_scores)
+    pruned_cmap = macro_cmap(labels, pruned_scores)
+    drop = baseline_cmap - pruned_cmap
     return {
         "samples": int(len(inputs)),
-        "baseline_macro_roc_auc": baseline_auc,
-        "pruned_macro_roc_auc": pruned_auc,
-        "roc_auc_drop": float(drop),
-        "max_roc_auc_drop": float(max_auc_drop),
-        "passed": bool(np.isfinite(drop) and drop <= max_auc_drop),
+        "baseline_macro_cmap": baseline_cmap,
+        "pruned_macro_cmap": pruned_cmap,
+        "cmap_drop": float(drop),
+        "max_cmap_drop": float(max_cmap_drop),
+        "passed": bool(np.isfinite(drop) and drop <= max_cmap_drop),
     }
 
 
@@ -686,8 +665,8 @@ def run_pruning(args: argparse.Namespace) -> None:
         raise ValueError("--prune_min_layer_params must be positive")
     if args.prune_eval_samples <= 0:
         raise ValueError("--prune_eval_samples must be positive")
-    if args.prune_max_auc_drop < 0:
-        raise ValueError("--prune_max_auc_drop must be non-negative")
+    if args.prune_max_cmap_drop < 0:
+        raise ValueError("--prune_max_cmap_drop must be non-negative")
     if args.prune_head_sparsity != -1.0 and not 0.0 <= args.prune_head_sparsity < 1.0:
         raise ValueError("--prune_head_sparsity must be -1 or in [0, 1)")
 
@@ -890,7 +869,7 @@ def run_pruning(args: argparse.Namespace) -> None:
         pruned_model,
         val_dataset,
         max_samples=args.prune_eval_samples,
-        max_auc_drop=args.prune_max_auc_drop,
+        max_cmap_drop=args.prune_max_cmap_drop,
         batch_size=args.batch_size,
     )
     report.update(
@@ -918,9 +897,9 @@ def run_pruning(args: argparse.Namespace) -> None:
     cfg.save(out_cfg_path)
 
     print(
-        f"[prune] Macro ROC-AUC on {gate['samples']} held-out samples: "
-        f"baseline={gate['baseline_macro_roc_auc']:.4f} pruned={gate['pruned_macro_roc_auc']:.4f} "
-        f"drop={gate['roc_auc_drop']:+.4f} (tolerance {gate['max_roc_auc_drop']:.4f})"
+        f"[prune] Class-macro AP on {gate['samples']} held-out samples: "
+        f"baseline={gate['baseline_macro_cmap']:.4f} pruned={gate['pruned_macro_cmap']:.4f} "
+        f"drop={gate['cmap_drop']:+.4f} (tolerance {gate['max_cmap_drop']:.4f})"
     )
     print(f"[prune] Pruned checkpoint saved to {pruned_path}")
     print(f"[prune] Sparsity report saved to {report_path}")
@@ -928,8 +907,8 @@ def run_pruning(args: argparse.Namespace) -> None:
 
     if not gate["passed"]:
         raise RuntimeError(
-            f"Pruning accuracy gate failed: macro ROC-AUC dropped by {gate['roc_auc_drop']:.4f}, "
-            f"above the {gate['max_roc_auc_drop']:.4f} tolerance. The checkpoint was kept for inspection "
+            f"Pruning accuracy gate failed: class-macro AP dropped by {gate['cmap_drop']:.4f}, "
+            f"above the {gate['max_cmap_drop']:.4f} tolerance. The checkpoint was kept for inspection "
             f"at {pruned_path}. Lower --prune_final_sparsity, raise --epochs, or use "
             "--prune_scope global to let redundant layers absorb more of the budget."
         )

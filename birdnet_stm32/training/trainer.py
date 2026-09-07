@@ -8,14 +8,24 @@ import tensorflow as tf
 
 VALID_OPTIMIZERS = ("adam", "sgd", "adamw")
 
-# Internal training defaults: keep the CLI small and pick the values that are
-# right for imbalanced multi-label bioacoustics.
-#
-# Ranking quality, not loss, is what a detector is judged on, and with long-tail
-# class priors val_loss keeps improving after val ranking has peaked — so
-# checkpointing and early stopping track val ROC-AUC (higher is better).
-_MONITOR = "val_roc_auc"
+# Exact class-macro AP selects float runs; QAT selects converted INT8 AP.
+_MONITOR = "val_cmap"
 _MONITOR_MODE = "max"
+
+# Validation metrics where a larger value is better. Anything not listed is
+# treated as a loss and minimised. Deriving this from a name suffix is how a
+# checkpoint selector silently inverts when a new metric is added.
+_MAXIMISED_METRICS = frozenset(
+    {"roc_auc", "cmap", "int8_cmap", "deployment_cmap", "pr_auc", "auc", "accuracy", "precision", "recall"}
+)
+
+
+def monitor_mode(monitor: str) -> str:
+    """Return ``"max"`` or ``"min"`` for a validation metric name."""
+    stem = monitor[4:] if monitor.startswith("val_") else monitor
+    return "max" if stem in _MAXIMISED_METRICS else "min"
+
+
 # A short linear ramp before cosine decay; the frontend and BN statistics are
 # still settling in the first epochs and a full-rate Adam step there is wasteful.
 _WARMUP_EPOCHS = 2
@@ -126,6 +136,7 @@ def train_model(
     checkpoint_monitor: str = _MONITOR,
     checkpoint_mode: str = _MONITOR_MODE,
     checkpoint_start_epoch: int = 0,
+    checkpoint_managed: bool = False,
 ) -> tf.keras.callbacks.History:
     """Train a model with cosine LR schedule, early stopping, and checkpointing.
 
@@ -133,7 +144,7 @@ def train_model(
     Soundscape recordings are inherently multi-label even when the source
     label is a single species, so we always optimise per-class probabilities.
 
-    Checkpointing and early stopping track validation ROC-AUC; the best model
+    Checkpointing and early stopping track validation cmAP; the best model
     is saved as a full .keras file.
 
     Args:
@@ -163,6 +174,7 @@ def train_model(
             and early stopping.
         checkpoint_mode: Whether a larger (``max``) or smaller (``min``)
             monitored value is better.
+        checkpoint_managed: An external callback owns checkpoint artifacts (INT8 selection).
         checkpoint_start_epoch: First epoch (0-based) eligible for checkpoint
             selection and early stopping. Compression schedules use this so a
             model that has not yet reached its target sparsity or quantization
@@ -233,10 +245,26 @@ def train_model(
         name="roc_auc",
     )
 
+    # Class-macro average precision, tracked alongside ROC-AUC because the two
+    # do not move together on a long-tail multi-label problem. Measured on the
+    # 100-output v0.2 schema, quantization cost 0.005 val ROC-AUC and 0.035
+    # catalog cmAP: a run that looks healthy on ROC-AUC can be losing an order
+    # of magnitude more of what the model is actually selected on. Threshold-free
+    # ROC-AUC is dominated by the easy negative mass and saturates; AP is not.
+    #
+    # PR-AUC is only a training diagnostic. An exact AP callback supplies the
+    # selection metric before checkpointing and early stopping run.
+    pr_metric = tf.keras.metrics.AUC(
+        curve="PR",
+        multi_label=True,
+        num_labels=num_labels,
+        name="pr_auc",
+    )
+
     model.compile(
         optimizer=opt,
         loss=loss_fn,
-        metrics=[auc_metric],
+        metrics=[auc_metric, pr_metric],
         # Audio models contain custom frontend and fake-quant operators whose
         # XLA compilation is both fragile and very memory hungry on long raw
         # inputs. Standard graph execution is faster end-to-end here.
@@ -263,7 +291,7 @@ def train_model(
             import csv
 
             write_header = not self._header_written
-            with open(self.csv_path, "a", newline="") as f:
+            with open(self.csv_path, "w" if write_header else "a", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=["epoch"] + sorted(logs.keys()))
                 if write_header:
                     writer.writeheader()
@@ -291,12 +319,6 @@ def train_model(
                     checkpoint_sync()
                 self.target.save(checkpoint_path)
 
-        def on_train_end(self, logs=None):
-            # EarlyStopping restores the best shared weights before this runs.
-            if checkpoint_sync is not None:
-                checkpoint_sync()
-            self.target.save(checkpoint_path)
-
     csv_path = checkpoint_path.replace(".keras", "_history.csv")
 
     class _DelayedModelCheckpoint(tf.keras.callbacks.ModelCheckpoint):
@@ -319,20 +341,23 @@ def train_model(
     else:
         checkpoint_callback = _SharedWeightsCheckpoint(checkpoint_model)
 
-    callbacks = [
+    from birdnet_stm32.training.validation import ExactCmap, FileCmap
+
+    callbacks = list(extra_callbacks or [])
+    if not any(isinstance(callback, FileCmap) for callback in callbacks):
+        callbacks.insert(0, ExactCmap(val_dataset, val_steps))
+    callbacks += [
         tf.keras.callbacks.EarlyStopping(
             monitor=checkpoint_monitor,
             patience=patience,
-            restore_best_weights=True,
+            restore_best_weights=not checkpoint_managed,
             mode=checkpoint_mode,
             start_from_epoch=checkpoint_start_epoch,
         ),
-        checkpoint_callback,
+        *([] if checkpoint_managed else [checkpoint_callback]),
         _SaveTrainState(),
         _CSVHistoryLogger(csv_path),
     ]
-    if extra_callbacks:
-        callbacks.extend(extra_callbacks)
     history = model.fit(
         train_dataset,
         validation_data=val_dataset,
@@ -383,15 +408,18 @@ def _save_training_curves(history: tf.keras.callbacks.History, path: str) -> Non
     ax.legend()
     ax.grid(True, alpha=0.3)
 
-    # ROC-AUC
+    # Plot the task metric that selected the checkpoint.
     ax = axes[1]
-    if "roc_auc" in hist:
-        ax.plot(epochs_range, hist["roc_auc"], label="train")
-    if "val_roc_auc" in hist:
-        ax.plot(epochs_range, hist["val_roc_auc"], label="val")
+    for name, label in [
+        ("val_cmap", "float"),
+        ("val_deployment_cmap", "deployment float"),
+        ("val_int8_cmap", "converted INT8"),
+    ]:
+        if name in hist:
+            ax.plot(epochs_range, hist[name], label=label)
     ax.set_xlabel("Epoch")
-    ax.set_ylabel("ROC-AUC")
-    ax.set_title("ROC-AUC")
+    ax.set_ylabel("cMAP")
+    ax.set_title("Exact validation cMAP")
     ax.legend()
     ax.grid(True, alpha=0.3)
 

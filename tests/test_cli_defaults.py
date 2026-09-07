@@ -57,7 +57,7 @@ class TestCompressionStepDefaults:
         assert args.prune_final_sparsity == pytest.approx(0.5)
         assert args.prune_scope == "layerwise"
         assert args.prune_ramp_fraction == pytest.approx(0.5)
-        assert args.prune_max_auc_drop == pytest.approx(0.005)
+        assert args.prune_max_cmap_drop == pytest.approx(0.02)
 
     def test_qat_preserves_pruning_masks_by_default(self):
         assert _train("--qat").qat_preserve_sparsity is True

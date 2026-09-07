@@ -15,7 +15,7 @@ from birdnet_stm32.training.pruning import (
     collect_sparsity_masks,
     compute_masks,
     evaluate_accuracy_gate,
-    macro_roc_auc,
+    macro_cmap,
     mask_sparsity,
     polynomial_sparsity,
     select_prunable_layers,
@@ -534,15 +534,15 @@ class TestReportingAndGate:
         assert report["layers"][0]["layer"] == "expand"
         assert 0.0 < report["model_sparsity"] < report["prunable_sparsity"]
 
-    def test_macro_roc_auc_skips_single_valued_classes(self):
+    def test_macro_cmap_keeps_full_class_contract(self):
         labels = np.array([[1, 0], [0, 0], [1, 0], [0, 0]], dtype=np.float32)
         scores = np.array([[0.9, 0.5], [0.1, 0.5], [0.8, 0.5], [0.2, 0.5]], dtype=np.float32)
-        assert macro_roc_auc(labels, scores) == pytest.approx(1.0)
+        assert macro_cmap(labels, scores) == pytest.approx(0.5)
 
-    def test_macro_roc_auc_is_nan_without_a_scorable_class(self):
+    def test_macro_cmap_is_zero_without_positives(self):
         labels = np.zeros((4, 2), dtype=np.float32)
         scores = np.full((4, 2), 0.5, dtype=np.float32)
-        assert np.isnan(macro_roc_auc(labels, scores))
+        assert macro_cmap(labels, scores) == 0.0
 
     def _gate_dataset(self):
         rng = np.random.default_rng(6)
@@ -554,7 +554,7 @@ class TestReportingAndGate:
         model = _tiny_model()
         result = evaluate_accuracy_gate(model, model, self._gate_dataset(), 8, 0.005, 4)
         assert result["passed"] is True
-        assert result["roc_auc_drop"] == pytest.approx(0.0)
+        assert result["cmap_drop"] == pytest.approx(0.0)
         assert result["samples"] == 8
 
     def test_gate_fails_when_the_pruned_model_regresses(self):
@@ -563,9 +563,9 @@ class TestReportingAndGate:
         chance = _StubModel(np.full_like(labels, 0.5))
         result = evaluate_accuracy_gate(perfect, chance, self._gate_dataset(), 8, 0.005, 4)
 
-        assert result["baseline_macro_roc_auc"] == pytest.approx(1.0)
-        assert result["pruned_macro_roc_auc"] == pytest.approx(0.5)
-        assert result["roc_auc_drop"] == pytest.approx(0.5)
+        assert result["baseline_macro_cmap"] == pytest.approx(1.0)
+        assert result["pruned_macro_cmap"] == pytest.approx(0.5)
+        assert result["cmap_drop"] == pytest.approx(0.5)
         assert result["passed"] is False
 
     def test_gate_passes_a_regression_inside_the_tolerance(self):
@@ -574,13 +574,13 @@ class TestReportingAndGate:
         nudged = _StubModel(labels * 0.9 + 0.05)
         result = evaluate_accuracy_gate(perfect, nudged, self._gate_dataset(), 8, 0.005, 4)
 
-        assert result["roc_auc_drop"] == pytest.approx(0.0)
+        assert result["cmap_drop"] == pytest.approx(0.0)
         assert result["passed"] is True
 
     def test_gate_reports_the_configured_tolerance(self):
         model = _tiny_model()
         result = evaluate_accuracy_gate(model, model, self._gate_dataset(), 8, 0.02, 4)
-        assert result["max_roc_auc_drop"] == pytest.approx(0.02)
+        assert result["max_cmap_drop"] == pytest.approx(0.02)
 
     def test_gate_rejects_an_empty_dataset(self):
         empty = tf.data.Dataset.from_tensor_slices(

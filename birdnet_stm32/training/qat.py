@@ -471,7 +471,19 @@ def run_qat(args: argparse.Namespace) -> None:
     from birdnet_stm32.training.config import ModelConfig
     from birdnet_stm32.training.pruning import SparsityMaskEnforcer, collect_sparsity_masks
     from birdnet_stm32.training.trainer import train_model
+    from birdnet_stm32.training.validation import Int8Selection
 
+    if not args.checkpoint_path.endswith(".keras"):
+        raise ValueError("QAT checkpoint must end in .keras")
+    qat_path = args.checkpoint_path.replace(".keras", "_qat.keras")
+    if os.path.exists(qat_path) or os.path.exists(qat_path.replace(".keras", "_selection.json")):
+        raise FileExistsError("QAT outputs already exist; use a new run directory")
+    if args.resume:
+        raise ValueError("QAT resume is unsupported: start from an explicit checkpoint in a new output directory")
+    if args.mixed_precision:
+        raise ValueError("QAT requires float32 training for INT8 grid simulation")
+    if not args.data_path_val:
+        raise ValueError("QAT requires an explicit, disjoint --data_path_val")
     if not os.path.isfile(args.checkpoint_path):
         raise FileNotFoundError(f"QAT requires a pretrained model: {args.checkpoint_path}")
     print(f"[QAT] Loading pretrained model from {args.checkpoint_path}")
@@ -516,6 +528,9 @@ def run_qat(args: argparse.Namespace) -> None:
         train_paths, val_paths = train_paths[:split_idx], train_paths[split_idx:]
     if not train_paths or not val_paths:
         raise ValueError("QAT requires non-empty training and validation datasets")
+
+    if set(map(os.path.realpath, train_paths)) & set(map(os.path.realpath, val_paths)):
+        raise ValueError("QAT training and validation manifests overlap")
 
     # Conversion samples the physical training manifest, never the optionally
     # duplicated epoch-balancing list used by the trainer.
@@ -563,6 +578,36 @@ def run_qat(args: argparse.Namespace) -> None:
     n_frozen = freeze_batch_norm(deployment_model)
     print(f"[QAT] Frozen {n_frozen} BatchNorm layers")
 
+    calibration_count = int(args.qat_calibration_samples)
+    calibration_paths = stratified_sample_paths(calibration_source_paths, calibration_count, seed=42)
+    if len(calibration_paths) != calibration_count:
+        raise ValueError(
+            f"QAT requested {calibration_count} calibration paths but only {len(calibration_paths)} are available"
+        )
+    calibration_data = list(
+        representative_data_gen(
+            calibration_paths,
+            cfg.to_dict(),
+            num_samples=calibration_count,
+        )
+    )
+    if len(calibration_data) != calibration_count:
+        raise ValueError("Calibration skipped files; refusing to train on an incomplete manifest")
+    activation_ranges = calibrate_activation_ranges(
+        deployment_model,
+        calibration_data,
+        max_samples=calibration_count,
+        percentile=float(getattr(args, "qat_calibration_percentile", 100.0)),
+    )
+    if args.qat_calibration_percentile < 100.0:
+        deployment_model = bound_frontend(deployment_model, activation_ranges)
+        # Re-observe the bounded graph: these are the values conversion sees.
+        activation_ranges = calibrate_activation_ranges(
+            deployment_model,
+            calibration_data,
+            max_samples=calibration_count,
+        )
+    print(f"[QAT] Activation ranges use the converter's exact stratified {calibration_count}-sample manifest (seed=42)")
     # A pruned checkpoint carries its mask as exact zeros. Gradient updates
     # would quietly refill those slots, so re-apply the mask after every step.
     extra_callbacks: list[tf.keras.callbacks.Callback] = []
@@ -579,23 +624,6 @@ def run_qat(args: argparse.Namespace) -> None:
                 f"({pruned:,}/{total:,} weights held at zero)"
             )
 
-    calibration_count = int(args.qat_calibration_samples)
-    calibration_paths = stratified_sample_paths(calibration_source_paths, calibration_count, seed=42)
-    if len(calibration_paths) != calibration_count:
-        raise ValueError(
-            f"QAT requested {calibration_count} calibration paths but only {len(calibration_paths)} are available"
-        )
-    calibration_data = representative_data_gen(
-        calibration_paths,
-        cfg.to_dict(),
-        num_samples=calibration_count,
-    )
-    activation_ranges = calibrate_activation_ranges(
-        deployment_model,
-        calibration_data,
-        max_samples=calibration_count,
-    )
-    print(f"[QAT] Activation ranges use the converter's exact stratified {calibration_count}-sample manifest (seed=42)")
     loss_weights = {
         "distillation_weight": float(args.qat_distillation_weight),
         "cosine_weight": float(args.qat_cosine_weight),
@@ -618,6 +646,23 @@ def run_qat(args: argparse.Namespace) -> None:
     with open(ranges_path, "w", encoding="utf-8") as handle:
         json.dump({name: {"min": lo, "max": hi} for name, (lo, hi) in activation_ranges.items()}, handle, indent=2)
 
+    cfg.save(qat_path.replace(".keras", "_model_config.json"))
+    with open(qat_path.replace(".keras", "_labels.txt"), "w", encoding="utf-8") as handle:
+        handle.write("\n".join(classes) + "\n")
+    selector = Int8Selection(
+        deployment_model,
+        teacher_model,
+        calibration_data,
+        qat_path,
+        sync=lambda: sync_frontend_weights(qat_model, deployment_model),
+        files=val_paths,
+        classes=classes,
+        cfg=cfg.to_dict(),
+        overlap=args.validation_overlap,
+        pooling=args.validation_pooling,
+        batch_size=args.batch_size,
+    )
+    extra_callbacks.append(selector)
     steps_per_epoch = max(1, math.ceil(len(train_paths) / float(args.batch_size)))
     val_steps = max(1, math.ceil(len(val_paths) / float(args.batch_size)))
     print(f"[QAT] Training on {len(train_paths)} files, validating on {len(val_paths)} files")
@@ -638,17 +683,11 @@ def run_qat(args: argparse.Namespace) -> None:
         gradient_clip_norm=args.grad_clip,
         checkpoint_model=deployment_model,
         checkpoint_sync=lambda: sync_frontend_weights(qat_model, deployment_model),
-        # Which epoch to keep. The worst-sample cosine loss is a *parity*
-        # measure; minimising it was the right call for a backbone whose p05
-        # parity was the failure. When parity is comfortable and per-class
-        # precision is the constraint, that criterion actively selects the
-        # wrong epoch: cosine tail loss falls monotonically while teacher KL,
-        # which is what preserves the output distribution, rises. Selecting on
-        # the metric that is not failing is how a run converges on a checkpoint
-        # nobody wanted.
-        checkpoint_monitor=getattr(args, "qat_checkpoint_monitor", "") or "val_distillation_kl",
-        checkpoint_mode="max" if getattr(args, "qat_checkpoint_monitor", "").endswith("roc_auc") else "min",
+        checkpoint_monitor="val_int8_cmap",
+        checkpoint_mode="max",
+        checkpoint_managed=True,
         extra_callbacks=extra_callbacks,
     )
-    print(f"[QAT] Clean quantization-ready checkpoint saved to {qat_path}")
+    print(f"[QAT] Best converted INT8 cMAP: {selector.best:.6f}; checkpoint: {qat_path}")
+    print(f"[QAT] Selected development TFLite: {selector.int8_path}")
     print(f"[QAT] Activation calibration ranges saved to {ranges_path}")

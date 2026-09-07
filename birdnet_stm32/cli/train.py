@@ -280,6 +280,19 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true", default=False, help="Resume training from checkpoint")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for deterministic training")
 
+    parser.add_argument(
+        "--validation_overlap",
+        type=float,
+        default=None,
+        help="File validation overlap in seconds (default: half the model chunk duration).",
+    )
+    parser.add_argument(
+        "--validation_pooling",
+        choices=["max", "avg", "lme"],
+        default="max",
+        help="File validation pooling for exact cMAP checkpoint selection.",
+    )
+
     # -- Tuning, pruning & QAT -----------------------------------------------
     parser.add_argument(
         "--tune", action="store_true", default=False, help="Run Optuna hyperparameter search instead of single training"
@@ -298,6 +311,12 @@ def get_args() -> argparse.Namespace:
         help="Exact stratified samples used for QAT ranges and final INT8 calibration",
     )
     parser.add_argument(
+        "--qat_calibration_percentile",
+        type=float,
+        default=100.0,
+        help="Percentile in (50, 100] for persistent internal frontend bounds; 100 leaves it unbounded.",
+    )
+    parser.add_argument(
         "--qat_distillation_weight",
         type=float,
         default=1.0,
@@ -314,19 +333,6 @@ def get_args() -> argparse.Namespace:
         type=float,
         default=0.75,
         help="QAT worst-sample teacher/student cosine-loss weight",
-    )
-    parser.add_argument(
-        "--qat_checkpoint_monitor",
-        type=str,
-        default="",
-        help=(
-            "Validation metric deciding which QAT epoch is kept. Defaults to "
-            "val_distillation_kl, which favours teacher fidelity and so per-class "
-            "precision. Use val_distillation_cosine_tail_loss instead when numerical "
-            "parity is the binding constraint rather than accuracy; on a backbone whose "
-            "parity is already comfortable the two criteria move in opposite directions, "
-            "and selecting on parity keeps the worst epoch for cmAP."
-        ),
     )
     parser.add_argument(
         "--qat_cosine_tail_fraction",
@@ -393,10 +399,17 @@ def get_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--prune_max_auc_drop",
+        "--prune_max_cmap_drop",
+        dest="prune_max_cmap_drop",
         type=float,
-        default=0.005,
-        help="Largest tolerated macro ROC-AUC regression before pruning fails",
+        default=0.02,
+        help=(
+            "Largest tolerated class-macro AP regression before pruning fails. This gate "
+            "measured macro ROC-AUC before, with a 0.005 tolerance; cmAP moves roughly four "
+            "times as far for the same damage (quantizing v1.1 cost 0.0085 ROC-AUC but "
+            "0.0354 cmAP), so the tolerance is rescaled to keep the gate about as strict as "
+            "it was."
+        ),
     )
     parser.add_argument(
         "--prune_eval_samples",
@@ -667,6 +680,19 @@ def main():
     cfg_path = os.path.splitext(args.checkpoint_path)[0] + "_model_config.json"
     cfg.save(cfg_path)
     print(f"Saved model config to '{cfg_path}'")
+
+    from birdnet_stm32.training.validation import FileCmap
+
+    extra_callbacks.append(
+        FileCmap(
+            val_paths,
+            classes,
+            cfg.to_dict(),
+            overlap=args.validation_overlap,
+            pooling=args.validation_pooling,
+            batch_size=args.batch_size,
+        )
+    )
 
     # Train
     print("Starting training...")

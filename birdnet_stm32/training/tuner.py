@@ -6,13 +6,15 @@ import argparse
 import math
 import os
 
+import numpy as np
 import optuna
 import tensorflow as tf
 
-from birdnet_stm32.data.dataset import load_file_paths_from_directory, upsample_minority_classes
+from birdnet_stm32.data.dataset import load_classes_file, load_file_paths_from_directory, upsample_minority_classes
 from birdnet_stm32.data.generator import load_dataset
 from birdnet_stm32.models.dscnn import build_dscnn_model
 from birdnet_stm32.training.trainer import compute_hop_length, train_model
+from birdnet_stm32.training.validation import FileCmap
 
 
 def _build_search_space(trial: optuna.Trial, args: argparse.Namespace) -> dict:
@@ -49,24 +51,30 @@ def _build_search_space(trial: optuna.Trial, args: argparse.Namespace) -> dict:
 
 
 def _objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
-    """Optuna objective: train one configuration and return best val ROC-AUC.
+    """Optuna objective: train one configuration and return best val cmAP.
 
     Args:
         trial: Optuna trial object.
         args: Base CLI arguments.
 
     Returns:
-        Best validation ROC-AUC achieved during training.
+        Best validation cmAP achieved during training.
     """
     hp = _build_search_space(trial, args)
 
     compute_hop_length(args.sample_rate, args.chunk_duration, args.spec_width)
 
     # Load file paths
-    file_paths, classes = load_file_paths_from_directory(args.data_path_train)
-    split_idx = int(len(file_paths) * (1 - args.val_split))
-    train_paths = file_paths[:split_idx]
-    val_paths = file_paths[split_idx:]
+    requested_classes = load_classes_file(args.classes_file) if args.classes_file else None
+    file_paths, classes = load_file_paths_from_directory(args.data_path_train, classes=requested_classes)
+    if args.data_path_val:
+        train_paths = file_paths
+        val_paths, _ = load_file_paths_from_directory(args.data_path_val, classes=classes)
+    else:
+        rng = np.random.default_rng(args.seed)
+        rng.shuffle(file_paths)
+        split_idx = int(len(file_paths) * (1 - args.val_split))
+        train_paths, val_paths = file_paths[:split_idx], file_paths[split_idx:]
 
     if args.upsample_ratio and 0 < args.upsample_ratio < 1.0:
         train_paths = upsample_minority_classes(train_paths, classes, args.upsample_ratio)
@@ -151,26 +159,36 @@ def _objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
         weight_decay=hp["weight_decay"] if hp["optimizer"] == "adamw" else 0.0,
         loss_fn=loss_fn,
         gradient_clip_norm=hp["grad_clip"],
+        extra_callbacks=[
+            FileCmap(
+                val_paths,
+                classes,
+                vars(args),
+                overlap=args.validation_overlap,
+                pooling=args.validation_pooling,
+                batch_size=hp["batch_size"],
+            )
+        ],
     )
 
-    best_roc_auc = max(history.history.get("val_roc_auc", [0.0]))
+    best_cmap = max(history.history.get("val_cmap", [0.0]))
 
     # Prune unpromising trials early (report after each epoch via history)
-    for epoch_idx, val_auc in enumerate(history.history.get("val_roc_auc", [])):
-        trial.report(val_auc, epoch_idx)
+    for epoch_idx, val_cmap in enumerate(history.history.get("val_cmap", [])):
+        trial.report(val_cmap, epoch_idx)
         if trial.should_prune():
             raise optuna.TrialPruned()
 
     # Clear Keras session to free GPU memory between trials
     tf.keras.backend.clear_session()
 
-    return best_roc_auc
+    return best_cmap
 
 
 def run_tuning(args: argparse.Namespace) -> None:
     """Run Optuna hyperparameter search.
 
-    Creates an Optuna study that maximizes val_roc_auc. After all trials,
+    Creates an Optuna study that maximizes val_cmap. After all trials,
     prints the best hyperparameters and saves them as a JSON file alongside
     the checkpoint directory.
 
@@ -188,7 +206,7 @@ def run_tuning(args: argparse.Namespace) -> None:
     # Report results
     print("\n" + "=" * 60)
     print("Optuna tuning complete")
-    print(f"  Best val_roc_auc: {study.best_value:.4f}")
+    print(f"  Best val_cmap: {study.best_value:.4f}")
     print(f"  Best trial: #{study.best_trial.number}")
     print("  Best hyperparameters:")
     for key, value in study.best_trial.params.items():

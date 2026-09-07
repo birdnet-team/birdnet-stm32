@@ -28,7 +28,7 @@ def stratified_sample_paths(
     """Select an exact, deterministic, class-balanced audio manifest."""
     excluded = exclude or set()
     grouped: dict[str, list[str]] = defaultdict(list)
-    for path in file_paths:
+    for path in sorted(set(file_paths)):
         if path not in excluded:
             grouped[os.path.basename(os.path.dirname(path))].append(path)
 
@@ -197,7 +197,7 @@ def convert_to_tflite(
 
     tflite_model = converter.convert()
 
-    # Verify float32 I/O was preserved (INT8 inputs would destroy audio precision)
+    # Verify the public float32 I/O contract; audio is still quantized internally.
     interpreter = tf.lite.Interpreter(model_content=tflite_model)
     interpreter.allocate_tensors()
     in_dtype = interpreter.get_input_details()[0]["dtype"]
