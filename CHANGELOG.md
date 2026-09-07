@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- QAT checkpoints now maximize **exact converted INT8 file cMAP**, using the
+  CLI evaluator with max pooling and half-window overlap by default. Epoch zero
+  is eligible. Selected Keras and TFLite artifacts are kept together, with
+  hashes, calibration identity, epoch history and loss against untouched float
+  in a selection report. QAT requires explicit disjoint validation data and a
+  new output location; proxy checkpoint-monitor overrides are removed.
+- Standard CLI training and tuning select exact file cMAP. Library training
+  computes exact chunk cMAP when no file manifest is supplied. Approximate
+  Keras PR-AUC is named `pr_auc` and remains a diagnostic. Pruning uses the same
+  macro-AP implementation and full class denominator as evaluation;
+  `--prune_max_auc_drop` is replaced by `--prune_max_cmap_drop`.
+- Percentile calibration now serializes real internal frontend bounds into
+  the deployment model, then recalibrates that bounded graph. Waveform and
+  classifier ranges are not percentile-clipped. The default p100 remains
+  unbounded. This fixes the previous training-only clip disappearing at export.
+
+### Fixed
+
+- Keep BatchNorm frozen in cloned QAT frontends; simulate sigmoid logit
+  quantization and the fixed TFLite 1/256 probability grid. Frozen outer
+  convolution/dense kernels also receive deployment quantization noise.
+- Compute validation metrics before checkpoint/early-stop callbacks and never
+  overwrite a selected shared checkpoint at training end. Fresh runs truncate
+  old CSV headers. Calibration sampling is independent of incoming path order
+  and rejects incomplete QAT manifests.
+- Consolidate Magpie RT experiments around an isolated driver that stops on
+  failure, preserves the selected INT8 bytes and leaves catalog-test data for
+  final evaluation. Update documentation to distinguish learned PWL scaling,
+  numerical diagnostics, task selection and release validation.
+
 ## [1.1.0] - 2026-09-01
 
 ### Added

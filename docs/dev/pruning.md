@@ -118,8 +118,8 @@ Four mechanisms, in the order they act:
    mid-ramp epoch carries less sparsity and therefore usually scores better; it
    would win selection and produce a checkpoint that does not meet the target.
 4. **The accuracy gate.** `evaluate_accuracy_gate()` scores the saved model and
-   the teacher on the same held-out samples and compares macro ROC-AUC over the
-   classes that have both label values. A drop beyond `--prune_max_auc_drop`
+   the teacher on the same held-out samples and compares class-macro AP over the
+   full class contract (classes without positives contribute zero). A drop beyond `--prune_max_cmap_drop`
    raises `RuntimeError` after the report is written.
 
 ## Interaction with QAT

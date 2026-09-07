@@ -30,7 +30,7 @@ The script saves these files alongside the checkpoint:
 - `my_model_model_config.json` — conversion metadata (frontend, shapes, etc.)
 - `my_model_labels.txt` — ordered class names
 - `my_model_history.csv` — per-epoch training metrics (loss, ROC-AUC)
-- `my_model_curves.png` — loss and ROC-AUC training curves plot
+- `my_model_curves.png` — loss and exact validation cMAP curves plot
 - `my_model_train_state.json` — epoch counter for `--resume`
 
 ## Audio frontends
@@ -308,8 +308,8 @@ Four mechanisms keep the pruned model on the unpruned model's decision surface:
    with sparsity it never reached.
 4. The step ends by scoring the pruned model and the unpruned teacher on the
    same `--prune_eval_samples` (default 1024) held-out samples and **fails**
-   if macro ROC-AUC dropped by more than `--prune_max_auc_drop` (default
-   0.005). The checkpoint is kept for inspection, but the command exits with
+   if class-macro AP dropped by more than `--prune_max_cmap_drop` (default
+   0.02). The checkpoint is kept for inspection, but the command exits with
    an error rather than handing you a quietly degraded model.
 
 If the gate fails, lower `--prune_final_sparsity`, raise `--epochs`, or switch
@@ -389,12 +389,12 @@ on the device — see
 
 A two-epoch linear warmup reaches `--learning_rate` (default 0.001), followed
 by cosine decay to near-zero over `--epochs` (default 50). Best-checkpoint
-selection and early stopping monitor validation ROC-AUC with patience 10 for
-standard training. QAT instead minimizes validation teacher KL, configurable
-with `--qat_checkpoint_monitor`; the paired catalog evaluation remains the
-release-deciding accuracy gate.
-Pruning keeps the ROC-AUC monitor but ignores every epoch before its sparsity
-ramp finishes.
+selection and early stopping maximize exact validation cMAP. Standard CLI
+training evaluates files with the configured overlap and pooling. QAT selects
+on **converted INT8** file cMAP, including epoch zero, and saves the exact
+TFLite artifact that was scored alongside its matching Keras checkpoint.
+Pruning ignores epochs before its sparsity ramp finishes. The chunk PR-AUC
+metric is logged as `pr_auc` and does not select checkpoints.
 
 ### Hyperparameter tuning with Optuna
 
@@ -402,7 +402,7 @@ Use `--tune` to run an automated hyperparameter search using Optuna (requires
 `pip install -e ".[tune]"`). The tuner explores alpha, depth_multiplier,
 embeddings_size, learning_rate, dropout, batch_size, mixup_alpha, optimizer,
 weight_decay, grad_clip, and use_attention_pooling.
-It maximizes `val_roc_auc` with MedianPruner.
+It maximizes exact float `val_cmap`; final deployment candidates still require INT8 evaluation.
 
 ```bash
 python -m birdnet_stm32 train \
@@ -473,7 +473,7 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--prune_min_layer_params` | 1024 | Smallest kernel (in weights) eligible for pruning |
 | `--no_prune_head` | False | Leave the classifier head dense |
 | `--prune_head_sparsity` | -1 | Separate target for the classifier head (-1 follows `--prune_final_sparsity`) |
-| `--prune_max_auc_drop` | 0.005 | Largest tolerated macro ROC-AUC regression |
+| `--prune_max_cmap_drop` | 0.02 | Largest tolerated class-macro AP regression |
 | `--prune_eval_samples` | 1024 | Validation samples scored by the accuracy gate |
 | `--prune_distillation_weight` | 1.0 | Frozen-teacher Bernoulli-KL weight |
 | `--prune_cosine_weight` | 0.10 | Mean teacher/student cosine-loss weight |
@@ -481,7 +481,9 @@ Set `--n_trials` to control how many configurations to try (default 20).
 | `--prune_cosine_tail_fraction` | 0.10 | Fraction of each batch included in the worst-sample loss |
 | `--linear_probe` | False | Freeze backbone and train only classifier head |
 | `--model_config` | *(inferred)* | Architecture config for `--qat`, `--prune`, `--linear_probe`; required when the checkpoint has no sibling config |
-| `--qat_checkpoint_monitor` | `val_distillation_kl` | Validation metric selecting the kept QAT epoch |
+| `--qat_calibration_percentile` | 100 | Persistent internal frontend bounds; accepts (50, 100] |
+| `--validation_overlap` | half the chunk duration | File validation overlap in seconds |
+| `--validation_pooling` | max | File validation pooling |
 
 ## Data pipeline
 
