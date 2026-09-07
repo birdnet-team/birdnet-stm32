@@ -208,6 +208,7 @@ def gabor_filterbank(
 
 
 from birdnet_stm32.models.magnitude import MagnitudeScalingLayer  # noqa: E402
+from birdnet_stm32.models.quantization import clip_activation, validate_bounds  # noqa: E402
 
 
 class AudioFrontendLayer(layers.Layer):
@@ -249,6 +250,7 @@ class AudioFrontendLayer(layers.Layer):
         mag_scale: str = "pwl",
         name: str = "audio_frontend",
         is_trainable: bool = False,
+        activation_bounds: dict | None = None,
         **kwargs,
     ):
         super().__init__(name=name, **kwargs)
@@ -267,6 +269,7 @@ class AudioFrontendLayer(layers.Layer):
         self.mel_norm = mel_norm
         self.mag_scale = mag_scale
         self.is_trainable = bool(is_trainable)
+        self.activation_bounds = validate_bounds(activation_bounds)
         # Training may install a duck-typed quantization hook that simulates
         # the INT8 boundaries hidden inside this custom layer. It is never
         # serialized, so deployment models retain the ordinary clean graph.
@@ -324,6 +327,7 @@ class AudioFrontendLayer(layers.Layer):
             channels=self.mel_bins,
             pcen_K=self.pcen_K,
             is_trainable=True,
+            activation_bounds=self.activation_bounds,
             name=f"{name}_mag",
         )
 
@@ -425,6 +429,7 @@ class AudioFrontendLayer(layers.Layer):
 
     def _quantized_activation(self, name: str, inputs):
         """Mark an internal tensor as an INT8 activation boundary for QAT."""
+        inputs = clip_activation(inputs, self.activation_bounds, name)
         if self._quantization_hook is None:
             return inputs
         return self._quantization_hook.activation(name, inputs)
@@ -504,6 +509,7 @@ class AudioFrontendLayer(layers.Layer):
             "mel_fmax": self.mel_fmax,
             "mel_norm": self.mel_norm,
             "mag_scale": self.mag_scale,
+            "activation_bounds": self.activation_bounds,
             "name": self.name,
             "is_trainable": self.is_trainable,
         }

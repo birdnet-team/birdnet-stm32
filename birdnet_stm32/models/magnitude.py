@@ -2,13 +2,15 @@
 
 Supports four modes:
 - 'none': Pass-through.
-- 'pwl': Piecewise-linear compression via 1x1 depthwise branches + ReLU + Add.
+- 'pwl': Learned piecewise-linear scaling via 1x1 depthwise branches + ReLU + Add.
 - 'pcen': PCEN-like compression (pool/conv/ReLU/Add approximation).
 - 'db': Log compression (10*log10) — avoid for PTQ deployment.
 """
 
 import tensorflow as tf
 from tensorflow.keras import layers
+
+from birdnet_stm32.models.quantization import clip_activation, validate_bounds
 
 VALID_MAG_SCALES = ("none", "pwl", "pcen", "db")
 
@@ -39,6 +41,7 @@ class MagnitudeScalingLayer(layers.Layer):
         pcen_K: int = 8,
         pcen_pool_width: int = 3,
         is_trainable: bool = False,
+        activation_bounds: dict | None = None,
         name: str = "mag_scale",
         **kwargs,
     ):
@@ -50,6 +53,7 @@ class MagnitudeScalingLayer(layers.Layer):
         self.pcen_K = int(pcen_K)
         self.pcen_pool_width = max(1, int(pcen_pool_width))
         self.is_trainable = bool(is_trainable)
+        self.activation_bounds = validate_bounds(activation_bounds)
         self._quantization_hook = None
 
         # DB constants
@@ -190,6 +194,7 @@ class MagnitudeScalingLayer(layers.Layer):
 
     def _quantized_activation(self, name: str, inputs):
         """Mark an internal tensor as an INT8 activation boundary for QAT."""
+        inputs = clip_activation(inputs, self.activation_bounds, name)
         if self._quantization_hook is None:
             return inputs
         return self._quantization_hook.activation(name, inputs)
@@ -211,7 +216,7 @@ class MagnitudeScalingLayer(layers.Layer):
         return self._quantized_activation(f"{self.name}_pcen_output", tf.nn.relu(b1 + b2))
 
     def _apply_pwl(self, x):
-        """Piecewise-linear compression via 1x1 depthwise branches."""
+        """Learned hinge sum; slopes are not constrained to be compressive."""
         branches = []
         if self._pwl_k0_dw is not None:
             branch = self._quantized_call(self._pwl_k0_dw, x)
@@ -251,6 +256,7 @@ class MagnitudeScalingLayer(layers.Layer):
                 "pcen_K": self.pcen_K,
                 "pcen_pool_width": self.pcen_pool_width,
                 "is_trainable": self.is_trainable,
+                "activation_bounds": self.activation_bounds,
             }
         )
         return cfg

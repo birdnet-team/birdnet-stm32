@@ -11,6 +11,7 @@ from birdnet_stm32.training.qat import (
     _DistilledQATModel,
     _is_activation_boundary,
     _is_quantizable,
+    bound_frontend,
     build_qat_model,
     calibrate_activation_ranges,
     fake_quantize_weights,
@@ -229,6 +230,7 @@ class TestActivationQAT:
         assert qat_frontend is not clean_frontend
         assert qat_frontend._quantization_hook is not None  # noqa: SLF001
         assert clean_frontend._quantization_hook is None  # noqa: SLF001
+        assert qat_frontend.band_bn.trainable is False
 
         updated = qat_frontend.get_weights()
         updated[0] = updated[0] + 0.01
@@ -240,6 +242,61 @@ class TestActivationQAT:
             strict=True,
         ):
             np.testing.assert_array_equal(qat_weight, clean_weight)
+
+    def test_sigmoid_simulates_logits_and_fixed_output_grid(self):
+        inputs = tf.keras.Input((3,))
+        pred = tf.keras.layers.Dense(2, activation="sigmoid", name="pred")
+        model = tf.keras.Model(inputs, pred(inputs))
+        samples = np.ones((2, 3), np.float32)
+        ranges = calibrate_activation_ranges(model, [[samples]], max_samples=2)
+        assert ranges["pred"] == (0.0, 255.0 / 256)
+        assert "pred__logits" in ranges
+        scores = np.asarray(build_qat_model(model, ranges)(samples))
+        np.testing.assert_allclose(scores * 256, np.round(scores * 256), atol=1e-5)
+
+    def test_persistent_internal_bounds_survive_save_and_tflite(self, tmp_path):
+        from birdnet_stm32.conversion.quantize import convert_to_tflite
+        from birdnet_stm32.models.frontend import AudioFrontendLayer
+        from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
+        from birdnet_stm32.models.runners import TFLiteRunner
+
+        inputs = tf.keras.Input((2000, 1))
+        frontend = AudioFrontendLayer(
+            mode="raw",
+            mel_bins=8,
+            spec_width=8,
+            sample_rate=8000,
+            chunk_duration=0.25,
+            mag_scale="pwl",
+            name="audio_frontend",
+        )
+        model = tf.keras.Model(inputs, frontend(inputs))
+        samples = np.random.default_rng(8).uniform(-1, 1, (4, 2000, 1)).astype(np.float32)
+        bound = 0.01
+        bounded = bound_frontend(model, {"audio_frontend_mag_pwl_add_3": (0, bound)})
+        path = tmp_path / "bounded.keras"
+        bounded.save(path)
+        loaded = tf.keras.models.load_model(
+            path,
+            compile=False,
+            custom_objects={
+                "AudioFrontendLayer": AudioFrontendLayer,
+                "MagnitudeScalingLayer": MagnitudeScalingLayer,
+            },
+        )
+        assert np.asarray(loaded(samples)).max() <= bound + 1e-6
+        assert np.asarray(model(samples)).max() > bound * 2
+        tflite_path = tmp_path / "bounded.tflite"
+        convert_to_tflite(loaded, lambda: ([sample[None]] for sample in samples), str(tflite_path))
+        runner = TFLiteRunner(str(tflite_path))
+        assert runner.predict(samples).max() <= bound + 1e-4
+        details = runner.interpreter.get_tensor_details()
+        assert any(0 < float(d["quantization"][0]) <= bound / 250 for d in details)
+
+    @pytest.mark.parametrize("percentile", [0, 50, 101, float("nan")])
+    def test_invalid_percentile_is_rejected(self, percentile):
+        with pytest.raises(ValueError, match="percentile"):
+            calibrate_activation_ranges(None, [], percentile=percentile)
 
     def test_distillation_loss_is_finite_and_reported(self):
         """The QAT objective must constrain probabilities beyond hard labels."""

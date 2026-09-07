@@ -59,7 +59,7 @@ def _channel_axis(layer: tf.keras.layers.Layer) -> int:
 
 def _is_quantizable(layer: tf.keras.layers.Layer) -> bool:
     """Return whether a layer owns a kernel quantized by full-INT8 TFLite."""
-    return isinstance(layer, QUANTIZABLE_TYPES) and bool(layer.trainable_weights)
+    return isinstance(layer, QUANTIZABLE_TYPES) and hasattr(layer, "kernel")
 
 
 def _is_activation_boundary(layer: tf.keras.layers.Layer) -> bool:
@@ -141,7 +141,7 @@ class _QuantizedKernelCall(layers.Layer):
         super().__init__(trainable=True, **kwargs)
         self.target = target
 
-    def call(self, inputs):
+    def call(self, inputs, linear=False):
         """Run the target math without replacing its full-precision variable."""
         kernel = _fake_quantize_kernel_tensor(self.target.kernel, _channel_axis(self.target))
         if isinstance(self.target, layers.Conv2D):
@@ -163,14 +163,40 @@ class _QuantizedKernelCall(layers.Layer):
             raise TypeError(f"Unsupported quantized kernel layer: {type(self.target).__name__}")
         if self.target.bias is not None:
             output = output + self.target.bias
-        return self.target.activation(output)
+        return output if linear else self.target.activation(output)
+
+
+# Sample values for percentile bounds. Bounds must also exist in the saved
+# deployment frontend; fake quantization alone never survives clean export.
+_RESERVOIR_PER_SAMPLE = 4096
+
+
+def _reservoir_add(store: dict[str, list], name: str, array: np.ndarray, rng: np.random.Generator) -> None:
+    """Keep a bounded random subsample of one tensor's values."""
+    flat = np.asarray(array).reshape(-1)
+    if flat.size > _RESERVOIR_PER_SAMPLE:
+        flat = flat[rng.integers(0, flat.size, _RESERVOIR_PER_SAMPLE)]
+    store.setdefault(name, []).append(flat.astype(np.float32, copy=False))
+
+
+def _reservoir_range(store: dict[str, list], name: str, percentile: float) -> tuple[float, float] | None:
+    """Return the percentile range for one tensor, or None if unseen."""
+    chunks = store.get(name)
+    if not chunks:
+        return None
+    pooled = np.concatenate(chunks)
+    lo = float(np.percentile(pooled, 100.0 - percentile))
+    hi = float(np.percentile(pooled, percentile))
+    return (min(lo, 0.0), max(hi, 0.0))
 
 
 class _ActivationRangeCollector:
     """Observe internal custom-layer tensors without changing their values."""
 
-    def __init__(self):
+    def __init__(self, reservoir: dict[str, list] | None = None, rng: np.random.Generator | None = None):
         self.ranges: dict[str, list[float]] = {}
+        self.reservoir = reservoir
+        self.rng = rng
 
     def activation(self, name: str, inputs):
         """Record one tensor's scalar range and return it unchanged."""
@@ -178,6 +204,8 @@ class _ActivationRangeCollector:
         values = self.ranges.setdefault(name, [float("inf"), -float("inf")])
         values[0] = min(values[0], float(np.min(array)), 0.0)
         values[1] = max(values[1], float(np.max(array)), 0.0)
+        if self.reservoir is not None:
+            _reservoir_add(self.reservoir, name, array, self.rng)
         return inputs
 
     def kernel(self, layer, inputs):
@@ -225,16 +253,37 @@ def calibrate_activation_ranges(
     model: tf.keras.Model,
     dataset: Iterable,
     max_samples: int = 64,
+    percentile: float = 100.0,
 ) -> dict[str, tuple[float, float]]:
-    """Measure scalar activation ranges on real inputs for QAT initialization."""
+    """Measure scalar activation ranges on real inputs for QAT initialization.
+
+    Args:
+        model: Deployment model to probe.
+        dataset: Calibration data.
+        max_samples: Number of samples to observe.
+        percentile: Upper percentile defining each range; 100 is absolute
+            min/max, the previous behaviour. Below 100 the range is taken from a
+            bounded reservoir of observed values, clipping outliers that would
+            otherwise stretch the INT8 grid.
+    """
+    if not 50.0 < percentile <= 100.0:
+        raise ValueError("Calibration percentile must be in (50, 100]")
+    if max_samples <= 0:
+        raise ValueError("Calibration sample count must be positive")
     boundaries = [layer for layer in model.layers if _is_activation_boundary(layer)]
     if not boundaries:
         raise ValueError("Model has no supported activation quantization boundaries")
-    probe = tf.keras.Model(model.inputs, [layer.output for layer in boundaries])
+    sigmoid_heads = [layer for layer in boundaries if _is_sigmoid_dense(layer)]
+    probe = tf.keras.Model(
+        model.inputs, [layer.output for layer in boundaries] + [layer.input for layer in sigmoid_heads]
+    )
     ranges = {layer.name: [float("inf"), -float("inf")] for layer in boundaries}
     ranges["__input__"] = [float("inf"), -float("inf")]
     frontends = [layer for layer in all_layers(model) if layer.__class__.__name__ == "AudioFrontendLayer"]
-    collector = _ActivationRangeCollector()
+    use_percentile = percentile < 100.0
+    reservoir: dict[str, list] = {}
+    rng = np.random.default_rng(0)
+    collector = _ActivationRangeCollector(reservoir if use_percentile else None, rng)
     for frontend in frontends:
         frontend.set_quantization_hook(collector)
 
@@ -249,10 +298,15 @@ def calibrate_activation_ranges(
                 outputs = probe([sample[None]], training=False)
                 if not isinstance(outputs, (tuple, list)):
                     outputs = [outputs]
-                for layer, output in zip(boundaries, outputs, strict=True):
+                for layer, output in zip(boundaries, outputs[: len(boundaries)], strict=True):
                     array = np.asarray(output)
                     ranges[layer.name][0] = min(ranges[layer.name][0], float(np.min(array)), 0.0)
                     ranges[layer.name][1] = max(ranges[layer.name][1], float(np.max(array)), 0.0)
+                for layer, features in zip(sigmoid_heads, outputs[len(boundaries) :], strict=True):
+                    logits = np.asarray(features) @ np.asarray(layer.kernel)
+                    if layer.bias is not None:
+                        logits += np.asarray(layer.bias)
+                    collector.activation(f"{layer.name}__logits", logits)
                 seen += 1
                 if seen >= max_samples:
                     break
@@ -266,8 +320,59 @@ def calibrate_activation_ranges(
 
     ranges.update(collector.ranges)
     result = {name: (values[0], values[1]) for name, values in ranges.items()}
-    print(f"[QAT] Calibrated {len(result)} activation tensors on {seen} samples")
+    if use_percentile:
+        clipped = 0
+        internal_names = set(collector.ranges) - {f"{layer.name}__logits" for layer in sigmoid_heads}
+        for name in internal_names:
+            narrowed = _reservoir_range(reservoir, name, percentile)
+            if narrowed is None:
+                continue
+            lo, hi = narrowed
+            wide_lo, wide_hi = result[name]
+            # Never widen a range: the percentile is a clip, not a re-estimate.
+            lo, hi = max(lo, wide_lo), min(hi, wide_hi)
+            if hi <= lo:
+                continue
+            if (hi - lo) < (wide_hi - wide_lo):
+                clipped += 1
+            result[name] = (lo, hi)
+        print(
+            f"[QAT] Calibrated {len(result)} activation tensors on {seen} samples "
+            f"at the {percentile:g}th percentile ({clipped} ranges narrowed)"
+        )
+    else:
+        print(f"[QAT] Calibrated {len(result)} activation tensors on {seen} samples")
+    for layer in sigmoid_heads:
+        # TFLite LOGISTIC has fixed scale 1/256 and zero point -128.
+        result[layer.name] = (0.0, 255.0 / 256.0)
     return result
+
+
+def _is_sigmoid_dense(layer):
+    return isinstance(layer, layers.Dense) and layer.activation == tf.keras.activations.sigmoid
+
+
+def bound_frontend(model, activation_ranges):
+    """Clone custom frontends with persistent internal activation bounds."""
+
+    def clone(layer):
+        if layer.__class__.__name__ != "AudioFrontendLayer":
+            return layer.__class__.from_config(layer.get_config())
+        config = layer.get_config()
+        config["activation_bounds"] = {
+            name: values
+            for name, values in activation_ranges.items()
+            if name.startswith(f"{layer.name}_") and values[1] > values[0]
+        }
+        bounded = layer.__class__.from_config(config)
+        bounded.build(tuple(layer.input.shape))
+        bounded.set_weights(layer.get_weights())
+        freeze_batch_norm(bounded)
+        return bounded
+
+    bounded_model = tf.keras.models.clone_model(model, clone_function=clone)
+    bounded_model.set_weights(model.get_weights())
+    return bounded_model
 
 
 def build_qat_model(
@@ -282,12 +387,20 @@ def build_qat_model(
         clone = layer.__class__.from_config(layer.get_config())
         clone.build(tuple(layer.input.shape))
         clone.set_weights(layer.get_weights())
+        freeze_batch_norm(clone)
         clone.set_quantization_hook(_FrontendQuantizationHook(activation_ranges))
         return clone
 
     def call_function(layer, *args, **kwargs):
         if _is_quantizable(layer):
-            output = _QuantizedKernelCall(layer, name=f"{layer.name}_quantized_kernel")(*args, **kwargs)
+            kernel_call = _QuantizedKernelCall(layer, name=f"{layer.name}_quantized_kernel")
+            if _is_sigmoid_dense(layer):
+                output = kernel_call(*args, linear=True, **kwargs)
+                lo, hi = activation_ranges[f"{layer.name}__logits"]
+                output = FakeQuantActivation(lo, hi, name=f"{layer.name}_logits_fake_quant")(output)
+                output = layers.Activation("sigmoid")(output)
+            else:
+                output = kernel_call(*args, **kwargs)
         else:
             output = layer(*args, **kwargs)
         if layer.name in activation_ranges:
