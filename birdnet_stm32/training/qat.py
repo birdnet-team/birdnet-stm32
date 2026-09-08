@@ -49,7 +49,7 @@ def fake_quantize_weights(
     else:
         amax = np.max(np.abs(w))
     scale = np.maximum(amax / qmax, 1e-12)
-    return (np.clip(np.round(w / scale), -qmax, qmax) * scale).astype(np.float32)
+    return np.asarray(np.clip(np.round(w / scale), -qmax, qmax) * scale, dtype=np.float32)
 
 
 def _channel_axis(layer: tf.keras.layers.Layer) -> int:
@@ -204,7 +204,7 @@ class _ActivationRangeCollector:
         values = self.ranges.setdefault(name, [float("inf"), -float("inf")])
         values[0] = min(values[0], float(np.min(array)), 0.0)
         values[1] = max(values[1], float(np.max(array)), 0.0)
-        if self.reservoir is not None:
+        if self.reservoir is not None and self.rng is not None:
             _reservoir_add(self.reservoir, name, array, self.rng)
         return inputs
 
@@ -244,8 +244,7 @@ class _FrontendQuantizationHook:
         return self._kernels[layer.name](inputs)
 
 
-# The teacher-consistency objective is shared with gradual magnitude pruning;
-# the alias keeps the QAT-specific name used across this module and its tests.
+# The alias keeps the QAT-specific name used across this module and its tests.
 _DistilledQATModel = DistilledModel
 
 
@@ -466,10 +465,8 @@ def run_qat(args: argparse.Namespace) -> None:
         upsample_minority_classes,
     )
     from birdnet_stm32.data.generator import load_dataset
-    from birdnet_stm32.models.frontend import AudioFrontendLayer
-    from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
+    from birdnet_stm32.models.runners import load_keras_model
     from birdnet_stm32.training.config import ModelConfig
-    from birdnet_stm32.training.pruning import SparsityMaskEnforcer, collect_sparsity_masks
     from birdnet_stm32.training.trainer import train_model
     from birdnet_stm32.training.validation import Int8Selection
 
@@ -487,22 +484,8 @@ def run_qat(args: argparse.Namespace) -> None:
     if not os.path.isfile(args.checkpoint_path):
         raise FileNotFoundError(f"QAT requires a pretrained model: {args.checkpoint_path}")
     print(f"[QAT] Loading pretrained model from {args.checkpoint_path}")
-    deployment_model = tf.keras.models.load_model(
-        args.checkpoint_path,
-        compile=False,
-        custom_objects={
-            "AudioFrontendLayer": AudioFrontendLayer,
-            "MagnitudeScalingLayer": MagnitudeScalingLayer,
-        },
-    )
-    teacher_model = tf.keras.models.load_model(
-        args.checkpoint_path,
-        compile=False,
-        custom_objects={
-            "AudioFrontendLayer": AudioFrontendLayer,
-            "MagnitudeScalingLayer": MagnitudeScalingLayer,
-        },
-    )
+    deployment_model = load_keras_model(args.checkpoint_path)
+    teacher_model = load_keras_model(args.checkpoint_path)
     teacher_model.trainable = False
 
     cfg_path = getattr(args, "model_config", "") or os.path.splitext(args.checkpoint_path)[0] + "_model_config.json"
@@ -518,9 +501,9 @@ def run_qat(args: argparse.Namespace) -> None:
     if len(classes) != deployment_model.output_shape[-1]:
         raise ValueError("QAT dataset class count does not match the pretrained model output")
 
-    train_paths, _ = load_file_paths_from_directory(args.data_path_train, classes=classes)
+    train_paths, train_classes = load_file_paths_from_directory(args.data_path_train, classes=classes)
     if args.data_path_val:
-        val_paths, _ = load_file_paths_from_directory(args.data_path_val, classes=classes)
+        val_paths, val_classes = load_file_paths_from_directory(args.data_path_val, classes=classes)
     else:
         rng = np.random.default_rng(args.seed)
         rng.shuffle(train_paths)
@@ -528,6 +511,14 @@ def run_qat(args: argparse.Namespace) -> None:
         train_paths, val_paths = train_paths[:split_idx], train_paths[split_idx:]
     if not train_paths or not val_paths:
         raise ValueError("QAT requires non-empty training and validation datasets")
+    if train_classes != classes:
+        raise ValueError(
+            f"QAT training data is missing configured classes: {[name for name in classes if name not in train_classes]}"
+        )
+    if args.data_path_val and val_classes != classes:
+        raise ValueError(
+            f"QAT validation data is missing configured classes: {[name for name in classes if name not in val_classes]}"
+        )
 
     if set(map(os.path.realpath, train_paths)) & set(map(os.path.realpath, val_paths)):
         raise ValueError("QAT training and validation manifests overlap")
@@ -608,21 +599,7 @@ def run_qat(args: argparse.Namespace) -> None:
             max_samples=calibration_count,
         )
     print(f"[QAT] Activation ranges use the converter's exact stratified {calibration_count}-sample manifest (seed=42)")
-    # A pruned checkpoint carries its mask as exact zeros. Gradient updates
-    # would quietly refill those slots, so re-apply the mask after every step.
     extra_callbacks: list[tf.keras.callbacks.Callback] = []
-    if getattr(args, "qat_preserve_sparsity", True):
-        sparsity_masks = collect_sparsity_masks(deployment_model)
-        if sparsity_masks:
-            enforcer = SparsityMaskEnforcer(deployment_model, sparsity_masks)
-            enforcer.enforce()
-            extra_callbacks.append(enforcer)
-            pruned = sum(int(mask.size - np.count_nonzero(mask)) for mask in sparsity_masks.values())
-            total = sum(int(mask.size) for mask in sparsity_masks.values())
-            print(
-                f"[QAT] Preserving pruning masks on {len(sparsity_masks)} layers "
-                f"({pruned:,}/{total:,} weights held at zero)"
-            )
 
     loss_weights = {
         "distillation_weight": float(args.qat_distillation_weight),
@@ -649,13 +626,35 @@ def run_qat(args: argparse.Namespace) -> None:
     cfg.save(qat_path.replace(".keras", "_model_config.json"))
     with open(qat_path.replace(".keras", "_labels.txt"), "w", encoding="utf-8") as handle:
         handle.write("\n".join(classes) + "\n")
+    # Selection converts and scores an INT8 model every epoch, twice over the
+    # manifest. A fixed stratified subset keeps that affordable; it must be the
+    # same draw for every arm and epoch or the comparison means nothing, so it
+    # is seeded and its hash goes into the selection report.
+    selection_paths = val_paths
+    subset = int(getattr(args, "validation_subset", 0) or 0)
+    if subset and subset < len(val_paths):
+        validation_folders = {os.path.basename(os.path.dirname(path)) for path in val_paths}
+        if subset < len(validation_folders):
+            raise ValueError(
+                f"--validation_subset={subset} cannot cover all {len(validation_folders)} validation folders"
+            )
+        selection_paths = stratified_sample_paths(val_paths, subset, seed=1234)
+        selected_folders = {os.path.basename(os.path.dirname(path)) for path in selection_paths}
+        if selected_folders != validation_folders:
+            raise RuntimeError("Validation subset failed to cover every validation folder")
+        print(
+            f"[QAT] Selecting on a fixed stratified subset of {len(selection_paths)} "
+            f"of {len(val_paths)} validation files (seed 1234)"
+        )
+    elif subset:
+        print(f"[QAT] Requested subset {subset} >= {len(val_paths)} validation files; using all")
     selector = Int8Selection(
         deployment_model,
         teacher_model,
         calibration_data,
         qat_path,
         sync=lambda: sync_frontend_weights(qat_model, deployment_model),
-        files=val_paths,
+        files=selection_paths,
         classes=classes,
         cfg=cfg.to_dict(),
         overlap=args.validation_overlap,

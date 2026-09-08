@@ -85,12 +85,6 @@ for controlled comparisons. Their numerical values and scalar contribution do
 not establish that they improve per-class ranking. Change one at a time and
 judge the resulting converted INT8 cMAP.
 
-## Pruning
-
-Gradual magnitude pruning (`--prune`) is a separate compression step that
-shares this module's teacher-consistency objective and runs before QAT. See
-[Pruning](pruning.md).
-
 ## Representative dataset
 
 The calibration dataset is critical for PTQ quality:

@@ -67,8 +67,8 @@ sent over the air"]
 
 ### Where the split happens
 
-At the pooling layer that produces the embedding vector (`gap`, or `attn_pool`
-with `--use_attention_pooling`). Everything after it — dropout, then the
+At the global-average-pooling layer (`gap`) that produces the embedding vector.
+Everything after it — dropout, then the
 classifier `Dense` — is rebuilt onto a clean `embeddings` input as a standalone
 model with its own copy of the weights. The backbone keeps the audio frontend
 and the whole convolutional body.
@@ -162,30 +162,16 @@ count is exactly that product — a 256-d embedding driving 100 outputs is 25,60
 INT8 weights. On top sits roughly 2 kB of TFLite flatbuffer overhead that does
 not shrink with the model, which dominates for small class counts.
 
-`--prune` targets the head by default and `--prune_head_sparsity` compresses it
-harder than the backbone, which is what makes the gzipped head small — zeroed
-INT8 weights compress, random ones do not. See
-[Pruning](training.md#pruning).
+The head's gzipped size is dominated by how compressible its INT8 weights
+are: zeroed weights collapse, random ones do not. Gradual magnitude pruning
+was removed in 1.2.0 — no release ever used it — so the shipped head is
+dense and its transmitted size is the honest one measured below.
 
-```bash
-# Prune the backbone to 50% and the shipped head to 75%
-python -m birdnet_stm32 train --data_path_train data/train \
-  --data_path_val data/validation --classes_file data/labels.txt --prune \
-  --checkpoint_path checkpoints/model.keras \
-  --prune_final_sparsity 0.5 --prune_head_sparsity 0.75 \
-  --epochs 12 --learning_rate 0.0002
-```
-
-Measured on a 10-species, 256-d model — same architecture, same conversion
-settings, only the head's sparsity differs:
+Measured on a 10-species, 256-d model:
 
 | Classifier head | INT8 sparsity | `.tflite` | gzipped |
 |---|---|---|---|
 | Dense | 0.4% | 4,704 B | 3,631 B |
-| `--prune_head_sparsity 0.75` | 75.0% | 4,704 B | **2,067 B** |
-
-Pruning does not change the `.tflite` itself — TFLite stores INT8 weights
-densely — but it cuts the transmitted payload by 43%.
 
 Note the floor: 2,560 INT8 weights in a 4,704 B file means roughly 2 kB is
 flatbuffer scaffolding that no amount of sparsity removes. The wider the
@@ -219,7 +205,7 @@ After conversion, the script reports:
     Common causes include:
 
     - Overly diverse representative dataset widens INT8 ranges.
-    - Using `db` magnitude scaling (poor quantization behavior).
+    - Activation ranges that are too wide for stable INT8 quantization.
     - Very wide channel counts without proper alignment.
 
     First inspect calibration coverage and repeat parity on held-out examples.

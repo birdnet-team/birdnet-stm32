@@ -147,9 +147,6 @@ The branch is selected at build time from the model configuration:
 - **librosa**: compute the STFT and mel filterbank on the Cortex-M55, then send
   the mel spectrogram to a classifier-only model.
 
-The supplied firmware does not currently implement the `mfcc` or `log_mel`
-frontend modes.
-
 #### STFT (`audio_stft.c` + `fft.c`)
 
 ```

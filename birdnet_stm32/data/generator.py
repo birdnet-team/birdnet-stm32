@@ -13,6 +13,7 @@ import multiprocessing as mp
 import random
 import signal
 import time
+from typing import Any
 
 import numpy as np
 import tensorflow as tf
@@ -78,7 +79,6 @@ def _process_file(path: str):
     mel_bins = cfg["mel_bins"]
     spec_width = cfg["spec_width"]
     mag_scale = cfg["mag_scale"]
-    n_mfcc = cfg["n_mfcc"]
     load_duration = cfg.get("load_duration", cfg.get("max_duration"))
     snr_threshold = cfg["snr_threshold"]
     random_offset = cfg["random_offset"]
@@ -105,29 +105,15 @@ def _process_file(path: str):
 
     available_chunks = estimate_num_chunks(audio.shape[0], sr, cd)
     if available_chunks > candidate_chunks:
-        audio_chunks = smart_crop(audio, sr, cd, max_chunks=candidate_chunks)
+        audio_chunks = list(smart_crop(audio, sr, cd, max_chunks=candidate_chunks))
     else:
-        audio_chunks = split_audio_into_chunks(audio, sample_rate=sr, chunk_duration=cd)
+        audio_chunks = list(split_audio_into_chunks(audio, sample_rate=sr, chunk_duration=cd))
 
     if len(audio_chunks) == 0:
         return None
 
     # --- Compute spectrograms / raw features for all chunks ---
-    if audio_frontend in ("mfcc", "log_mel"):
-        features = [
-            get_spectrogram_from_audio(
-                chunk,
-                sr,
-                n_fft=fft_length,
-                mel_bins=mel_bins,
-                spec_width=spec_width,
-                mag_scale="none",
-                mode=audio_frontend,
-                n_mfcc=n_mfcc,
-            )
-            for chunk in audio_chunks
-        ]
-    elif audio_frontend == "librosa":
+    if audio_frontend == "librosa":
         features = [
             get_spectrogram_from_audio(
                 chunk,
@@ -167,7 +153,7 @@ def _process_file(path: str):
         else:
             sample = item
 
-        if spec_augment and audio_frontend in ("librosa", "hybrid", "mfcc", "log_mel"):
+        if spec_augment and audio_frontend in ("librosa", "hybrid"):
             sample = apply_spec_augment(sample, freq_mask_max=freq_mask_max, time_mask_max=time_mask_max)
 
         sample = np.expand_dims(sample, axis=-1).astype(np.float32)
@@ -245,7 +231,7 @@ def load_dataset(
     mel_bins: int = 64,
     num_workers: int = 8,
     max_chunks_per_file: int = 1,
-    **kwargs: object,
+    **kwargs: Any,
 ) -> tf.data.Dataset:
     """Build a high-throughput tf.data pipeline with multiprocessing workers.
 
@@ -261,7 +247,7 @@ def load_dataset(
     Args:
         file_paths: Audio file paths.
         classes: Ordered class names.
-        audio_frontend: 'librosa' | 'hybrid' | 'raw' | 'mfcc' | 'log_mel'.
+        audio_frontend: 'librosa' | 'hybrid' | 'raw'.
         batch_size: Batch size.
         spec_width: Target spectrogram width.
         mel_bins: Number of mel bins.
@@ -277,7 +263,6 @@ def load_dataset(
     cd = kwargs.get("chunk_duration", 3)
     fft_length = kwargs.get("fft_length", 512)
     chunk_len = int(sr * cd)
-    n_mfcc = kwargs.get("n_mfcc", 20)
     mag_scale = kwargs.get("mag_scale", "pwl")
     max_duration = kwargs.get("max_duration", 60)
     snr_threshold = kwargs.get("snr_threshold", 0.5)
@@ -306,10 +291,8 @@ def load_dataset(
     num_classes = len(classes)
 
     # Determine output shapes
-    if audio_frontend == "mfcc":
-        sample_shape = (n_mfcc, spec_width, 1)
-    elif audio_frontend in ("librosa", "log_mel"):
-        sample_shape = (mel_bins, spec_width, 1)
+    if audio_frontend == "librosa":
+        sample_shape: tuple[int, ...] = (mel_bins, spec_width, 1)
     elif audio_frontend == "hybrid":
         sample_shape = (hybrid_fft_bins(fft_length), spec_width, 1)
     elif audio_frontend == "raw":
@@ -327,7 +310,6 @@ def load_dataset(
         "mel_bins": mel_bins,
         "spec_width": spec_width,
         "mag_scale": mag_scale,
-        "n_mfcc": n_mfcc,
         "max_duration": max_duration,
         "snr_threshold": snr_threshold,
         "random_offset": random_offset,

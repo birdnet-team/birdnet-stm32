@@ -201,17 +201,9 @@ def train_model(
     state_path = checkpoint_path.replace(".keras", "_train_state.json")
     if resume and os.path.isfile(checkpoint_path):
         print(f"[resume] Loading model from {checkpoint_path}")
-        from birdnet_stm32.models.frontend import AudioFrontendLayer
-        from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
+        from birdnet_stm32.models.runners import load_keras_model
 
-        model = tf.keras.models.load_model(
-            checkpoint_path,
-            compile=False,
-            custom_objects={
-                "AudioFrontendLayer": AudioFrontendLayer,
-                "MagnitudeScalingLayer": MagnitudeScalingLayer,
-            },
-        )
+        model = load_keras_model(checkpoint_path)
         if os.path.isfile(state_path):
             with open(state_path) as f:
                 state = json.load(f)
@@ -429,7 +421,7 @@ def _save_training_curves(history: tf.keras.callbacks.History, path: str) -> Non
     print(f"Training curves saved to {path}")
 
 
-def compute_hop_length(sample_rate: int, chunk_duration: int, spec_width: int) -> int:
+def compute_hop_length(sample_rate: int, chunk_duration: float, spec_width: int) -> int:
     """Compute hop length to produce spec_width frames from an input chunk.
 
     Args:

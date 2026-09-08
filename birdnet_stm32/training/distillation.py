@@ -1,18 +1,16 @@
-"""Frozen-teacher consistency losses shared by the compression fine-tuning steps.
+"""Frozen-teacher consistency losses for quantization-aware fine-tuning.
 
-Both quantization-aware training and gradual magnitude pruning perturb a model
-that already converged.  Hard labels alone do not tell the perturbed student
-where the original decision surface was, so both steps optimize the supervised
-loss together with a Bernoulli KL divergence and a cosine agreement term
-against a frozen copy of the pre-compression checkpoint.  The tail term targets
-the worst samples in each batch, which is where a compressed detector actually
-loses ranking quality.
+QAT perturbs a model that already converged.  Hard labels alone do not tell the
+perturbed student where the original decision surface was, so it optimizes the
+supervised loss together with a Bernoulli KL divergence and a cosine agreement
+term against a frozen copy of the pre-compression checkpoint.  The tail term
+targets the worst samples in each batch, which is where a quantized detector
+actually loses ranking quality.
 """
 
 import tensorflow as tf
 
-# Shared defaults for the teacher-consistency objective.  QAT and pruning both
-# perturb an already-converged model, so the same weighting applies to both.
+# Defaults for the teacher-consistency objective.
 DEFAULT_DISTILLATION_WEIGHT = 1.0
 DEFAULT_COSINE_WEIGHT = 0.10
 DEFAULT_COSINE_TAIL_WEIGHT = 0.75

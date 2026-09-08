@@ -10,6 +10,20 @@ import tensorflow as tf
 from birdnet_stm32.models.frontend import AudioFrontendLayer
 from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
 
+_KERAS_CUSTOM_OBJECTS = {
+    "AudioFrontendLayer": AudioFrontendLayer,
+    "MagnitudeScalingLayer": MagnitudeScalingLayer,
+}
+
+
+def load_keras_model(model_path: str) -> tf.keras.Model:
+    """Load a project checkpoint with the canonical custom-layer registry."""
+    return tf.keras.models.load_model(
+        model_path,
+        compile=False,
+        custom_objects=_KERAS_CUSTOM_OBJECTS,
+    )
+
 
 class KerasRunner:
     """Thin wrapper for a Keras model to standardize batch prediction."""
@@ -39,10 +53,10 @@ class KerasRunner:
         if getattr(self, "input_names", None) and len(self.input_names) == 1:
             feed = {self.input_names[0]: x_batch}
             try:
-                return self.model(feed, training=False).numpy()
+                return np.asarray(self.model(feed, training=False).numpy(), dtype=np.float32)
             except Exception:
                 pass
-        return self.model(x_batch, training=False).numpy()
+        return np.asarray(self.model(x_batch, training=False).numpy(), dtype=np.float32)
 
 
 class TFLiteRunner:
@@ -92,7 +106,7 @@ class TFLiteRunner:
         self._ensure_shape(x_batch.shape)
         self.interpreter.set_tensor(self.input_index, x_batch)
         self.interpreter.invoke()
-        return self.interpreter.get_tensor(self.output_index)
+        return np.asarray(self.interpreter.get_tensor(self.output_index), dtype=np.float32)
 
 
 class ChainedTFLiteRunner:
@@ -151,9 +165,4 @@ def load_model_runner(
         return ChainedTFLiteRunner(model_path, classifier_path)
     if model_path.lower().endswith(".tflite"):
         return TFLiteRunner(model_path)
-    model = tf.keras.models.load_model(
-        model_path,
-        compile=False,
-        custom_objects={"AudioFrontendLayer": AudioFrontendLayer, "MagnitudeScalingLayer": MagnitudeScalingLayer},
-    )
-    return KerasRunner(model)
+    return KerasRunner(load_keras_model(model_path))

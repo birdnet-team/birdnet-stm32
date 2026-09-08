@@ -27,7 +27,7 @@ def fast_resample(y: np.ndarray, sr_in: int, sr_out: int) -> np.ndarray:
     g = gcd(sr_in, sr_out)
     up = sr_out // g
     down = sr_in // g
-    return resample_poly(y, up, down).astype(np.float32, copy=False)
+    return np.asarray(resample_poly(y, up, down), dtype=np.float32)
 
 
 def estimate_num_chunks(
@@ -125,7 +125,7 @@ def load_audio_window(
         if peak > 0.0:
             y = y / peak
 
-        return y.astype(np.float32, copy=False)
+        return np.asarray(y, dtype=np.float32)
     except Exception:
         return np.empty((0,), dtype=np.float32)
 
@@ -177,7 +177,7 @@ def split_audio_into_chunks(
 def load_audio_file(
     path: str,
     sample_rate: int = 24000,
-    max_duration: int = 30,
+    max_duration: float | None = 30,
     chunk_duration: float = 3.0,
     chunk_overlap: float = 0.0,
     random_offset: bool = False,
@@ -194,7 +194,7 @@ def load_audio_file(
 
     Returns:
         Array of shape (num_chunks, chunk_size) with float32 audio chunks.
-        Returns empty list on error.
+        Returns an empty array on error.
     """
     audio = load_audio_window(
         path,
@@ -204,7 +204,8 @@ def load_audio_file(
         random_offset=random_offset,
     )
     if audio.size == 0:
-        return []
+        chunk_size = max(0, int(sample_rate * chunk_duration))
+        return np.empty((0, chunk_size), dtype=np.float32)
     return split_audio_into_chunks(
         audio,
         sample_rate=sample_rate,

@@ -51,9 +51,6 @@ docs = [
 deploy = [
     "pyserial>=3.5",
 ]
-tune = [
-    "optuna>=3.6",
-]
 release = [
     "tf2onnx>=1.17.0",
     "onnx>=1.22.0",
@@ -71,7 +68,6 @@ all = [
     "mkdocs-gen-files>=0.5",
     "mkdocs-literate-nav>=0.6",
     "pyserial>=3.5",
-    "optuna>=3.6",
     "tf2onnx>=1.17.0",
     "onnx>=1.22.0",
     "onnxruntime>=1.28.0",

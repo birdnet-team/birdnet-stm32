@@ -1,10 +1,12 @@
 """MagnitudeScalingLayer: composable magnitude scaling for spectrograms.
 
-Supports four modes:
-- 'none': Pass-through.
+Supports two modes:
+- 'none': Pass-through, the ablation baseline.
 - 'pwl': Learned piecewise-linear scaling via 1x1 depthwise branches + ReLU + Add.
-- 'pcen': PCEN-like compression (pool/conv/ReLU/Add approximation).
-- 'db': Log compression (10*log10) — avoid for PTQ deployment.
+
+PCEN and dB were removed. dB's log op produces a dynamic range INT8 cannot
+hold, which is the failure this frontend exists to avoid, and PCEN was never
+used by any release.
 """
 
 import tensorflow as tf
@@ -12,7 +14,7 @@ from tensorflow.keras import layers
 
 from birdnet_stm32.models.quantization import clip_activation, validate_bounds
 
-VALID_MAG_SCALES = ("none", "pwl", "pcen", "db")
+VALID_MAG_SCALES = ("none", "pwl")
 
 
 class MagnitudeScalingLayer(layers.Layer):
@@ -23,13 +25,8 @@ class MagnitudeScalingLayer(layers.Layer):
     so the layer is NPU-friendly.
 
     Args:
-        method: 'none' | 'pwl' | 'pcen' | 'db'.
+        method: 'none' | 'pwl'.
         channels: Number of input channels (typically mel_bins).
-        pcen_K: Number of average-pooling stages for PCEN smoothing.
-        pcen_pool_width: Width (in time frames) of each PCEN smoothing stage.
-            Stacking ``pcen_K`` stages of this width gives an effective
-            smoothing support of ``pcen_K * (pcen_pool_width - 1) + 1`` frames,
-            which is what stands in for PCEN's IIR envelope follower.
         is_trainable: Whether sub-layer weights are trainable.
         name: Layer name.
     """
@@ -38,8 +35,6 @@ class MagnitudeScalingLayer(layers.Layer):
         self,
         method: str = "none",
         channels: int = 64,
-        pcen_K: int = 8,
-        pcen_pool_width: int = 3,
         is_trainable: bool = False,
         activation_bounds: dict | None = None,
         name: str = "mag_scale",
@@ -50,69 +45,9 @@ class MagnitudeScalingLayer(layers.Layer):
             raise ValueError(f"Invalid mag_scale: '{method}'. Valid options: {VALID_MAG_SCALES}")
         self.method = method
         self.channels = int(channels)
-        self.pcen_K = int(pcen_K)
-        self.pcen_pool_width = max(1, int(pcen_pool_width))
         self.is_trainable = bool(is_trainable)
         self.activation_bounds = validate_bounds(activation_bounds)
         self._quantization_hook = None
-
-        # DB constants
-        self._db_eps = 1e-6
-        self._db_ref = 1.0
-
-        # PCEN sublayers
-        if self.method == "pcen":
-            # Smoothing runs along the time axis (W). The frontend feeds this
-            # layer as [B, 1, T, C], so pooling over W is pooling over frames;
-            # a unit pool would make the whole AGC branch an identity.
-            self._pcen_pools = [
-                layers.AveragePooling2D(
-                    pool_size=(1, self.pcen_pool_width),
-                    strides=(1, 1),
-                    padding="same",
-                    name=f"{name}_pcen_ema{k}",
-                )
-                for k in range(self.pcen_K)
-            ]
-            self._pcen_agc_dw = layers.DepthwiseConv2D(
-                (1, 1),
-                use_bias=False,
-                depthwise_initializer=tf.keras.initializers.Constant(0.6),
-                padding="same",
-                name=f"{name}_pcen_agc_dw",
-                trainable=self.is_trainable,
-            )
-            self._pcen_k1_dw = layers.DepthwiseConv2D(
-                (1, 1),
-                use_bias=False,
-                depthwise_initializer=tf.keras.initializers.Constant(0.15),
-                padding="same",
-                name=f"{name}_pcen_k1_dw",
-                trainable=self.is_trainable,
-            )
-            self._pcen_shift_dw = layers.DepthwiseConv2D(
-                (1, 1),
-                use_bias=True,
-                depthwise_initializer=tf.keras.initializers.Ones(),
-                bias_initializer=tf.keras.initializers.Constant(-0.2),
-                padding="same",
-                name=f"{name}_pcen_shift_dw",
-                trainable=self.is_trainable,
-            )
-            self._pcen_k2mk1_dw = layers.DepthwiseConv2D(
-                (1, 1),
-                use_bias=False,
-                depthwise_initializer=tf.keras.initializers.Constant(0.45),
-                padding="same",
-                name=f"{name}_pcen_k2mk1_dw",
-                trainable=self.is_trainable,
-            )
-        else:
-            self._pcen_pools = []
-            self._pcen_agc_dw = None
-            self._pcen_k1_dw = None
-            self._pcen_shift_dw = None
-            self._pcen_k2mk1_dw = None
 
         # PWL sublayers
         if self.method == "pwl":
@@ -154,13 +89,6 @@ class MagnitudeScalingLayer(layers.Layer):
 
     def build(self, input_shape):
         """Build magnitude scaling sub-layers for the given input shape."""
-        if self.method == "pcen":
-            for pool in self._pcen_pools:
-                if not pool.built:
-                    pool.build(input_shape)
-            for dw in (self._pcen_agc_dw, self._pcen_k1_dw, self._pcen_shift_dw, self._pcen_k2mk1_dw):
-                if dw is not None and not dw.built:
-                    dw.build(input_shape)
         if self.method == "pwl":
             if self._pwl_k0_dw is not None and not self._pwl_k0_dw.built:
                 self._pwl_k0_dw.build(input_shape)
@@ -174,12 +102,8 @@ class MagnitudeScalingLayer(layers.Layer):
 
     def call(self, x, training=None):
         """Apply magnitude scaling to a 4-D tensor [B, H, W, C]."""
-        if self.method == "pcen":
-            return self._apply_pcen(x)
         if self.method == "pwl":
             return self._apply_pwl(x)
-        if self.method == "db":
-            return self._apply_db(x)
         return x
 
     def set_quantization_hook(self, hook) -> None:
@@ -198,22 +122,6 @@ class MagnitudeScalingLayer(layers.Layer):
         if self._quantization_hook is None:
             return inputs
         return self._quantization_hook.activation(name, inputs)
-
-    def _apply_pcen(self, x):
-        """PCEN-like compression using only pool/conv/ReLU/Add ops."""
-        m = x
-        for pool in self._pcen_pools:
-            m = pool(m)
-        agc = self._quantized_call(self._pcen_agc_dw, m) if self._pcen_agc_dw is not None else m
-        agc = self._quantized_activation(f"{self.name}_pcen_agc", agc)
-        y0 = self._quantized_activation(f"{self.name}_pcen_relu0", tf.nn.relu(x - agc))
-        b1 = self._quantized_call(self._pcen_k1_dw, y0) if self._pcen_k1_dw is not None else y0
-        b1 = self._quantized_activation(f"{self.name}_pcen_branch1", b1)
-        y_shift = self._quantized_call(self._pcen_shift_dw, y0) if self._pcen_shift_dw is not None else y0
-        relu = self._quantized_activation(f"{self.name}_pcen_relu1", tf.nn.relu(y_shift))
-        b2 = self._quantized_call(self._pcen_k2mk1_dw, relu) if self._pcen_k2mk1_dw is not None else relu
-        b2 = self._quantized_activation(f"{self.name}_pcen_branch2", b2)
-        return self._quantized_activation(f"{self.name}_pcen_output", tf.nn.relu(b1 + b2))
 
     def _apply_pwl(self, x):
         """Learned hinge sum; slopes are not constrained to be compressive."""
@@ -234,17 +142,20 @@ class MagnitudeScalingLayer(layers.Layer):
             y = self._quantized_activation(name, tf.add(y, b, name=name))
         return y
 
-    def _apply_db(self, x):
-        """Apply dB log compression (10 * log10)."""
-        eps = tf.cast(self._db_eps, x.dtype)
-        ref = tf.cast(self._db_ref, x.dtype)
-        log10 = tf.math.log(tf.cast(10.0, x.dtype))
-        safe = tf.maximum(x, eps)
-        return tf.cast(10.0, x.dtype) * tf.math.log(safe / ref) / log10
-
     def compute_output_shape(self, input_shape):
         """Output shape is identical to input shape."""
         return input_shape
+
+    # Constructor arguments retired in 1.2.0 along with the features behind
+    # them. Checkpoints saved before that still carry them in their serialized
+    # layer config, so they are dropped on load rather than rejected: removing
+    # a training option must not make existing models unreadable.
+    _RETIRED_CONFIG_KEYS = ("pcen_K", "pcen_pool_width")
+
+    @classmethod
+    def from_config(cls, config):
+        """Build from a serialized config, ignoring retired arguments."""
+        return cls(**{key: value for key, value in config.items() if key not in cls._RETIRED_CONFIG_KEYS})
 
     def get_config(self):
         """Return a serializable configuration dict."""
@@ -253,8 +164,6 @@ class MagnitudeScalingLayer(layers.Layer):
             {
                 "method": self.method,
                 "channels": self.channels,
-                "pcen_K": self.pcen_K,
-                "pcen_pool_width": self.pcen_pool_width,
                 "is_trainable": self.is_trainable,
                 "activation_bounds": self.activation_bounds,
             }

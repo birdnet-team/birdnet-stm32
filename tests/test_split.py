@@ -172,7 +172,7 @@ class TestPackaging:
             assert a.read() == b.read()
 
     def test_sparse_head_compresses_better_than_a_dense_one(self, tmp_path):
-        """This is the whole point of pruning the head before shipping it."""
+        """Zeroed INT8 weights should make a sparse head cheaper to transmit."""
         # A 64-wide embedding gives the head 384 INT8 weights, above the
         # floor below which weight_sparsity ignores a tensor.
         dense = _tiny_model(seed=2, width=64)

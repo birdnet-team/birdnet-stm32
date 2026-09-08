@@ -198,7 +198,7 @@ def get_args() -> argparse.Namespace:
         type=str,
         default="",
         help=(
-            "Architecture config for --qat, --prune, and --linear_probe. Defaults to the "
+            "Architecture config for --qat and --linear_probe. Defaults to the "
             "checkpoint's sibling _model_config.json; pass it explicitly when fine-tuning a "
             "checkpoint that inherited its architecture from an earlier step, such as a QAT "
             "checkpoint, which writes no config of its own."
@@ -227,20 +227,16 @@ def get_args() -> argparse.Namespace:
         "--audio_frontend",
         type=str,
         default="hybrid",
-        choices=["hybrid", "raw", "librosa", "mfcc", "log_mel"],
+        choices=["hybrid", "raw", "librosa"],
         help="Audio frontend mode",
     )
-    parser.add_argument("--mag_scale", type=str, default="pwl", choices=["pcen", "pwl", "db", "none"])
-    parser.add_argument("--n_mfcc", type=int, default=20, help="Number of MFCC coefficients (mfcc frontend only)")
+    parser.add_argument("--mag_scale", type=str, default="pwl", choices=["pwl", "none"])
 
     # -- Model architecture ---------------------------------------------------
     parser.add_argument("--embeddings_size", type=int, default=256, help="Embeddings layer size")
     parser.add_argument("--alpha", type=float, default=1.0, help="Width multiplier")
     parser.add_argument("--depth_multiplier", type=int, default=1, help="Depth multiplier")
     parser.add_argument("--frontend_trainable", action="store_true", default=False)
-    parser.add_argument(
-        "--use_attention_pooling", action="store_true", default=False, help="Use attention pooling instead of GAP"
-    )
 
     # -- Augmentation ---------------------------------------------------------
     parser.add_argument("--no_spec_augment", action="store_true", default=False, help="Disable SpecAugment")
@@ -292,12 +288,20 @@ def get_args() -> argparse.Namespace:
         default="max",
         help="File validation pooling for exact cMAP checkpoint selection.",
     )
-
-    # -- Tuning, pruning & QAT -----------------------------------------------
     parser.add_argument(
-        "--tune", action="store_true", default=False, help="Run Optuna hyperparameter search instead of single training"
+        "--validation_subset",
+        type=int,
+        default=0,
+        help=(
+            "For QAT, score checkpoint selection on a fixed stratified subset of this many validation "
+            "files instead of all of them. Selection converts and evaluates an INT8 model every "
+            "epoch, so the full manifest costs roughly 20 minutes per epoch; a subset makes arms "
+            "comparable in an hour. The draw is deterministic and its hash is recorded in the "
+            "selection report, so every arm and epoch scores the identical files. 0 uses all."
+        ),
     )
-    parser.add_argument("--n_trials", type=int, default=20, help="Number of Optuna trials (used with --tune)")
+
+    # -- QAT ------------------------------------------------------------------
     parser.add_argument(
         "--qat",
         action="store_true",
@@ -340,108 +344,6 @@ def get_args() -> argparse.Namespace:
         default=0.10,
         help="Fraction of each QAT batch included in the worst-sample loss",
     )
-    parser.add_argument(
-        "--no_qat_preserve_sparsity",
-        action="store_true",
-        default=False,
-        help="Let QAT refill weights that a previous --prune run zeroed",
-    )
-    parser.add_argument(
-        "--prune",
-        action="store_true",
-        default=False,
-        help="Gradual magnitude pruning (requires pretrained --checkpoint_path)",
-    )
-    parser.add_argument(
-        "--prune_final_sparsity",
-        type=float,
-        default=0.5,
-        help="Target fraction of prunable weights zeroed by the end of the ramp",
-    )
-    parser.add_argument(
-        "--prune_scope",
-        type=str,
-        default="layerwise",
-        choices=["layerwise", "global"],
-        help="Give every prunable layer the same sparsity, or rank all weights together",
-    )
-    parser.add_argument(
-        "--prune_ramp_fraction",
-        type=float,
-        default=0.5,
-        help="Fraction of the pruning run spent ramping up to the target sparsity",
-    )
-    parser.add_argument(
-        "--prune_frequency",
-        type=int,
-        default=100,
-        help="Training steps between mask recomputations during the ramp",
-    )
-    parser.add_argument(
-        "--prune_min_layer_params",
-        type=int,
-        default=1024,
-        help="Smallest kernel (in weights) eligible for pruning",
-    )
-    parser.add_argument(
-        "--no_prune_head",
-        action="store_true",
-        default=False,
-        help="Leave the classifier head dense (it is pruned by default; conversion ships it separately)",
-    )
-    parser.add_argument(
-        "--prune_head_sparsity",
-        type=float,
-        default=-1.0,
-        help=(
-            "Separate target sparsity for the classifier head "
-            "(default -1 follows --prune_final_sparsity). Raise it to shrink an over-the-air head update."
-        ),
-    )
-    parser.add_argument(
-        "--prune_max_cmap_drop",
-        dest="prune_max_cmap_drop",
-        type=float,
-        default=0.02,
-        help=(
-            "Largest tolerated class-macro AP regression before pruning fails. This gate "
-            "measured macro ROC-AUC before, with a 0.005 tolerance; cmAP moves roughly four "
-            "times as far for the same damage (quantizing v1.1 cost 0.0085 ROC-AUC but "
-            "0.0354 cmAP), so the tolerance is rescaled to keep the gate about as strict as "
-            "it was."
-        ),
-    )
-    parser.add_argument(
-        "--prune_eval_samples",
-        type=int,
-        default=1024,
-        help="Validation samples scored by the pruning accuracy gate",
-    )
-    parser.add_argument(
-        "--prune_distillation_weight",
-        type=float,
-        default=1.0,
-        help="Pruning teacher Bernoulli-KL loss weight",
-    )
-    parser.add_argument(
-        "--prune_cosine_weight",
-        type=float,
-        default=0.10,
-        help="Pruning mean teacher/student cosine-loss weight",
-    )
-    parser.add_argument(
-        "--prune_cosine_tail_weight",
-        type=float,
-        default=0.75,
-        help="Pruning worst-sample teacher/student cosine-loss weight",
-    )
-    parser.add_argument(
-        "--prune_cosine_tail_fraction",
-        type=float,
-        default=0.10,
-        help="Fraction of each pruning batch included in the worst-sample loss",
-    )
-
     # -- Linear probing -------------------------------------------------------
     parser.add_argument(
         "--linear_probe",
@@ -454,13 +356,16 @@ def get_args() -> argparse.Namespace:
 
     # Derive positive flags from --no_* flags
     args.spec_augment = not args.no_spec_augment
-    args.qat_preserve_sparsity = not args.no_qat_preserve_sparsity
-    args.prune_head = not args.no_prune_head
     args.deterministic = True  # always deterministic
 
+    if args.validation_subset < 0:
+        parser.error("--validation_subset must be non-negative")
+    if args.validation_subset and not args.qat:
+        parser.error("--validation_subset requires --qat")
+
     # The compression steps run one at a time against a converged checkpoint;
-    # the documented order is prune, then QAT, then convert.
-    exclusive = [name for name in ("tune", "prune", "qat", "linear_probe") if getattr(args, name)]
+    # the documented order is QAT, then convert.
+    exclusive = [name for name in ("qat", "linear_probe") if getattr(args, name)]
     if len(exclusive) > 1:
         raise SystemExit(f"Options are mutually exclusive, run them as separate steps: {exclusive}")
 
@@ -497,20 +402,6 @@ def main():
     if args.mixed_precision:
         tf.keras.mixed_precision.set_global_policy("mixed_float16")
         print("Mixed precision enabled (float16 compute, float32 accumulation).")
-
-    # Optuna hyperparameter tuning
-    if args.tune:
-        from birdnet_stm32.training.tuner import run_tuning
-
-        run_tuning(args)
-        return
-
-    # Gradual magnitude pruning
-    if args.prune:
-        from birdnet_stm32.training.pruning import run_pruning
-
-        run_pruning(args)
-        return
 
     # Quantization-aware fine-tuning
     if args.qat:
@@ -650,7 +541,6 @@ def main():
         mag_scale=args.mag_scale,
         frontend_trainable=args.frontend_trainable,
         dropout_rate=args.dropout,
-        use_attention_pooling=args.use_attention_pooling,
     )
     # Per-layer MACs and N6 compatibility, rather than a plain Keras summary:
     # on this target the MAC budget and op support decide whether the model is
@@ -673,8 +563,6 @@ def main():
         num_classes=len(classes),
         class_names=classes,
         frontend_trainable=args.frontend_trainable,
-        n_mfcc=args.n_mfcc,
-        use_attention_pooling=args.use_attention_pooling,
         dropout_rate=args.dropout,
     )
     cfg_path = os.path.splitext(args.checkpoint_path)[0] + "_model_config.json"

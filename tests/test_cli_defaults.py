@@ -4,6 +4,9 @@ These are deliberate product choices rather than incidental argparse values, so
 a change to any of them should be a change to this file too.
 """
 
+import re
+import sys
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -34,38 +37,43 @@ def _evaluate(*argv):
 
 
 class TestCompressionStepDefaults:
-    """Compression steps are opt-in; their internals are on once selected."""
+    """Compression steps are opt-in and run one at a time."""
 
     def test_no_compression_step_runs_unless_asked(self):
         args = _train()
-        assert args.prune is False
         assert args.qat is False
         assert args.linear_probe is False
-        assert args.tune is False
-
-    def test_pruning_covers_the_classifier_head_by_default(self):
-        """The head is the artifact a split export ships, so it is pruned."""
-        assert _train("--prune").prune_head is True
-        assert _train("--prune", "--no_prune_head").prune_head is False
-
-    def test_head_follows_the_shared_sparsity_target_by_default(self):
-        assert _train("--prune").prune_head_sparsity == -1.0
-        assert _train("--prune", "--prune_head_sparsity", "0.75").prune_head_sparsity == pytest.approx(0.75)
-
-    def test_pruning_defaults_are_conservative(self):
-        args = _train("--prune")
-        assert args.prune_final_sparsity == pytest.approx(0.5)
-        assert args.prune_scope == "layerwise"
-        assert args.prune_ramp_fraction == pytest.approx(0.5)
-        assert args.prune_max_cmap_drop == pytest.approx(0.02)
-
-    def test_qat_preserves_pruning_masks_by_default(self):
-        assert _train("--qat").qat_preserve_sparsity is True
-        assert _train("--qat", "--no_qat_preserve_sparsity").qat_preserve_sparsity is False
 
     def test_compression_steps_are_mutually_exclusive(self):
+        """Each step consumes a converged checkpoint and writes another."""
         with pytest.raises(SystemExit, match="mutually exclusive"):
-            _train("--prune", "--qat")
+            _train("--qat", "--linear_probe")
+
+    def test_qat_calibration_defaults_match_the_converter(self):
+        """QAT and conversion must observe the same activation statistics."""
+        args = _train("--qat")
+        assert args.qat_calibration_samples == 1024
+        assert args.qat_calibration_percentile == 100.0
+
+    def test_validation_subset_is_qat_only_and_nonnegative(self):
+        with pytest.raises(SystemExit):
+            _train("--validation_subset", "10")
+        with pytest.raises(SystemExit):
+            _train("--qat", "--validation_subset", "-1")
+
+    def test_removed_options_are_gone(self):
+        """Pruning and Optuna tuning were never used by any release.
+
+        They are removed rather than kept as dead flags, so a run script that
+        still passes them fails loudly instead of silently doing nothing.
+        """
+        args = _train()
+        for name in ("prune", "tune", "n_trials", "qat_preserve_sparsity", "prune_head"):
+            assert not hasattr(args, name), name
+        with pytest.raises(SystemExit):
+            _train("--prune")
+        with pytest.raises(SystemExit):
+            _train("--tune")
 
 
 class TestConversionDefaults:
@@ -92,3 +100,47 @@ class TestEvaluationDefaults:
 
     def test_classifier_head_can_be_chained(self):
         assert _evaluate("--classifier_path", "head.tflite").classifier_path == "head.tflite"
+
+
+class TestDocumentedArguments:
+    """The argument reference must match the parser.
+
+    A table that drifts from the code is worse than no table: it documents
+    options that silently do nothing, which is exactly what the 1.2.0 cleanup
+    removed. Pinning it here keeps the two in step.
+    """
+
+    DOC = Path(__file__).resolve().parents[1] / "docs" / "training.md"
+
+    @staticmethod
+    def parser_options() -> set[str]:
+        import argparse
+
+        from birdnet_stm32.cli.train import get_args
+
+        recorded: set[str] = set()
+        original = argparse.ArgumentParser.add_argument
+
+        def capture(self, *args, **kwargs):
+            recorded.update(a for a in args if isinstance(a, str) and a.startswith("--"))
+            return original(self, *args, **kwargs)
+
+        argparse.ArgumentParser.add_argument = capture
+        try:
+            with mock.patch.object(sys, "argv", ["train", "--data_path_train", "d"]):
+                get_args()
+        finally:
+            argparse.ArgumentParser.add_argument = original
+        return recorded
+
+    def documented_options(self) -> set[str]:
+        rows = re.findall(r"^\| `(--[a-z_0-9]+)`", self.DOC.read_text(), re.M)
+        return set(rows)
+
+    def test_every_documented_option_exists(self):
+        undefined = self.documented_options() - self.parser_options()
+        assert not undefined, f"documented but not accepted by the parser: {sorted(undefined)}"
+
+    def test_every_option_is_documented(self):
+        undocumented = self.parser_options() - self.documented_options() - {"--help"}
+        assert not undocumented, f"accepted by the parser but undocumented: {sorted(undocumented)}"

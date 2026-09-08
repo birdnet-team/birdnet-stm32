@@ -58,19 +58,15 @@ All channel counts are rounded to the nearest multiple of 8 via
 
 After the final stage:
 
-1. **Global Average Pooling** (or **Attention Pooling** with `--use_attention_pooling`)
+1. **Global Average Pooling**
 2. **Dropout** (0.5)
 3. **Dense** with sigmoid activation → `[B, num_classes]`
-
-Attention pooling learns per-channel weights before averaging, giving the
-model a soft spatial attention mechanism while remaining NPU-compatible.
 
 ## Building blocks
 
 All reusable building blocks live in `birdnet_stm32/models/blocks.py`:
 
 - `_make_divisible(v, divisor)` — round channel counts to multiples of `divisor`
-- `AttentionPooling` — Keras Layer that learns per-channel spatial attention weights
 
 ## Scaling knobs
 

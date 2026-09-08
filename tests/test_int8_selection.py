@@ -173,3 +173,39 @@ def test_qat_cli_saves_a_real_selected_int8_pair(tmp_path, monkeypatch):
         hashlib.sha256((tmp_path / "model_qat_INT8.tflite").read_bytes()).hexdigest()
         == report["selected"]["tflite_sha256"]
     )
+
+
+def test_validation_subset_draw_is_fixed_and_covers_every_class():
+    """Selection compares checkpoints, so the draw must never move.
+
+    The subset exists because selection converts and scores an INT8 model every
+    epoch; on the full manifest that dominates the run. A draw that changed
+    between arms or epochs would make the comparison meaningless, and one that
+    dropped classes would silently stop gating the long tail that macro AP
+    exists to protect.
+    """
+    from birdnet_stm32.conversion.quantize import stratified_sample_paths
+
+    paths = [f"/data/{name}/{index:04d}.wav" for name in (f"class{i:03d}" for i in range(40)) for index in range(25)]
+    first = stratified_sample_paths(paths, 200, seed=1234)
+    second = stratified_sample_paths(paths, 200, seed=1234)
+
+    assert first == second
+    assert len(first) == 200
+    assert len({path.split("/")[2] for path in first}) == 40
+    # A subset at least as large as the manifest must not silently shrink it.
+    assert sorted(stratified_sample_paths(paths, len(paths), seed=1234)) == sorted(paths)
+
+
+def test_validation_subset_defaults_to_the_whole_manifest():
+    """Opting in is explicit; an unset flag must not quietly change selection."""
+    import sys
+
+    from birdnet_stm32.cli.train import get_args
+
+    argv = sys.argv
+    try:
+        sys.argv = ["birdnet_stm32", "--data_path_train", "/tmp/train"]
+        assert get_args().validation_subset == 0
+    finally:
+        sys.argv = argv

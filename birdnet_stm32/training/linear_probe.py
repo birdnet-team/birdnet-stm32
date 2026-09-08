@@ -18,8 +18,8 @@ from birdnet_stm32.data.dataset import (
     upsample_minority_classes,
 )
 from birdnet_stm32.data.generator import load_dataset
-from birdnet_stm32.models.frontend import AudioFrontendLayer, normalize_frontend_name
-from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
+from birdnet_stm32.models.frontend import normalize_frontend_name
+from birdnet_stm32.models.runners import load_keras_model
 from birdnet_stm32.training.config import ModelConfig
 from birdnet_stm32.training.trainer import compute_hop_length, train_model
 
@@ -47,14 +47,7 @@ def run_linear_probe(args: argparse.Namespace) -> None:
 
     # Load pretrained model
     print(f"[linear-probe] Loading pretrained model from {args.checkpoint_path}")
-    base_model = tf.keras.models.load_model(
-        args.checkpoint_path,
-        compile=False,
-        custom_objects={
-            "AudioFrontendLayer": AudioFrontendLayer,
-            "MagnitudeScalingLayer": MagnitudeScalingLayer,
-        },
-    )
+    base_model = load_keras_model(args.checkpoint_path)
 
     # Class order defines the head's output order, so an explicit list wins
     # over directory discovery: the shipped labels file has to match the head
@@ -68,19 +61,18 @@ def run_linear_probe(args: argparse.Namespace) -> None:
         raise ValueError(f"Training dataset is missing configured classes: {missing}")
     print(f"[linear-probe] {len(classes)} target classes, {len(file_paths)} files")
 
-    # Find the embeddings layer (just before dropout/dense head)
-    # Strategy: find the last GlobalAveragePooling2D or the attention pool output
+    # Find the embeddings layer just before the dropout/dense head.
     embedding_layer = None
     for layer in reversed(base_model.layers):
         if isinstance(layer, (tf.keras.layers.GlobalAveragePooling2D, tf.keras.layers.Flatten)):
             embedding_layer = layer
             break
-        if "attn_pool" in layer.name or "gap" in layer.name:
+        if "gap" in layer.name:
             embedding_layer = layer
             break
 
     if embedding_layer is None:
-        raise RuntimeError("Could not find embedding layer (GAP/attention pool) in pretrained model.")
+        raise RuntimeError("Could not find a GAP embedding layer in pretrained model.")
 
     # Build new model: backbone (frozen) → dropout → new dense head
     backbone_output = embedding_layer.output
@@ -175,8 +167,6 @@ def run_linear_probe(args: argparse.Namespace) -> None:
         num_classes=len(classes),
         class_names=classes,
         frontend_trainable=old_cfg.frontend_trainable,
-        n_mfcc=old_cfg.n_mfcc,
-        use_attention_pooling=old_cfg.use_attention_pooling,
         dropout_rate=args.dropout,
     )
     out_cfg_path = os.path.splitext(args.checkpoint_path)[0] + "_probe_model_config.json"

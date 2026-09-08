@@ -24,20 +24,18 @@ python -m birdnet_stm32 evaluate --model_path checkpoints/best_model_quantized.t
 # Deploy/Test on board (requires USB-connected STM32N6570-DK + config.json)
 python -m birdnet_stm32 board-test --config config.json
 
-# Optuna hyperparameter search (pip install -e ".[tune]")
-python -m birdnet_stm32 train --data_path_train data/train --tune --n_trials 20 --epochs 30
 ```
 
 ## Architecture
 
-- **Audio frontend** (`birdnet_stm32/models/frontend.py`): Five modes — `librosa` (precomputed mel), `hybrid` (linear STFT + learned mel mixer), `raw` (waveform → learned Gabor quadrature filterbank), `mfcc` (precomputed MFCC), `log_mel` (precomputed log-mel). The firmware supports `raw`, `hybrid`, and `librosa`; `mfcc` and `log_mel` remain host-preprocessed paths.
-- **Magnitude scaling**: `pwl` (piecewise-linear, default, quantization-friendly), `pcen`, `db` (avoid — poor quantization). Decoupled in `birdnet_stm32/models/magnitude.py`.
-- **Model**: DS-CNN (depthwise-separable CNN) with 4 stages, ReLU6, global avg pool → dropout → dense. Scaled via `alpha` (channel multiplier) and `depth_multiplier` (block repeats). Optional attention pooling (`--use_attention_pooling`).
-- **Building blocks** (`birdnet_stm32/models/blocks.py`): channel alignment and optional attention pooling.
+- **Audio frontend** (`birdnet_stm32/models/frontend.py`): Three modes — `librosa` (precomputed mel), `hybrid` (linear STFT + learned mel mixer), `raw` (waveform → learned Gabor quadrature filterbank). All three are supported by the firmware. `mfcc` and `log_mel` were removed in 1.2.0.
+- **Magnitude scaling**: `pwl` (learned piecewise-linear, default, quantization-friendly) and `none` (pass-through baseline). Decoupled in `birdnet_stm32/models/magnitude.py`. `pcen` and `db` were removed in 1.2.0; do not reintroduce a log op here, its dynamic range is what breaks INT8.
+- **Model**: DS-CNN (depthwise-separable CNN) with 4 stages, ReLU6, global avg pool → dropout → dense. Scaled via `alpha` (channel multiplier) and `depth_multiplier` (block repeats).
+- **Building blocks** (`birdnet_stm32/models/blocks.py`): channel alignment.
 - **Model profiler** (`birdnet_stm32/models/profiler.py`): Per-layer MACs, params, activation memory, N6 compatibility check. Printed by `train` in place of `model.summary()`.
 - **Quantization**: Post-training quantization (PTQ) with representative dataset calibration (stratified sampling + SNR filtering). Float32 I/O, INT8 internals. Per-channel (default) or per-tensor (`--per_tensor`). Dynamic range mode (`--quantization dynamic`). Batch validation (`--batch_validate N`). ONNX export (`--export_onnx`). JSON conversion report (`--report_json`).
 - **QAT**: Quantization-aware training via shadow-weight fake-quantization (`--qat`). Freezes BN, injects INT8 noise into kernels during fine-tuning. No FakeQuant ops in saved model — N6 compatible. Implemented in `birdnet_stm32/training/qat.py`.
-- **Training pipeline**: Always-multi-label sigmoid + binary crossentropy head. Linear warmup into cosine LR decay, checkpoint/early-stopping on val ROC-AUC, resume (`--resume`), gradient clipping (`--grad_clip`, default 1.0), mixed precision (`--mixed_precision`), Dirichlet multi-source mixup, smart crop for long recordings, Optuna hyperparameter tuning (`--tune`, `birdnet_stm32/training/tuner.py`), linear probing (`--linear_probe`, `birdnet_stm32/training/linear_probe.py`).
+- **Training pipeline**: Always-multi-label sigmoid + binary crossentropy head. Linear warmup into cosine LR decay, checkpoint/early-stopping on val ROC-AUC, resume (`--resume`), gradient clipping (`--grad_clip`, default 1.0), mixed precision (`--mixed_precision`), Dirichlet multi-source mixup, smart crop for long recordings, linear probing (`--linear_probe`, `birdnet_stm32/training/linear_probe.py`).
 - **Data pipeline** (`birdnet_stm32/data/generator.py`): Multiprocessing pool (`--num_workers`, default 8) bypasses GIL for parallel FLAC decode + resample + spectrogram. Multi-chunk extraction (`--max_chunks_per_file`, default 3) reuses long file opens by extracting multiple salient chunks per decode, buffered in a shuffled in-memory reservoir (~135 MB) for batch diversity.
 - **Deployment**: `stedgeai generate` → `n6_loader.py` (serial flash) → `stedgeai validate` (on-device).
 

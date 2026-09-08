@@ -164,3 +164,45 @@ def test_config_ignores_removed_architecture_keys(tmp_path):
     assert cfg.sample_rate == 24000
     assert cfg.num_classes == 38
     assert not hasattr(cfg, "use_se")
+
+
+class TestRetiredConfigKeys:
+    """Removing a training option must not make existing checkpoints unreadable.
+
+    1.2.0 removed PCEN, dB, MFCC and attention pooling. Models saved before it
+    still carry those constructor arguments in their serialized Keras layer
+    config, and Keras rejects unknown keyword arguments outright, so both custom
+    layers drop them on load.
+    """
+
+    def test_frontend_layer_ignores_retired_arguments(self):
+        from birdnet_stm32.models.frontend import AudioFrontendLayer
+
+        layer = AudioFrontendLayer(mode="raw", mel_bins=8, spec_width=8, sample_rate=8000, chunk_duration=0.25)
+        stale = {**layer.get_config(), "pcen_K": 8}
+        assert AudioFrontendLayer.from_config(stale).mel_bins == 8
+
+    def test_magnitude_layer_ignores_retired_arguments(self):
+        from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
+
+        layer = MagnitudeScalingLayer(method="pwl", channels=8)
+        stale = {**layer.get_config(), "pcen_K": 8, "pcen_pool_width": 3}
+        assert MagnitudeScalingLayer.from_config(stale).method == "pwl"
+
+    def test_model_config_json_ignores_retired_fields(self):
+        stale = {
+            "audio_frontend": "raw",
+            "mag_scale": "pwl",
+            "num_classes": 2,
+            "class_names": ["a", "b"],
+            "use_se": True,
+            "se_reduction": 8,
+            "use_inverted_residual": True,
+            "expansion_factor": 2,
+            "use_attention_pooling": True,
+            "n_mfcc": 20,
+        }
+        cfg = ModelConfig.from_dict(stale)
+        assert cfg.audio_frontend == "raw"
+        assert not hasattr(cfg, "use_attention_pooling")
+        assert not hasattr(cfg, "n_mfcc")

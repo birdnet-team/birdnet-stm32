@@ -58,14 +58,11 @@ what a bundle contains and how to run one on the board.
 
 ## Key features
 
-- **Five audio frontends**: `librosa` (precomputed mel), `hybrid` (linear STFT +
-  learned mel mixer), `raw` (waveform → learned filterbank), `mfcc`
-  (precomputed MFCC), and `log_mel` (precomputed log-mel) — all
-  quantization-friendly. The firmware supports `raw`, `hybrid`, and `librosa`;
-  `mfcc` and `log_mel` remain host-preprocessed paths.
-- **Scalable DS-CNN**: width (`alpha`) and depth (`depth_multiplier`) knobs,
-  plain depthwise separable blocks, plus optional attention pooling
-  (`--use_attention_pooling`).
+- **Three audio frontends**: `librosa` (precomputed mel), `hybrid` (linear STFT
+  + learned mel mixer), and `raw` (waveform → learned filterbank) — all
+  quantization-friendly and all supported by the firmware.
+- **Scalable DS-CNN**: width (`alpha`) and depth (`depth_multiplier`) knobs over
+  plain depthwise separable blocks.
 - **Post-training quantization**: float32 I/O with INT8 internals, targeting
   >0.95 cosine similarity vs. the float model. Per-channel (default) or
   per-tensor, plus dynamic range mode.
@@ -74,8 +71,9 @@ what a bundle contains and how to run one on the board.
   calibration manifest. Frozen-teacher KL plus mean and worst-sample cosine
   consistency protect mean and tail parity. The saved deployment checkpoint
   has no FakeQuant ops and remains N6 compatible.
-- **Optuna hyperparameter search**: `--tune --n_trials 20` for automated
-  architecture and training hyperparameter optimization.
+- **Device-facing release gate**: `measure-operational` scores the converted
+  INT8 model on its own at a real operating threshold, so a release is judged
+  on the detections and false alarms a device would see.
 - **Comprehensive evaluation**: ROC-AUC, cmAP, F1, species-level AP with
   bootstrap CI, DET curves, latency measurement, benchmark mode, and HTML
   reports.
@@ -86,10 +84,10 @@ what a bundle contains and how to run one on the board.
 
 ```
 birdnet_stm32/      # Python package (models, audio, data, deploy, ...)
-  cli/              # CLI subcommands (train, convert, evaluate, deploy, board-test)
+  cli/              # CLI subcommands (train, convert, evaluate, measure-operational, deploy, board-test)
   models/           # DS-CNN, frontend, magnitude scaling, profiler
   audio/            # Audio I/O, spectrogram, augmentation
-  training/         # Trainer, QAT, Optuna tuner, linear probing
+  training/         # Trainer, QAT, distillation losses, linear probing
   conversion/       # PTQ, validation, ONNX export
   evaluation/       # Metrics, pooling, reporting
   deploy/           # stedgeai wrappers, N6 loader
@@ -100,5 +98,5 @@ docs/               # This documentation
 All commands use the unified CLI entry point:
 
 ```bash
-python -m birdnet_stm32 {train,convert,evaluate,deploy,board-test}
+python -m birdnet_stm32 {train,convert,evaluate,measure-operational,deploy,board-test}
 ```

@@ -1,10 +1,12 @@
 # Audio Frontends
 
-The `AudioFrontendLayer` in `birdnet_stm32.models.frontend` implements five
+The `AudioFrontendLayer` in `birdnet_stm32.models.frontend` implements three
 audio frontend modes, each providing a different trade-off between flexibility
 and deployment complexity.
 
-Canonical names: `librosa`, `hybrid`, `raw`, `mfcc`, `log_mel`.
+Canonical names: `librosa`, `hybrid`, `raw`. The `mfcc` and `log_mel` modes were
+removed in 1.2.0: both were host-precomputed variants of the `librosa` path and
+no release ever used them.
 
 ```mermaid
 flowchart LR
@@ -19,14 +21,6 @@ flowchart LR
     subgraph raw ["raw (waveform)"]
         direction LR
         R1["WAV"] --> R2["Gabor quadrature bank\nConv2D + BN + ReLU"] --> R3["Mag scaling\n→ CNN"]
-    end
-    subgraph mfcc ["mfcc (precomputed)"]
-        direction LR
-        M1["WAV"] --> M2["Offline\nMFCC"] --> M3["MFCC features\n→ model"]
-    end
-    subgraph log_mel ["log_mel (precomputed)"]
-        direction LR
-        LM1["WAV"] --> LM2["Offline\nlog-mel"] --> LM3["Log-mel spectrogram\n→ model"]
     end
 ```
 
@@ -92,31 +86,6 @@ Two invariants the geometry guarantees, both covered by tests:
     ~2.7 s — 2.5 s is a comfortable default. Longer chunks need a lower sample
     rate or a different frontend.
 
-### `mfcc` (precomputed)
-
-Mel-frequency cepstral coefficients are computed offline before being fed to
-the model. Useful for compact feature representations.
-
-- **Input**: `[B, num_mfcc, spec_width, 1]` MFCC features
-- **In-graph ops**: magnitude scaling only (if enabled)
-- **Pros**: compact features, well-studied in speech/audio classification
-- **Cons**: frontend is not part of the TFLite model; must be replicated on-device
-
-### `log_mel` (precomputed)
-
-Log-scaled mel spectrograms are computed offline before being fed to the model.
-
-- **Input**: `[B, num_mels, spec_width, 1]` log-mel spectrogram
-- **In-graph ops**: magnitude scaling only (if enabled)
-- **Pros**: simple, standard feature representation
-- **Cons**: frontend is not part of the TFLite model; must be replicated on-device
-
-!!! note "Deployment frontends"
-    `raw` is the only TFLite path whose input is waveform audio. The standalone
-    firmware also deploys `hybrid` by computing STFT on the M55 and `librosa`
-    by computing STFT + mel on the M55. `mfcc` and `log_mel` require matching
-    preprocessing outside the supplied firmware.
-
 ## Magnitude scaling
 
 Magnitude scaling is applied after the mel projection (or filterbank) and
@@ -126,20 +95,6 @@ before the CNN body. It compresses the dynamic range of spectrogram values.
 
 Learned piecewise-linear compression using depthwise convolution branches.
 Quantizes cleanly — no log operations, no running statistics.
-
-### `pcen` (per-channel energy normalization)
-
-Applies automatic gain control per frequency band using a learned smoothing
-filter. Uses pooling and convolution — generally N6-compatible but more complex
-than PWL.
-
-### `db` (decibels)
-
-Log-scale compression: $20 \cdot \log_{10}(\text{mag} + \epsilon)$.
-
-!!! warning
-    Avoid `db` for quantized models. The log operation produces wide dynamic
-    ranges that lead to poor INT8 quantization.
 
 ### `none`
 

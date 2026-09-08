@@ -22,16 +22,14 @@ class ModelConfig:
         fft_length: FFT window size.
         chunk_duration: Audio chunk duration in seconds.
         hop_length: STFT hop length in samples.
-        audio_frontend: Frontend mode ('librosa', 'hybrid', 'raw', 'mfcc', 'log_mel').
-        mag_scale: Magnitude scaling ('pwl', 'pcen', 'db', 'none').
+        audio_frontend: Frontend mode ('librosa', 'hybrid', 'raw').
+        mag_scale: Magnitude scaling ('pwl', 'none').
         embeddings_size: Dense embedding dimension before classifier.
         alpha: Width multiplier for channel counts.
         depth_multiplier: Block repeat count per stage.
         num_classes: Number of output classes.
         class_names: Ordered list of class label strings.
         frontend_trainable: Whether frontend weights are trainable.
-        n_mfcc: Number of MFCC coefficients (mfcc frontend only).
-        use_attention_pooling: Whether attention pooling replaces GAP.
         dropout_rate: Dropout rate before classifier head.
     """
 
@@ -44,13 +42,11 @@ class ModelConfig:
     hop_length: int = 281
     audio_frontend: str = "hybrid"
     mag_scale: str = "pwl"
-    n_mfcc: int = 20
 
     # Model architecture
     embeddings_size: int = 256
     alpha: float = 1.0
     depth_multiplier: int = 1
-    use_attention_pooling: bool = False
     dropout_rate: float = 0.5
     frontend_trainable: bool = False
 
@@ -60,8 +56,8 @@ class ModelConfig:
 
     # -- Validation ----------------------------------------------------------
 
-    _VALID_FRONTENDS = frozenset({"librosa", "hybrid", "raw", "mfcc", "log_mel"})
-    _VALID_MAG_SCALES = frozenset({"pwl", "pcen", "db", "none"})
+    _VALID_FRONTENDS = frozenset({"librosa", "hybrid", "raw"})
+    _VALID_MAG_SCALES = frozenset({"pwl", "none"})
 
     def __post_init__(self) -> None:
         """Validate field values after initialization."""
