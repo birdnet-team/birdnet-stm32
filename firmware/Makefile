@@ -58,6 +58,9 @@ C_SOURCES += network.c
 C_SOURCES += $(ATONN_SOURCES)
 C_SOURCES += $(DRIVER_SOURCES)
 C_SOURCES += $(BSP_PATH)/STM32N6570-DK/stm32n6570_discovery.c
+C_SOURCES += $(DK_DRIVER_PATH)/stm32n6570_discovery_xspi.c
+C_SOURCES += $(BSP_PATH)/Components/aps256xx/aps256xx.c
+C_SOURCES += $(BSP_PATH)/Components/mx66uw1g45g/mx66uw1g45g.c
 C_SOURCES += Drivers/HAL_SD/stm32n6xx_hal_sd.c
 C_SOURCES += Drivers/HAL_SD/stm32n6xx_ll_sdmmc.c
 C_SOURCES += Drivers/stm32n6570_discovery_sd.c
@@ -143,7 +146,7 @@ $(BUILD_DIR)/%.bin: $(BUILD_DIR)/%.elf | $(BUILD_DIR)
 	$(BIN) $< $@
 
 $(BUILD_DIR):
-	mkdir $@
+	mkdir -p $@
 
 # --- Generate app_config.h and app_labels.h from model_config.json ----------
 configure:

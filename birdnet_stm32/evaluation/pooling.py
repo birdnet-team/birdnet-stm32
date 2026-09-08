@@ -19,7 +19,7 @@ def lme_pooling(scores: np.ndarray, beta: float = 10.0) -> np.ndarray:
         return scores
     m = np.max(beta * scores, axis=0, keepdims=True)
     lme = m + np.log(np.mean(np.exp(beta * scores - m), axis=0, keepdims=True) + 1e-12)
-    return (lme / beta).ravel()
+    return np.asarray(lme / beta).ravel()
 
 
 def pool_scores(chunk_scores: np.ndarray, method: str = "average", beta: float = 10.0) -> np.ndarray:
@@ -39,9 +39,9 @@ def pool_scores(chunk_scores: np.ndarray, method: str = "average", beta: float =
     if chunk_scores.shape[0] == 0:
         return np.zeros((chunk_scores.shape[1],), dtype=np.float32)
     if method in ("avg", "mean", "average"):
-        return np.mean(chunk_scores, axis=0)
+        return np.asarray(np.mean(chunk_scores, axis=0))
     if method == "max":
-        return np.max(chunk_scores, axis=0)
+        return np.asarray(np.max(chunk_scores, axis=0))
     if method in ("lme", "log_mean_exp", "log_mean_exponential"):
         return lme_pooling(chunk_scores, beta=beta)
     raise ValueError(f"Unsupported pooling method: {method}")

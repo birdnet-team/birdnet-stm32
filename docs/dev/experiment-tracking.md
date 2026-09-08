@@ -76,12 +76,6 @@ for f in report/eval_runs/*.csv; do
 done | sort -t= -k2 -rn
 ```
 
-### Optuna comparison
-
-When using `--tune`, Optuna stores trial results in
-`checkpoints/optuna_trials/` and the best hyperparameters in
-`checkpoints/optuna_best_params.json`.
-
 ## Tips
 
 - **Name experiments descriptively**: use `--checkpoint_path` to encode the

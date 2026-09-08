@@ -49,7 +49,7 @@ def fake_quantize_weights(
     else:
         amax = np.max(np.abs(w))
     scale = np.maximum(amax / qmax, 1e-12)
-    return (np.clip(np.round(w / scale), -qmax, qmax) * scale).astype(np.float32)
+    return np.asarray(np.clip(np.round(w / scale), -qmax, qmax) * scale, dtype=np.float32)
 
 
 def _channel_axis(layer: tf.keras.layers.Layer) -> int:
@@ -59,7 +59,7 @@ def _channel_axis(layer: tf.keras.layers.Layer) -> int:
 
 def _is_quantizable(layer: tf.keras.layers.Layer) -> bool:
     """Return whether a layer owns a kernel quantized by full-INT8 TFLite."""
-    return isinstance(layer, QUANTIZABLE_TYPES) and bool(layer.trainable_weights)
+    return isinstance(layer, QUANTIZABLE_TYPES) and hasattr(layer, "kernel")
 
 
 def _is_activation_boundary(layer: tf.keras.layers.Layer) -> bool:
@@ -141,7 +141,7 @@ class _QuantizedKernelCall(layers.Layer):
         super().__init__(trainable=True, **kwargs)
         self.target = target
 
-    def call(self, inputs):
+    def call(self, inputs, linear=False):
         """Run the target math without replacing its full-precision variable."""
         kernel = _fake_quantize_kernel_tensor(self.target.kernel, _channel_axis(self.target))
         if isinstance(self.target, layers.Conv2D):
@@ -163,14 +163,40 @@ class _QuantizedKernelCall(layers.Layer):
             raise TypeError(f"Unsupported quantized kernel layer: {type(self.target).__name__}")
         if self.target.bias is not None:
             output = output + self.target.bias
-        return self.target.activation(output)
+        return output if linear else self.target.activation(output)
+
+
+# Sample values for percentile bounds. Bounds must also exist in the saved
+# deployment frontend; fake quantization alone never survives clean export.
+_RESERVOIR_PER_SAMPLE = 4096
+
+
+def _reservoir_add(store: dict[str, list], name: str, array: np.ndarray, rng: np.random.Generator) -> None:
+    """Keep a bounded random subsample of one tensor's values."""
+    flat = np.asarray(array).reshape(-1)
+    if flat.size > _RESERVOIR_PER_SAMPLE:
+        flat = flat[rng.integers(0, flat.size, _RESERVOIR_PER_SAMPLE)]
+    store.setdefault(name, []).append(flat.astype(np.float32, copy=False))
+
+
+def _reservoir_range(store: dict[str, list], name: str, percentile: float) -> tuple[float, float] | None:
+    """Return the percentile range for one tensor, or None if unseen."""
+    chunks = store.get(name)
+    if not chunks:
+        return None
+    pooled = np.concatenate(chunks)
+    lo = float(np.percentile(pooled, 100.0 - percentile))
+    hi = float(np.percentile(pooled, percentile))
+    return (min(lo, 0.0), max(hi, 0.0))
 
 
 class _ActivationRangeCollector:
     """Observe internal custom-layer tensors without changing their values."""
 
-    def __init__(self):
+    def __init__(self, reservoir: dict[str, list] | None = None, rng: np.random.Generator | None = None):
         self.ranges: dict[str, list[float]] = {}
+        self.reservoir = reservoir
+        self.rng = rng
 
     def activation(self, name: str, inputs):
         """Record one tensor's scalar range and return it unchanged."""
@@ -178,6 +204,8 @@ class _ActivationRangeCollector:
         values = self.ranges.setdefault(name, [float("inf"), -float("inf")])
         values[0] = min(values[0], float(np.min(array)), 0.0)
         values[1] = max(values[1], float(np.max(array)), 0.0)
+        if self.reservoir is not None and self.rng is not None:
+            _reservoir_add(self.reservoir, name, array, self.rng)
         return inputs
 
     def kernel(self, layer, inputs):
@@ -216,8 +244,7 @@ class _FrontendQuantizationHook:
         return self._kernels[layer.name](inputs)
 
 
-# The teacher-consistency objective is shared with gradual magnitude pruning;
-# the alias keeps the QAT-specific name used across this module and its tests.
+# The alias keeps the QAT-specific name used across this module and its tests.
 _DistilledQATModel = DistilledModel
 
 
@@ -225,16 +252,37 @@ def calibrate_activation_ranges(
     model: tf.keras.Model,
     dataset: Iterable,
     max_samples: int = 64,
+    percentile: float = 100.0,
 ) -> dict[str, tuple[float, float]]:
-    """Measure scalar activation ranges on real inputs for QAT initialization."""
+    """Measure scalar activation ranges on real inputs for QAT initialization.
+
+    Args:
+        model: Deployment model to probe.
+        dataset: Calibration data.
+        max_samples: Number of samples to observe.
+        percentile: Upper percentile defining each range; 100 is absolute
+            min/max, the previous behaviour. Below 100 the range is taken from a
+            bounded reservoir of observed values, clipping outliers that would
+            otherwise stretch the INT8 grid.
+    """
+    if not 50.0 < percentile <= 100.0:
+        raise ValueError("Calibration percentile must be in (50, 100]")
+    if max_samples <= 0:
+        raise ValueError("Calibration sample count must be positive")
     boundaries = [layer for layer in model.layers if _is_activation_boundary(layer)]
     if not boundaries:
         raise ValueError("Model has no supported activation quantization boundaries")
-    probe = tf.keras.Model(model.inputs, [layer.output for layer in boundaries])
+    sigmoid_heads = [layer for layer in boundaries if _is_sigmoid_dense(layer)]
+    probe = tf.keras.Model(
+        model.inputs, [layer.output for layer in boundaries] + [layer.input for layer in sigmoid_heads]
+    )
     ranges = {layer.name: [float("inf"), -float("inf")] for layer in boundaries}
     ranges["__input__"] = [float("inf"), -float("inf")]
     frontends = [layer for layer in all_layers(model) if layer.__class__.__name__ == "AudioFrontendLayer"]
-    collector = _ActivationRangeCollector()
+    use_percentile = percentile < 100.0
+    reservoir: dict[str, list] = {}
+    rng = np.random.default_rng(0)
+    collector = _ActivationRangeCollector(reservoir if use_percentile else None, rng)
     for frontend in frontends:
         frontend.set_quantization_hook(collector)
 
@@ -249,10 +297,15 @@ def calibrate_activation_ranges(
                 outputs = probe([sample[None]], training=False)
                 if not isinstance(outputs, (tuple, list)):
                     outputs = [outputs]
-                for layer, output in zip(boundaries, outputs, strict=True):
+                for layer, output in zip(boundaries, outputs[: len(boundaries)], strict=True):
                     array = np.asarray(output)
                     ranges[layer.name][0] = min(ranges[layer.name][0], float(np.min(array)), 0.0)
                     ranges[layer.name][1] = max(ranges[layer.name][1], float(np.max(array)), 0.0)
+                for layer, features in zip(sigmoid_heads, outputs[len(boundaries) :], strict=True):
+                    logits = np.asarray(features) @ np.asarray(layer.kernel)
+                    if layer.bias is not None:
+                        logits += np.asarray(layer.bias)
+                    collector.activation(f"{layer.name}__logits", logits)
                 seen += 1
                 if seen >= max_samples:
                     break
@@ -266,8 +319,59 @@ def calibrate_activation_ranges(
 
     ranges.update(collector.ranges)
     result = {name: (values[0], values[1]) for name, values in ranges.items()}
-    print(f"[QAT] Calibrated {len(result)} activation tensors on {seen} samples")
+    if use_percentile:
+        clipped = 0
+        internal_names = set(collector.ranges) - {f"{layer.name}__logits" for layer in sigmoid_heads}
+        for name in internal_names:
+            narrowed = _reservoir_range(reservoir, name, percentile)
+            if narrowed is None:
+                continue
+            lo, hi = narrowed
+            wide_lo, wide_hi = result[name]
+            # Never widen a range: the percentile is a clip, not a re-estimate.
+            lo, hi = max(lo, wide_lo), min(hi, wide_hi)
+            if hi <= lo:
+                continue
+            if (hi - lo) < (wide_hi - wide_lo):
+                clipped += 1
+            result[name] = (lo, hi)
+        print(
+            f"[QAT] Calibrated {len(result)} activation tensors on {seen} samples "
+            f"at the {percentile:g}th percentile ({clipped} ranges narrowed)"
+        )
+    else:
+        print(f"[QAT] Calibrated {len(result)} activation tensors on {seen} samples")
+    for layer in sigmoid_heads:
+        # TFLite LOGISTIC has fixed scale 1/256 and zero point -128.
+        result[layer.name] = (0.0, 255.0 / 256.0)
     return result
+
+
+def _is_sigmoid_dense(layer):
+    return isinstance(layer, layers.Dense) and layer.activation == tf.keras.activations.sigmoid
+
+
+def bound_frontend(model, activation_ranges):
+    """Clone custom frontends with persistent internal activation bounds."""
+
+    def clone(layer):
+        if layer.__class__.__name__ != "AudioFrontendLayer":
+            return layer.__class__.from_config(layer.get_config())
+        config = layer.get_config()
+        config["activation_bounds"] = {
+            name: values
+            for name, values in activation_ranges.items()
+            if name.startswith(f"{layer.name}_") and values[1] > values[0]
+        }
+        bounded = layer.__class__.from_config(config)
+        bounded.build(tuple(layer.input.shape))
+        bounded.set_weights(layer.get_weights())
+        freeze_batch_norm(bounded)
+        return bounded
+
+    bounded_model = tf.keras.models.clone_model(model, clone_function=clone)
+    bounded_model.set_weights(model.get_weights())
+    return bounded_model
 
 
 def build_qat_model(
@@ -282,12 +386,20 @@ def build_qat_model(
         clone = layer.__class__.from_config(layer.get_config())
         clone.build(tuple(layer.input.shape))
         clone.set_weights(layer.get_weights())
+        freeze_batch_norm(clone)
         clone.set_quantization_hook(_FrontendQuantizationHook(activation_ranges))
         return clone
 
     def call_function(layer, *args, **kwargs):
         if _is_quantizable(layer):
-            output = _QuantizedKernelCall(layer, name=f"{layer.name}_quantized_kernel")(*args, **kwargs)
+            kernel_call = _QuantizedKernelCall(layer, name=f"{layer.name}_quantized_kernel")
+            if _is_sigmoid_dense(layer):
+                output = kernel_call(*args, linear=True, **kwargs)
+                lo, hi = activation_ranges[f"{layer.name}__logits"]
+                output = FakeQuantActivation(lo, hi, name=f"{layer.name}_logits_fake_quant")(output)
+                output = layers.Activation("sigmoid")(output)
+            else:
+                output = kernel_call(*args, **kwargs)
         else:
             output = layer(*args, **kwargs)
         if layer.name in activation_ranges:
@@ -353,31 +465,27 @@ def run_qat(args: argparse.Namespace) -> None:
         upsample_minority_classes,
     )
     from birdnet_stm32.data.generator import load_dataset
-    from birdnet_stm32.models.frontend import AudioFrontendLayer
-    from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
+    from birdnet_stm32.models.runners import load_keras_model
     from birdnet_stm32.training.config import ModelConfig
-    from birdnet_stm32.training.pruning import SparsityMaskEnforcer, collect_sparsity_masks
     from birdnet_stm32.training.trainer import train_model
+    from birdnet_stm32.training.validation import Int8Selection
 
+    if not args.checkpoint_path.endswith(".keras"):
+        raise ValueError("QAT checkpoint must end in .keras")
+    qat_path = args.checkpoint_path.replace(".keras", "_qat.keras")
+    if os.path.exists(qat_path) or os.path.exists(qat_path.replace(".keras", "_selection.json")):
+        raise FileExistsError("QAT outputs already exist; use a new run directory")
+    if args.resume:
+        raise ValueError("QAT resume is unsupported: start from an explicit checkpoint in a new output directory")
+    if args.mixed_precision:
+        raise ValueError("QAT requires float32 training for INT8 grid simulation")
+    if not args.data_path_val:
+        raise ValueError("QAT requires an explicit, disjoint --data_path_val")
     if not os.path.isfile(args.checkpoint_path):
         raise FileNotFoundError(f"QAT requires a pretrained model: {args.checkpoint_path}")
     print(f"[QAT] Loading pretrained model from {args.checkpoint_path}")
-    deployment_model = tf.keras.models.load_model(
-        args.checkpoint_path,
-        compile=False,
-        custom_objects={
-            "AudioFrontendLayer": AudioFrontendLayer,
-            "MagnitudeScalingLayer": MagnitudeScalingLayer,
-        },
-    )
-    teacher_model = tf.keras.models.load_model(
-        args.checkpoint_path,
-        compile=False,
-        custom_objects={
-            "AudioFrontendLayer": AudioFrontendLayer,
-            "MagnitudeScalingLayer": MagnitudeScalingLayer,
-        },
-    )
+    deployment_model = load_keras_model(args.checkpoint_path)
+    teacher_model = load_keras_model(args.checkpoint_path)
     teacher_model.trainable = False
 
     cfg_path = getattr(args, "model_config", "") or os.path.splitext(args.checkpoint_path)[0] + "_model_config.json"
@@ -393,9 +501,9 @@ def run_qat(args: argparse.Namespace) -> None:
     if len(classes) != deployment_model.output_shape[-1]:
         raise ValueError("QAT dataset class count does not match the pretrained model output")
 
-    train_paths, _ = load_file_paths_from_directory(args.data_path_train, classes=classes)
+    train_paths, train_classes = load_file_paths_from_directory(args.data_path_train, classes=classes)
     if args.data_path_val:
-        val_paths, _ = load_file_paths_from_directory(args.data_path_val, classes=classes)
+        val_paths, val_classes = load_file_paths_from_directory(args.data_path_val, classes=classes)
     else:
         rng = np.random.default_rng(args.seed)
         rng.shuffle(train_paths)
@@ -403,6 +511,17 @@ def run_qat(args: argparse.Namespace) -> None:
         train_paths, val_paths = train_paths[:split_idx], train_paths[split_idx:]
     if not train_paths or not val_paths:
         raise ValueError("QAT requires non-empty training and validation datasets")
+    if train_classes != classes:
+        raise ValueError(
+            f"QAT training data is missing configured classes: {[name for name in classes if name not in train_classes]}"
+        )
+    if args.data_path_val and val_classes != classes:
+        raise ValueError(
+            f"QAT validation data is missing configured classes: {[name for name in classes if name not in val_classes]}"
+        )
+
+    if set(map(os.path.realpath, train_paths)) & set(map(os.path.realpath, val_paths)):
+        raise ValueError("QAT training and validation manifests overlap")
 
     # Conversion samples the physical training manifest, never the optionally
     # duplicated epoch-balancing list used by the trainer.
@@ -450,39 +569,38 @@ def run_qat(args: argparse.Namespace) -> None:
     n_frozen = freeze_batch_norm(deployment_model)
     print(f"[QAT] Frozen {n_frozen} BatchNorm layers")
 
-    # A pruned checkpoint carries its mask as exact zeros. Gradient updates
-    # would quietly refill those slots, so re-apply the mask after every step.
-    extra_callbacks: list[tf.keras.callbacks.Callback] = []
-    if getattr(args, "qat_preserve_sparsity", True):
-        sparsity_masks = collect_sparsity_masks(deployment_model)
-        if sparsity_masks:
-            enforcer = SparsityMaskEnforcer(deployment_model, sparsity_masks)
-            enforcer.enforce()
-            extra_callbacks.append(enforcer)
-            pruned = sum(int(mask.size - np.count_nonzero(mask)) for mask in sparsity_masks.values())
-            total = sum(int(mask.size) for mask in sparsity_masks.values())
-            print(
-                f"[QAT] Preserving pruning masks on {len(sparsity_masks)} layers "
-                f"({pruned:,}/{total:,} weights held at zero)"
-            )
-
     calibration_count = int(args.qat_calibration_samples)
     calibration_paths = stratified_sample_paths(calibration_source_paths, calibration_count, seed=42)
     if len(calibration_paths) != calibration_count:
         raise ValueError(
             f"QAT requested {calibration_count} calibration paths but only {len(calibration_paths)} are available"
         )
-    calibration_data = representative_data_gen(
-        calibration_paths,
-        cfg.to_dict(),
-        num_samples=calibration_count,
+    calibration_data = list(
+        representative_data_gen(
+            calibration_paths,
+            cfg.to_dict(),
+            num_samples=calibration_count,
+        )
     )
+    if len(calibration_data) != calibration_count:
+        raise ValueError("Calibration skipped files; refusing to train on an incomplete manifest")
     activation_ranges = calibrate_activation_ranges(
         deployment_model,
         calibration_data,
         max_samples=calibration_count,
+        percentile=float(getattr(args, "qat_calibration_percentile", 100.0)),
     )
+    if args.qat_calibration_percentile < 100.0:
+        deployment_model = bound_frontend(deployment_model, activation_ranges)
+        # Re-observe the bounded graph: these are the values conversion sees.
+        activation_ranges = calibrate_activation_ranges(
+            deployment_model,
+            calibration_data,
+            max_samples=calibration_count,
+        )
     print(f"[QAT] Activation ranges use the converter's exact stratified {calibration_count}-sample manifest (seed=42)")
+    extra_callbacks: list[tf.keras.callbacks.Callback] = []
+
     loss_weights = {
         "distillation_weight": float(args.qat_distillation_weight),
         "cosine_weight": float(args.qat_cosine_weight),
@@ -505,6 +623,45 @@ def run_qat(args: argparse.Namespace) -> None:
     with open(ranges_path, "w", encoding="utf-8") as handle:
         json.dump({name: {"min": lo, "max": hi} for name, (lo, hi) in activation_ranges.items()}, handle, indent=2)
 
+    cfg.save(qat_path.replace(".keras", "_model_config.json"))
+    with open(qat_path.replace(".keras", "_labels.txt"), "w", encoding="utf-8") as handle:
+        handle.write("\n".join(classes) + "\n")
+    # Selection converts and scores an INT8 model every epoch, twice over the
+    # manifest. A fixed stratified subset keeps that affordable; it must be the
+    # same draw for every arm and epoch or the comparison means nothing, so it
+    # is seeded and its hash goes into the selection report.
+    selection_paths = val_paths
+    subset = int(getattr(args, "validation_subset", 0) or 0)
+    if subset and subset < len(val_paths):
+        validation_folders = {os.path.basename(os.path.dirname(path)) for path in val_paths}
+        if subset < len(validation_folders):
+            raise ValueError(
+                f"--validation_subset={subset} cannot cover all {len(validation_folders)} validation folders"
+            )
+        selection_paths = stratified_sample_paths(val_paths, subset, seed=1234)
+        selected_folders = {os.path.basename(os.path.dirname(path)) for path in selection_paths}
+        if selected_folders != validation_folders:
+            raise RuntimeError("Validation subset failed to cover every validation folder")
+        print(
+            f"[QAT] Selecting on a fixed stratified subset of {len(selection_paths)} "
+            f"of {len(val_paths)} validation files (seed 1234)"
+        )
+    elif subset:
+        print(f"[QAT] Requested subset {subset} >= {len(val_paths)} validation files; using all")
+    selector = Int8Selection(
+        deployment_model,
+        teacher_model,
+        calibration_data,
+        qat_path,
+        sync=lambda: sync_frontend_weights(qat_model, deployment_model),
+        files=selection_paths,
+        classes=classes,
+        cfg=cfg.to_dict(),
+        overlap=args.validation_overlap,
+        pooling=args.validation_pooling,
+        batch_size=args.batch_size,
+    )
+    extra_callbacks.append(selector)
     steps_per_epoch = max(1, math.ceil(len(train_paths) / float(args.batch_size)))
     val_steps = max(1, math.ceil(len(val_paths) / float(args.batch_size)))
     print(f"[QAT] Training on {len(train_paths)} files, validating on {len(val_paths)} files")
@@ -525,17 +682,11 @@ def run_qat(args: argparse.Namespace) -> None:
         gradient_clip_norm=args.grad_clip,
         checkpoint_model=deployment_model,
         checkpoint_sync=lambda: sync_frontend_weights(qat_model, deployment_model),
-        # Which epoch to keep. The worst-sample cosine loss is a *parity*
-        # measure; minimising it was the right call for a backbone whose p05
-        # parity was the failure. When parity is comfortable and per-class
-        # precision is the constraint, that criterion actively selects the
-        # wrong epoch: cosine tail loss falls monotonically while teacher KL,
-        # which is what preserves the output distribution, rises. Selecting on
-        # the metric that is not failing is how a run converges on a checkpoint
-        # nobody wanted.
-        checkpoint_monitor=getattr(args, "qat_checkpoint_monitor", "") or "val_distillation_kl",
-        checkpoint_mode="max" if getattr(args, "qat_checkpoint_monitor", "").endswith("roc_auc") else "min",
+        checkpoint_monitor="val_int8_cmap",
+        checkpoint_mode="max",
+        checkpoint_managed=True,
         extra_callbacks=extra_callbacks,
     )
-    print(f"[QAT] Clean quantization-ready checkpoint saved to {qat_path}")
+    print(f"[QAT] Best converted INT8 cMAP: {selector.best:.6f}; checkpoint: {qat_path}")
+    print(f"[QAT] Selected development TFLite: {selector.int8_path}")
     print(f"[QAT] Activation calibration ranges saved to {ranges_path}")

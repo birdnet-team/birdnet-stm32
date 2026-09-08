@@ -4,8 +4,8 @@
 
 ```mermaid
 flowchart TD
-    A["Audio (.wav)"] --> B["Audio Frontend\nlibrosa / hybrid / raw / mfcc / log_mel"]
-    B -->|"[B, H, W, 1]"| C["Magnitude Scaling\npwl / pcen / db / none"]
+    A["Audio (.wav)"] --> B["Audio Frontend\nlibrosa / hybrid / raw"]
+    B -->|"[B, H, W, 1]"| C["Magnitude Scaling\npwl / none"]
     C -->|"[B, H, W, 1]"| D["DS-CNN Body\n4 stages × depth_multiplier blocks\nchannels scaled by α"]
     D -->|"[B, H', W', C]"| E["Global Avg Pool\nDropout → Dense"]
     E -->|"[B, num_classes]"| F["Predictions"]
@@ -63,8 +63,9 @@ flowchart LR
 
 - **Float32 I/O**: Audio spectrograms are continuous-valued; INT8 inputs would
   lose meaningful precision. Only internal weights/activations are quantized.
-- **PWL over PCEN/dB**: Piecewise-linear magnitude scaling quantizes cleanly
-  (no log ops, no running statistics). PCEN is acceptable; dB should be avoided.
+- **PWL magnitude scaling**: quantizes cleanly — no log ops, no running
+  statistics. PCEN and dB were removed in 1.2.0; dB's log op produces exactly
+  the wide dynamic range INT8 cannot hold.
 - **Hybrid as default frontend**: Keeps the STFT outside the model graph while
   learning the mel projection in-graph. Training/evaluation compute STFT on
   the host; standalone firmware computes it on the Cortex-M55.

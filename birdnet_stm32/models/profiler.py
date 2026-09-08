@@ -43,7 +43,6 @@ N6_SUPPORTED_OPS = frozenset(
         # supported set above and have been verified end-to-end with stedgeai.
         "AudioFrontendLayer",
         "MagnitudeScalingLayer",
-        "AttentionPooling",
     }
 )
 
@@ -133,7 +132,7 @@ def _estimate_macs(layer: tf.keras.layers.Layer) -> int:
         _, H, W, C_out = out
         in_shape = _layer_input_shape(layer)
         C_in = in_shape[-1] if in_shape else None
-        if any(v is None for v in (H, W, C_out, C_in)):
+        if H is None or W is None or C_out is None or C_in is None:
             return 0
         return int(H) * int(W) * int(C_out) * int(ks[0]) * int(ks[1]) * int(C_in)
 
@@ -142,7 +141,7 @@ def _estimate_macs(layer: tf.keras.layers.Layer) -> int:
         if len(out) < 4:
             return 0
         _, H, W, C = out
-        if any(v is None for v in (H, W, C)):
+        if H is None or W is None or C is None:
             return 0
         return int(H) * int(W) * int(C) * int(ks[0]) * int(ks[1])
 

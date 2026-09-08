@@ -5,6 +5,95 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+
+**Breaking.** The training and quantization surface is reduced to what the
+shipped models actually use. Nothing removed here was used by any release; each
+removal is a hard failure rather than a silently ignored flag, so a script that
+still passes one stops instead of quietly doing nothing.
+
+- **Gradual magnitude pruning** and every `--prune*` flag, plus
+  `--no_prune_head` and `--no_qat_preserve_sparsity` (914 lines). No release or
+  experiment ever ran it, and the sparsity it produced was never shipped.
+- **Optuna hyperparameter search**, `--tune` and `--n_trials` (240 lines).
+  Never used; architecture decisions were made by explicit ablation instead.
+- **`mfcc` and `log_mel` frontends** and `--n_mfcc`. Both were host-precomputed
+  variants of the `librosa` path. The three real frontend modes — `librosa`,
+  `hybrid` and `raw` — are unchanged.
+- **`pcen` and `db` magnitude scaling.** dB's log op produces exactly the wide
+  dynamic range INT8 cannot hold, which is the failure the frontend exists to
+  avoid; PCEN was never used by a release. `pwl` and `none` remain.
+- **Attention pooling** and `--use_attention_pooling`. Every shipped config set
+  it to false.
+- The **`tune` install extra** and its `optuna` dependency, which existed only
+  for the removed search. `pip install -e ".[tune]"` no longer resolves; `[all]`
+  no longer pulls Optuna.
+
+The `train` CLI drops from 68 options to 50, and the package from 10,295 to
+9,020 lines. Model configs are loaded with unknown keys ignored, so existing
+checkpoints still load.
+
+### Added
+
+- `birdnet_stm32 measure-operational` and
+  `birdnet_stm32/evaluation/operational.py`: the device-facing INT8 release
+  gate, promoted out of the untracked experiment directory so a release can be
+  reproduced from the tracked repository alone. It scores the converted model
+  **on its own**, with no float reference, reporting detection and false-alarm
+  rates at real operating thresholds, micro and macro, plus the false-positive
+  rate on all-zero hard negatives. A required gate profile supplies explicit
+  release limits and the command exits nonzero when any is missed. Inference is
+  bounded by `--batch_size`; reports bind the model, config, class order,
+  manifest, measured inputs, and gate profile by SHA-256.
+
+  It exists because both parity-shaped metrics punish the better model. Cosine
+  p05 runs anti-correlated with float quality, and float-to-INT8 top-1
+  *retention* carries the float model in its denominator, so a stronger float
+  model — which has more marginal-but-correct chunks, exactly what quantization
+  kills — scores worse while delivering more. Measured: a candidate retaining
+  98.3% of float top-1 above 0.5 against an incumbent's 99.6% still delivered
+  12.6% more correct detections at a lower false-alarm rate.
+- `--validation_subset N` scores QAT checkpoint selection on a fixed stratified
+  draw instead of the whole manifest. Selection converts and evaluates an INT8
+  model every epoch, which dominates run time. The draw is seeded and its hash
+  is recorded. Subset cMAP is biased upward and is **not** comparable to
+  full-manifest numbers; it is valid only for comparing checkpoints scored on
+  the same draw.
+- A test pinning the documented argument reference to the actual parser, so the
+  table cannot drift back out of step with the code.
+
+### Changed
+
+- QAT checkpoints now maximize **exact converted INT8 file cMAP**, using the
+  CLI evaluator with max pooling and half-window overlap by default. Epoch zero
+  is eligible. Selected Keras and TFLite artifacts are kept together, with
+  hashes, calibration identity, epoch history and loss against untouched float
+  in a selection report. QAT requires explicit disjoint validation data and a
+  new output location; proxy checkpoint-monitor overrides are removed.
+- Standard CLI training selects exact file cMAP. Library training computes
+  exact chunk cMAP when no file manifest is supplied. Approximate Keras PR-AUC
+  is named `pr_auc` and remains a diagnostic.
+- Percentile calibration now serializes real internal frontend bounds into
+  the deployment model, then recalibrates that bounded graph. Waveform and
+  classifier ranges are not percentile-clipped. The default p100 remains
+  unbounded. This fixes the previous training-only clip disappearing at export.
+
+### Fixed
+
+- Keep BatchNorm frozen in cloned QAT frontends; simulate sigmoid logit
+  quantization and the fixed TFLite 1/256 probability grid. Frozen outer
+  convolution/dense kernels also receive deployment quantization noise.
+- Compute validation metrics before checkpoint/early-stop callbacks and never
+  overwrite a selected shared checkpoint at training end. Fresh runs truncate
+  old CSV headers. Calibration sampling is independent of incoming path order
+  and rejects incomplete QAT manifests.
+- Consolidate Magpie RT experiments around an isolated driver that stops on
+  failure, preserves the selected INT8 bytes and leaves catalog-test data for
+  final evaluation. Update documentation to distinguish learned PWL scaling,
+  numerical diagnostics, task selection and release validation.
+
 ## [1.1.0] - 2026-09-01
 
 ### Added

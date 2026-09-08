@@ -1,8 +1,8 @@
 """AudioFrontendLayer: in-model audio feature extraction for the STM32N6 NPU.
 
-This Keras layer implements three interchangeable frontend modes that produce
-a fixed-size mel-like spectrogram [B, mel_bins, spec_width, 1] from different
-input representations:
+This Keras layer implements the three frontend modes that produce a fixed-size
+mel-like spectrogram [B, mel_bins, spec_width, 1] from different input
+representations:
 
 - **precomputed**: Pass-through for offline mel spectrograms.
 - **hybrid**: Linear STFT magnitude -> 1x1 Conv2D mel mixer.
@@ -35,7 +35,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import constraints, layers
 
-VALID_FRONTENDS = ("librosa", "hybrid", "raw", "mfcc", "log_mel")
+VALID_FRONTENDS = ("librosa", "hybrid", "raw")
 
 # Overlap factor of the raw analysis window: window = RAW_OVERLAP * hop.
 RAW_OVERLAP = 2
@@ -208,6 +208,7 @@ def gabor_filterbank(
 
 
 from birdnet_stm32.models.magnitude import MagnitudeScalingLayer  # noqa: E402
+from birdnet_stm32.models.quantization import clip_activation, validate_bounds  # noqa: E402
 
 
 class AudioFrontendLayer(layers.Layer):
@@ -221,8 +222,6 @@ class AudioFrontendLayer(layers.Layer):
     Magnitude scaling:
         'none': Pass-through.
         'pwl': Piecewise-linear compression (DW 1x1 branches + ReLU + Add).
-        'pcen': PCEN-like compression (pool/conv/ReLU/Add).
-        'db': Log compression (10*log10) — unfriendly to PTQ, avoid for deployment.
 
     Notes:
         - ``is_trainable`` controls the *filterbank* (raw) and *mel mixer*
@@ -241,7 +240,6 @@ class AudioFrontendLayer(layers.Layer):
         sample_rate: int,
         chunk_duration: int,
         fft_length: int = 512,
-        pcen_K: int = 8,
         init_mel: bool = True,
         mel_fmin: float = 150.0,
         mel_fmax: float | None = None,
@@ -249,28 +247,32 @@ class AudioFrontendLayer(layers.Layer):
         mag_scale: str = "pwl",
         name: str = "audio_frontend",
         is_trainable: bool = False,
+        activation_bounds: dict | None = None,
         **kwargs,
     ):
         super().__init__(name=name, **kwargs)
         assert mode in ("precomputed", "hybrid", "raw")
-        assert mag_scale in ("pcen", "pwl", "db", "none")
+        assert mag_scale in ("pwl", "none")
         self.mode = mode
         self.mel_bins = int(mel_bins)
         self.spec_width = int(spec_width)
         self.sample_rate = int(sample_rate)
         self.chunk_duration = float(chunk_duration)
         self.fft_length = int(fft_length)
-        self.pcen_K = int(pcen_K)
         self.init_mel = bool(init_mel)
         self.mel_fmin = float(mel_fmin)
         self.mel_fmax = mel_fmax
         self.mel_norm = mel_norm
         self.mag_scale = mag_scale
         self.is_trainable = bool(is_trainable)
+        self.activation_bounds = validate_bounds(activation_bounds)
         # Training may install a duck-typed quantization hook that simulates
         # the INT8 boundaries hidden inside this custom layer. It is never
         # serialized, so deployment models retain the ordinary clean graph.
         self._quantization_hook = None
+        self.geom: RawGeometry | None = None
+        self.fb_re: layers.Conv2D | None = None
+        self.fb_im: layers.Conv2D | None = None
 
         # Fixed input samples for one chunk
         self._T = int(self.sample_rate * self.chunk_duration)
@@ -288,10 +290,6 @@ class AudioFrontendLayer(layers.Layer):
 
         if self.mode == "raw":
             self._build_raw_filterbank(name)
-        else:
-            self.geom = None
-            self.fb_re = None
-            self.fb_im = None
 
         # Lowpass pooling over time, per band. A Gabor modulus is an envelope
         # estimate that rattles frame to frame, where a mel band integrates
@@ -322,18 +320,19 @@ class AudioFrontendLayer(layers.Layer):
         self.mag_layer = MagnitudeScalingLayer(
             method=self.mag_scale,
             channels=self.mel_bins,
-            pcen_K=self.pcen_K,
             is_trainable=True,
+            activation_bounds=self.activation_bounds,
             name=f"{name}_mag",
         )
 
     def _build_raw_filterbank(self, name: str) -> None:
         """Size and construct the quadrature filterbank for the raw path."""
-        self.geom = raw_filterbank_geometry(self._T, int(self.spec_width))
+        geom = raw_filterbank_geometry(self._T, int(self.spec_width))
+        self.geom = geom
         conv_kwargs = dict(
             filters=int(self.mel_bins),
-            kernel_size=(1, self.geom.kernel),
-            strides=(1, self.geom.stride),
+            kernel_size=(1, geom.kernel),
+            strides=(1, geom.stride),
             padding="valid",
             use_bias=False,
             trainable=self.is_trainable,
@@ -346,6 +345,8 @@ class AudioFrontendLayer(layers.Layer):
         if self.mode == "hybrid":
             self._build_and_set_mel_mixer(n_fft=self.fft_length, cin=hybrid_fft_bins(self.fft_length))
         elif self.mode == "raw":
+            if self.geom is None or self.fb_re is None or self.fb_im is None:
+                raise RuntimeError("Raw frontend filterbank was not initialized")
             folded = tf.TensorShape([None, 1, self.geom.crop // self.geom.fold, self.geom.fold])
             self.fb_re.build(folded)
             self.fb_im.build(folded)
@@ -363,6 +364,10 @@ class AudioFrontendLayer(layers.Layer):
     def _seed_gabor_weights(self) -> None:
         """Seed the raw filterbank with mel-spaced Gabor filters."""
         g = self.geom
+        fb_re = self.fb_re
+        fb_im = self.fb_im
+        if g is None or fb_re is None or fb_im is None:
+            raise RuntimeError("Raw frontend filterbank was not initialized")
         upper = float(self.mel_fmax) if self.mel_fmax is not None else (self.sample_rate / 2.0)
         real, imag = gabor_filterbank(
             mel_bins=self.mel_bins,
@@ -381,8 +386,8 @@ class AudioFrontendLayer(layers.Layer):
             """
             return taps.reshape(self.mel_bins, g.kernel, g.fold).transpose(1, 2, 0)[None]
 
-        self.fb_re.set_weights([_to_folded_kernel(real)])
-        self.fb_im.set_weights([_to_folded_kernel(imag)])
+        fb_re.set_weights([_to_folded_kernel(real)])
+        fb_im.set_weights([_to_folded_kernel(imag)])
 
     def _build_and_set_mel_mixer(self, n_fft: int, cin: int):
         """Initialize mel_mixer from a Slaney mel basis."""
@@ -425,6 +430,7 @@ class AudioFrontendLayer(layers.Layer):
 
     def _quantized_activation(self, name: str, inputs):
         """Mark an internal tensor as an INT8 activation boundary for QAT."""
+        inputs = clip_activation(inputs, self.activation_bounds, name)
         if self._quantization_hook is None:
             return inputs
         return self._quantization_hook.activation(name, inputs)
@@ -489,6 +495,17 @@ class AudioFrontendLayer(layers.Layer):
         """Return static output shape: (batch, mel_bins, spec_width, 1)."""
         return (input_shape[0], int(self.mel_bins), int(self.spec_width), 1)
 
+    # Constructor arguments retired in 1.2.0 along with the features behind
+    # them. Checkpoints saved before that still carry them in their serialized
+    # layer config, so they are dropped on load rather than rejected: removing
+    # a training option must not make existing models unreadable.
+    _RETIRED_CONFIG_KEYS = ("pcen_K",)
+
+    @classmethod
+    def from_config(cls, config):
+        """Build from a serialized config, ignoring retired arguments."""
+        return cls(**{key: value for key, value in config.items() if key not in cls._RETIRED_CONFIG_KEYS})
+
     def get_config(self):
         """Return a serializable configuration for model saving/loading."""
         cfg = {
@@ -498,12 +515,12 @@ class AudioFrontendLayer(layers.Layer):
             "sample_rate": self.sample_rate,
             "chunk_duration": self.chunk_duration,
             "fft_length": self.fft_length,
-            "pcen_K": self.pcen_K,
             "init_mel": self.init_mel,
             "mel_fmin": self.mel_fmin,
             "mel_fmax": self.mel_fmax,
             "mel_norm": self.mel_norm,
             "mag_scale": self.mag_scale,
+            "activation_bounds": self.activation_bounds,
             "name": self.name,
             "is_trainable": self.is_trainable,
         }

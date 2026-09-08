@@ -104,14 +104,6 @@ class TestMagScaling:
         y = layer(x)
         assert y.shape == (1, 64, 256, 1)
 
-    def test_pcen_output_shape(self, frontend_params):
-        """PCEN scaling should preserve shape."""
-        params = {**frontend_params, "mag_scale": "pcen"}
-        layer = AudioFrontendLayer(mode="precomputed", **params)
-        x = tf.random.uniform((1, 64, 256, 1))
-        y = layer(x)
-        assert y.shape == (1, 64, 256, 1)
-
     def test_none_output_shape(self, frontend_params):
         """No scaling should preserve shape."""
         layer = AudioFrontendLayer(mode="precomputed", **frontend_params)

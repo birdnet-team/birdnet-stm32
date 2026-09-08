@@ -7,6 +7,7 @@ import os
 import random
 import tempfile
 from collections import defaultdict
+from typing import Any
 
 import numpy as np
 import tensorflow as tf
@@ -31,9 +32,8 @@ from birdnet_stm32.conversion.split import (
 )
 from birdnet_stm32.conversion.validate import cosine_similarity, parity_metrics, validate_models
 from birdnet_stm32.data.dataset import load_file_paths_from_directory
-from birdnet_stm32.models.frontend import AudioFrontendLayer, hybrid_fft_bins, normalize_frontend_name
-from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
-from birdnet_stm32.models.runners import ChainedTFLiteRunner, TFLiteRunner
+from birdnet_stm32.models.frontend import hybrid_fft_bins, normalize_frontend_name
+from birdnet_stm32.models.runners import ChainedTFLiteRunner, TFLiteRunner, load_keras_model
 from birdnet_stm32.training.config import ModelConfig
 
 random.seed(42)
@@ -195,7 +195,7 @@ def _export_and_validate_onnx(model, output_path: str, validation_gen) -> dict:
         if not cosines:
             raise RuntimeError("ONNX validation generator yielded no samples")
 
-        report = {
+        report: dict[str, Any] = {
             "checker_passed": True,
             "runtime": "onnxruntime",
             "validation_samples": len(cosines),
@@ -260,8 +260,8 @@ def _convert_split_head(
         for _ in range(2):
             with tempfile.NamedTemporaryFile(
                 prefix=".splitting-", suffix=".tflite", dir=output_dir, delete=False
-            ) as handle:
-                staged.append(handle.name)
+            ) as temporary_file:
+                staged.append(temporary_file.name)
         tmp_backbone, tmp_classifier = staged
 
         convert_to_tflite(
@@ -452,8 +452,8 @@ def _convert_head_only(
     try:
         with tempfile.NamedTemporaryFile(
             prefix=".head-only-", suffix=".tflite", dir=output_dir, delete=False
-        ) as handle:
-            staged = handle.name
+        ) as temporary_file:
+            staged = temporary_file.name
 
         backbone_runner = TFLiteRunner(args.backbone_path)
         embeddings = [backbone_runner.predict(np.asarray(sample[0], np.float32)) for sample in rep_data_gen()]
@@ -546,11 +546,7 @@ def main():
     cfg = ModelConfig.load(args.model_config).to_dict()
 
     # Load model
-    model = tf.keras.models.load_model(
-        args.checkpoint_path,
-        compile=False,
-        custom_objects={"AudioFrontendLayer": AudioFrontendLayer, "MagnitudeScalingLayer": MagnitudeScalingLayer},
-    )
+    model = load_keras_model(args.checkpoint_path)
     print(f"Loaded model from {args.checkpoint_path}")
 
     # Build representative dataset generator
@@ -570,8 +566,9 @@ def main():
         print(f"Representative dataset: {len(stratified_paths)} stratified samples from {class_count} folders.")
         data_manifests["calibration"] = _manifest_record(stratified_paths, args.data_path_train)
 
-        def rep_data_gen():
-            return representative_data_gen(stratified_paths, cfg, num_samples=len(stratified_paths))
+        def rep_data_gen(num_samples: int | None = None):
+            count = len(stratified_paths) if num_samples is None else min(num_samples, len(stratified_paths))
+            return representative_data_gen(stratified_paths, cfg, num_samples=count)
 
         # Calibration and validation must be disjoint; overlap makes parity
         # reports optimistic and invalidates a release gate.
@@ -595,7 +592,8 @@ def main():
     else:
         print("No training data directory provided; generating random representative dataset.")
 
-        def rep_data_gen(num_samples=args.num_samples):
+        def rep_data_gen(num_samples: int | None = None):
+            count = args.num_samples if num_samples is None else num_samples
             sr = int(cfg["sample_rate"])
             cd = cfg["chunk_duration"]
             T = int(sr * cd)
@@ -604,7 +602,7 @@ def main():
             frontend = normalize_frontend_name(cfg["audio_frontend"])
             num_mels = int(cfg["num_mels"])
             fft_bins = hybrid_fft_bins(n_fft)
-            for _ in tqdm(range(num_samples), desc="Random samples", unit="sample"):
+            for _ in tqdm(range(count), desc="Random samples", unit="sample"):
                 if frontend == "librosa":
                     yield [np.random.rand(1, num_mels, spec_width, 1).astype(np.float32)]
                 elif frontend == "hybrid":

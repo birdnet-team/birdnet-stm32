@@ -150,7 +150,7 @@ def save_confusion_matrix_plot(
     cm = confusion_matrix(true_idx, pred_idx, labels=list(range(len(classes))))
 
     fig, ax = plt.subplots(figsize=(max(6, len(classes) * 0.5), max(5, len(classes) * 0.4)))
-    im = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
+    im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
     ax.figure.colorbar(im, ax=ax)
 
     ax.set(
@@ -395,7 +395,7 @@ def save_html_report(
         cm = confusion_matrix(true_idx, pred_idx, labels=list(range(len(classes))))
 
         fig, ax = plt.subplots(figsize=(max(6, len(classes) * 0.5), max(5, len(classes) * 0.4)))
-        im = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
+        im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
         ax.figure.colorbar(im, ax=ax)
         ax.set(
             xticks=np.arange(len(classes)),

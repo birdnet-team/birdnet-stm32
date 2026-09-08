@@ -22,17 +22,17 @@ squeeze-and-excite variants were available once and were removed: their extra
 requantization boundaries put INT8 parity out of reach of the release gates.
 See [Removed: inverted residual and squeeze-and-excite blocks](model.md#removed-inverted-residual-and-squeeze-and-excite-blocks).
 
-## Why PWL over PCEN/dB?
+## Why PWL magnitude scaling?
 
 | Scaling | Quantization behavior | N6 compatibility | Notes |
 |---|---|---|---|
-| **PWL** (piecewise-linear) | Excellent — depthwise conv + ReLU only | Full | Recommended default |
-| **PCEN** | Good — pooling + conv + ReLU | Full | Slightly more complex |
-| **dB** (log scale) | Poor — log op creates wide dynamic range | Partial | Avoid for deployment |
+| **PWL** (piecewise-linear) | Excellent — depthwise conv + ReLU only | Full | Default |
+| **none** | Exact — pass-through | Full | Ablation baseline |
 
-PWL achieves comparable compression to PCEN while using only operations that
-quantize cleanly to INT8. The learned breakpoints adapt to the dataset's
-dynamic range during training.
+PWL uses only operations that quantize cleanly to INT8, and its learned
+breakpoints adapt to the dataset's dynamic range during training. PCEN and dB
+were removed in 1.2.0: dB's log op creates exactly the wide dynamic range INT8
+cannot hold, and PCEN was never used by a release.
 
 ## Why float32 I/O?
 
@@ -125,15 +125,14 @@ alone barely penalizes those errors.
 Which epoch is kept is a separate decision from how the loss is weighted, and
 the two can pull apart: the tail objective is a parity measure, so selecting on
 it once parity is comfortable keeps the epoch that drifted furthest from the
-float teacher. Selection therefore defaults to validation teacher KL. See
-[Choosing which epoch to keep](quantization.md#choosing-which-epoch-to-keep).
+float teacher. Selection therefore ignores the loss and scores the actual
+converted INT8 model each epoch on exact file cMAP. See
+[Selection and artifacts](quantization.md#selection-and-artifacts).
 
 The saved `.keras` model contains only standard float32 weights — no FakeQuant
 nodes. Standard PTQ then calibrates and quantizes the hardened deployment
 graph; held-out parity and task-level accuracy remain mandatory gates.
 
-See `birdnet_stm32/training/qat.py` for the implementation.
-
-Gradual magnitude pruning shares that module's teacher-consistency losses
-and runs as its own step before QAT; see
-`birdnet_stm32/training/pruning.py` and [Pruning](pruning.md).
+See `birdnet_stm32/training/qat.py` for the implementation, and
+`birdnet_stm32/training/distillation.py` for the teacher-consistency losses it
+optimizes alongside the label loss.

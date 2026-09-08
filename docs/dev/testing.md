@@ -35,11 +35,11 @@ tests/
 ├── test_eval_reports.py         # Evaluation reporting (species AP, DET, HTML, benchmark)
 ├── test_frontend_layer.py       # AudioFrontendLayer shapes and modes
 ├── test_frontend_parity.py      # Float/quantized frontend parity
-├── test_magnitude.py            # Magnitude scaling modes (pwl, pcen, db)
+├── test_magnitude.py            # Magnitude scaling modes (pwl, none)
 ├── test_metrics.py              # ROC-AUC, cmAP, F1 computation
+├── test_operational.py          # Device-facing INT8 release gate
 ├── test_optimizer.py            # Optimizer configuration
 ├── test_pooling.py              # avg/max/lme pooling
-├── test_pruning.py              # Gradual magnitude pruning
 ├── test_qat.py                  # Quantization-aware training
 ├── test_quantization_sim.py     # Quantization simulation utilities
 ├── test_runners.py              # Evaluation runner pipeline

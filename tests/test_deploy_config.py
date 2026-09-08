@@ -1,6 +1,7 @@
 """Tests for deploy configuration and stedgeai module."""
 
 import os
+from pathlib import Path
 
 from birdnet_stm32.deploy.board_test import _load_gen_app_config
 from birdnet_stm32.deploy.config import DeployConfig, resolve_deploy_config
@@ -75,3 +76,14 @@ def test_generated_firmware_drops_nyquist_bin():
     )
     assert "#define APP_CHUNK_SAMPLES     60000" in config
     assert "#define APP_FFT_BINS          (APP_FFT_LENGTH / 2)" in config
+
+
+def test_firmware_makefile_links_external_memory_drivers():
+    """Every BSP function called during startup must have its implementation linked."""
+    makefile = (Path(__file__).parents[1] / "firmware" / "Makefile").read_text()
+    for source in (
+        "stm32n6570_discovery_xspi.c",
+        "Components/aps256xx/aps256xx.c",
+        "Components/mx66uw1g45g/mx66uw1g45g.c",
+    ):
+        assert source in makefile

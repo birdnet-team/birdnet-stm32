@@ -38,8 +38,7 @@ Optional extras:
 
 ```bash
 pip install -e ".[dev,docs]"   # + documentation tools (mkdocs)
-pip install -e ".[tune]"       # + Optuna for hyperparameter search
-pip install -e ".[all]"        # everything (dev + docs + deploy + tune)
+pip install -e ".[all]"        # everything (dev + docs + deploy + release)
 ```
 
 ## Quick workflow

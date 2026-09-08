@@ -58,8 +58,7 @@ def open_species_list(path: str) -> list[str]:
         ValueError: If the resulting list is empty.
     """
     species = load_species_list(path)
-    seen: set[str] = set()
-    unique = [x for x in species if not (x in seen or seen.add(x))]
+    unique = list(dict.fromkeys(species))
     unique.sort()
     if not unique:
         raise ValueError(f"Species list is empty after deduplication: {path}")
@@ -112,8 +111,7 @@ def combine_species_lists(
             break
 
     # Deduplicate preserving order
-    seen: set[str] = set()
-    combined = [x for x in combined if not (x in seen or seen.add(x))]
+    combined = list(dict.fromkeys(combined))
 
     if max_species is not None:
         combined = combined[:max_species]

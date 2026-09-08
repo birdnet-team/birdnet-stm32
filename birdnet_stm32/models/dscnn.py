@@ -4,7 +4,7 @@ The model consists of:
 - An AudioFrontendLayer (from frontend.py) for feature extraction.
 - A stem convolution to lift channels.
 - Four stages of depthwise-separable blocks with stride-2 downsampling.
-- Global average pooling (or attention pooling), dropout, and a dense classifier head.
+- Global average pooling, dropout, and a dense classifier head.
 
 Scaling is controlled via alpha (width multiplier) and depth_multiplier (block repeats).
 All channel counts are aligned to multiples of 8 for NPU vectorization.
@@ -15,10 +15,7 @@ import math
 import tensorflow as tf
 from tensorflow.keras import layers, regularizers
 
-from birdnet_stm32.models.blocks import (
-    _make_divisible,
-    attention_pooling,
-)
+from birdnet_stm32.models.blocks import _make_divisible
 from birdnet_stm32.models.frontend import AudioFrontendLayer, hybrid_fft_bins, normalize_frontend_name
 
 
@@ -95,9 +92,7 @@ def build_dscnn_model(
     mag_scale: str = "pwl",
     frontend_trainable: bool = False,
     dropout_rate: float = 0.5,
-    n_mfcc: int = 20,
     weight_decay: float = 1e-4,
-    use_attention_pooling: bool = False,
 ) -> tf.keras.Model:
     """Build a DS-CNN model with a selectable audio frontend.
 
@@ -108,16 +103,14 @@ def build_dscnn_model(
         chunk_duration: Chunk duration (seconds).
         embeddings_size: Channels in the final embeddings layer.
         num_classes: Number of output classes.
-        audio_frontend: 'librosa' | 'hybrid' | 'raw' | 'mfcc' | 'log_mel'.
+        audio_frontend: 'librosa' | 'hybrid' | 'raw'.
         alpha: Width multiplier for the backbone.
         depth_multiplier: Repeats multiplier for DS blocks per stage.
         fft_length: FFT size for hybrid/librosa paths.
-        mag_scale: Magnitude scaling ('pcen' | 'pwl' | 'db' | 'none').
+        mag_scale: Magnitude scaling ('pwl' | 'none').
         frontend_trainable: Make frontend sub-layers trainable.
         dropout_rate: Dropout rate before the classifier head.
-        n_mfcc: Number of MFCC coefficients (only used when audio_frontend='mfcc').
         weight_decay: L2 regularization weight for DS-CNN blocks.
-        use_attention_pooling: Use attention pooling instead of GAP.
 
     Returns:
         Uncompiled DS-CNN Keras model.
@@ -137,17 +130,16 @@ def build_dscnn_model(
             )
 
     # Select input shape and frontend mode
-    if audio_frontend in ("librosa", "mfcc", "log_mel"):
-        input_bins = n_mfcc if audio_frontend == "mfcc" else num_mels
-        inputs = tf.keras.Input(shape=(input_bins, spec_width, 1), name="mel_spectrogram_input")
+    if audio_frontend == "librosa":
+        inputs = tf.keras.Input(shape=(num_mels, spec_width, 1), name="mel_spectrogram_input")
         x = AudioFrontendLayer(
             mode="precomputed",
-            mel_bins=input_bins,
+            mel_bins=num_mels,
             spec_width=spec_width,
             sample_rate=sample_rate,
             chunk_duration=chunk_duration,
             fft_length=fft_length,
-            mag_scale=mag_scale if audio_frontend == "librosa" else "none",
+            mag_scale=mag_scale,
             is_trainable=frontend_trainable,
             name="audio_frontend",
         )(inputs)
@@ -208,10 +200,7 @@ def build_dscnn_model(
         x = layers.ReLU(max_value=6, name="emb_relu")(x)
 
     # Head
-    if use_attention_pooling:
-        x = attention_pooling(x, name="attn_pool")
-    else:
-        x = layers.GlobalAveragePooling2D(name="gap")(x)
+    x = layers.GlobalAveragePooling2D(name="gap")(x)
     x = layers.Dropout(dropout_rate, name="dropout")(x)
     # Keep the head in float32: under a mixed_float16 policy a float16 sigmoid
     # saturates well before the loss does, which stalls training.

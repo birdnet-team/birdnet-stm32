@@ -15,7 +15,7 @@ spectrogram, etc.) into a fixed-size tensor for the DS-CNN backbone.
 Add the canonical name to `VALID_FRONTENDS` in `frontend.py`:
 
 ```python
-VALID_FRONTENDS = ("librosa", "hybrid", "raw", "mfcc", "log_mel", "your_frontend")
+VALID_FRONTENDS = ("librosa", "hybrid", "raw", "your_frontend")
 ```
 
 ### 2. Implement the frontend branch
@@ -42,7 +42,7 @@ If your frontend produces a spectrogram-like output, apply the
 `MagnitudeScalingLayer` after your frontend's feature extraction:
 
 ```python
-x = self.mag_layer(x)  # PWL/PCEN/dB/none
+x = self.mag_layer(x)  # PWL or none
 ```
 
 ### 5. Update the data pipeline
@@ -74,15 +74,3 @@ Create `tests/test_frontend_your_frontend.py` with:
 - Add a section to `docs/dev/audio-frontends.md`
 - Update the frontend count in `docs/index.md`
 - Update the mermaid diagram in `docs/dev/architecture.md`
-
-## Example: the `mfcc` frontend
-
-The `mfcc` frontend is a good reference for a simple precomputed frontend:
-
-1. Input: `[B, num_mfcc, spec_width, 1]` — precomputed offline
-2. In-graph ops: magnitude scaling only
-3. No trainable parameters in the frontend itself
-4. Data pipeline computes MFCCs using `librosa.feature.mfcc()`
-
-For an in-graph frontend (like `hybrid` or `raw`), the implementation is more
-involved because the feature extraction layers must be NPU-compatible.

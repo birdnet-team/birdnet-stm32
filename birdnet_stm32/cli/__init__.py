@@ -1,1 +1,1 @@
-"""CLI entry points for train, convert, evaluate, and deploy commands."""
+"""CLI entry points for training, conversion, evaluation, release gating, and deployment."""

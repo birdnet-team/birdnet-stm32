@@ -28,7 +28,7 @@ def stratified_sample_paths(
     """Select an exact, deterministic, class-balanced audio manifest."""
     excluded = exclude or set()
     grouped: dict[str, list[str]] = defaultdict(list)
-    for path in file_paths:
+    for path in sorted(set(file_paths)):
         if path not in excluded:
             grouped[os.path.basename(os.path.dirname(path))].append(path)
 
@@ -99,10 +99,9 @@ def representative_data_gen(
         audio_chunks = load_audio_file(path, sample_rate=sr, max_duration=rep_max_duration, chunk_duration=cd)
 
         # Pick center chunk to avoid silence-only calibration
-        if isinstance(audio_chunks, list) and len(audio_chunks) > 1:
-            audio_chunks = [audio_chunks[len(audio_chunks) // 2]]
-        elif isinstance(audio_chunks, np.ndarray) and audio_chunks.shape[0] > 1:
-            audio_chunks = [audio_chunks[audio_chunks.shape[0] // 2]]
+        if audio_chunks.shape[0] > 1:
+            middle = audio_chunks.shape[0] // 2
+            audio_chunks = audio_chunks[middle : middle + 1]
 
         if frontend == "librosa":
             specs = [
@@ -195,9 +194,9 @@ def convert_to_tflite(
         print("Using per-tensor quantization (less accurate, use only if per-channel causes issues).")
     print(f"Quantization mode: {quantization}" + (" (per-tensor)" if per_tensor else ""))
 
-    tflite_model = converter.convert()
+    tflite_model = bytes(converter.convert())
 
-    # Verify float32 I/O was preserved (INT8 inputs would destroy audio precision)
+    # Verify the public float32 I/O contract; audio is still quantized internally.
     interpreter = tf.lite.Interpreter(model_content=tflite_model)
     interpreter.allocate_tensors()
     in_dtype = interpreter.get_input_details()[0]["dtype"]

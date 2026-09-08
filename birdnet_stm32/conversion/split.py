@@ -22,8 +22,9 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers
 
-# Layers that collapse the feature map into the embedding vector. The custom
-# AttentionPooling layer is matched by name because it is not a Keras builtin.
+# Layers that collapse the feature map into the embedding vector. Names are
+# matched too, so a checkpoint whose pooling layer is not a Keras builtin (such
+# as the attention pooling retired in 1.2.0) still splits.
 POOLING_LAYER_TYPES = (
     layers.GlobalAveragePooling2D,
     layers.GlobalMaxPooling2D,
@@ -59,7 +60,7 @@ def _head_layers(model: tf.keras.Model, embedding_layer: tf.keras.layers.Layer) 
         ValueError: If the head is not a single chain of one-input layers.
     """
     index = model.layers.index(embedding_layer)
-    head = model.layers[index + 1 :]
+    head = list(model.layers[index + 1 :])
     if not head:
         raise ValueError("Model has no classifier head after its embedding layer")
     for layer in head:
@@ -168,7 +169,10 @@ def read_fingerprint(backbone_path: str) -> dict | None:
     if not os.path.isfile(path):
         return None
     with open(path, encoding="utf-8") as handle:
-        return json.load(handle)
+        fingerprint = json.load(handle)
+    if not isinstance(fingerprint, dict):
+        raise ValueError(f"Backbone fingerprint must be a JSON object: {path}")
+    return fingerprint
 
 
 def count_parameters(model: tf.keras.Model) -> int:
@@ -203,7 +207,7 @@ def gzip_file(source_path: str, output_path: str = "") -> str:
 def weight_sparsity(model_path: str, min_tensor_size: int = 256) -> dict[str, float | int]:
     """Measure the fraction of zero INT8 weights inside a TFLite model.
 
-    A pruned head compresses well precisely because these bytes are zero, so
+    A sparse head compresses well precisely because these bytes are zero, so
     the split report records the number the compression ratio follows from.
 
     Args:

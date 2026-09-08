@@ -1,6 +1,7 @@
 """Unit tests for spectrogram computation."""
 
 import numpy as np
+import pytest
 
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio, normalize
 from birdnet_stm32.models.frontend import hybrid_fft_bins
@@ -34,6 +35,16 @@ class TestGetSpectrogram:
         """Output should be float32."""
         spec = get_spectrogram_from_audio(sine_wave, sample_rate, n_fft=fft_length, mel_bins=32, spec_width=64)
         assert spec.dtype == np.float32
+
+    @pytest.mark.parametrize("mode", ["mfcc", "log_mel", "garbage"])
+    def test_removed_or_unknown_modes_fail(self, sine_wave, mode):
+        with pytest.raises(ValueError, match="spectrogram mode"):
+            get_spectrogram_from_audio(sine_wave, mode=mode)
+
+    @pytest.mark.parametrize("mag_scale", ["pcen", "db", "garbage"])
+    def test_removed_or_unknown_magnitude_scales_fail(self, sine_wave, mag_scale):
+        with pytest.raises(ValueError, match="magnitude scale"):
+            get_spectrogram_from_audio(sine_wave, mag_scale=mag_scale)
 
 
 class TestNormalize:

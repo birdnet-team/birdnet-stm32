@@ -1,6 +1,5 @@
 """Evaluation metrics and per-file inference pipeline."""
 
-import math
 import os
 import resource
 import time
@@ -15,6 +14,33 @@ from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
 from birdnet_stm32.data.dataset import NOISE_CLASSES
 from birdnet_stm32.evaluation.pooling import pool_scores
 from birdnet_stm32.models.frontend import hybrid_fft_bins, normalize_frontend_name
+
+
+def class_average_precision(labels: np.ndarray, scores: np.ndarray) -> np.ndarray:
+    """Exact AP in output order; classes without positives contribute zero.
+
+    Keeping the full class contract prevents a sparse validation subset from
+    silently changing the macro metric. All-positive classes have AP one.
+    """
+    labels, scores = np.asarray(labels), np.asarray(scores)
+    if labels.ndim != 2 or labels.shape != scores.shape or not labels.size:
+        raise ValueError("AP requires nonempty, matching [samples, classes] arrays")
+    if not np.isfinite(scores).all() or not np.isfinite(labels).all():
+        raise ValueError("AP inputs must be finite")
+    if not np.isin(labels, [0, 1]).all():
+        raise ValueError("AP labels must be binary")
+    return np.asarray(
+        [
+            average_precision_score(labels[:, i], scores[:, i]) if np.any(labels[:, i]) else 0.0
+            for i in range(labels.shape[1])
+        ],
+        dtype=np.float64,
+    )
+
+
+def macro_cmap(labels: np.ndarray, scores: np.ndarray) -> float:
+    """Class-macro average precision, shared by training and evaluation."""
+    return float(class_average_precision(labels, scores).mean())
 
 
 class ModelRunner(Protocol):
@@ -185,16 +211,9 @@ def evaluate(
     metrics["recall"] = float(recall)
 
     # Per-class AP
-    ap_per_class: list[float] = []
-    for ci in range(y_true_arr.shape[1]):
-        try:
-            ap = average_precision_score(y_true_arr[:, ci], y_scores_arr[:, ci])
-        except Exception:
-            ap = np.nan
-        ap_per_class.append(ap)
-    ap_valid = [a for a in ap_per_class if not (a is None or (isinstance(a, float) and math.isnan(a)))]
+    ap_per_class = class_average_precision(y_true_arr, y_scores_arr).tolist()
     metrics["ap_per_class"] = ap_per_class
-    metrics["cmAP"] = float(np.mean(ap_valid)) if ap_valid else float("nan")
+    metrics["cmAP"] = float(np.mean(ap_per_class))
 
     # Micro AP
     try:
