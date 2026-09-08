@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+**Breaking.** The training and quantization surface is reduced to what the
+shipped models actually use. Nothing removed here was used by any release; each
+removal is a hard failure rather than a silently ignored flag, so a script that
+still passes one stops instead of quietly doing nothing.
+
+- **Gradual magnitude pruning** and every `--prune*` flag, plus
+  `--no_prune_head` and `--no_qat_preserve_sparsity` (914 lines). No release or
+  experiment ever ran it, and the sparsity it produced was never shipped.
+- **Optuna hyperparameter search**, `--tune` and `--n_trials` (240 lines).
+  Never used; architecture decisions were made by explicit ablation instead.
+- **`mfcc` and `log_mel` frontends** and `--n_mfcc`. Both were host-precomputed
+  variants of the `librosa` path. The three real frontend modes — `librosa`,
+  `hybrid` and `raw` — are unchanged.
+- **`pcen` and `db` magnitude scaling.** dB's log op produces exactly the wide
+  dynamic range INT8 cannot hold, which is the failure the frontend exists to
+  avoid; PCEN was never used by a release. `pwl` and `none` remain.
+- **Attention pooling** and `--use_attention_pooling`. Every shipped config set
+  it to false.
+- The **`tune` install extra** and its `optuna` dependency, which existed only
+  for the removed search. `pip install -e ".[tune]"` no longer resolves; `[all]`
+  no longer pulls Optuna.
+
+The `train` CLI drops from 68 options to 50, and the package from 10,295 to
+9,020 lines. Model configs are loaded with unknown keys ignored, so existing
+checkpoints still load.
+
+### Added
+
+- `birdnet_stm32 measure-operational` and
+  `birdnet_stm32/evaluation/operational.py`: the device-facing INT8 release
+  gate, promoted out of the untracked experiment directory so a release can be
+  reproduced from the tracked repository alone. It scores the converted model
+  **on its own**, with no float reference, reporting detection and false-alarm
+  rates at real operating thresholds, micro and macro, plus the false-positive
+  rate on all-zero hard negatives. A required gate profile supplies explicit
+  release limits and the command exits nonzero when any is missed. Inference is
+  bounded by `--batch_size`; reports bind the model, config, class order,
+  manifest, measured inputs, and gate profile by SHA-256.
+
+  It exists because both parity-shaped metrics punish the better model. Cosine
+  p05 runs anti-correlated with float quality, and float-to-INT8 top-1
+  *retention* carries the float model in its denominator, so a stronger float
+  model — which has more marginal-but-correct chunks, exactly what quantization
+  kills — scores worse while delivering more. Measured: a candidate retaining
+  98.3% of float top-1 above 0.5 against an incumbent's 99.6% still delivered
+  12.6% more correct detections at a lower false-alarm rate.
+- `--validation_subset N` scores QAT checkpoint selection on a fixed stratified
+  draw instead of the whole manifest. Selection converts and evaluates an INT8
+  model every epoch, which dominates run time. The draw is seeded and its hash
+  is recorded. Subset cMAP is biased upward and is **not** comparable to
+  full-manifest numbers; it is valid only for comparing checkpoints scored on
+  the same draw.
+- A test pinning the documented argument reference to the actual parser, so the
+  table cannot drift back out of step with the code.
+
 ### Changed
 
 - QAT checkpoints now maximize **exact converted INT8 file cMAP**, using the
@@ -15,11 +72,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hashes, calibration identity, epoch history and loss against untouched float
   in a selection report. QAT requires explicit disjoint validation data and a
   new output location; proxy checkpoint-monitor overrides are removed.
-- Standard CLI training and tuning select exact file cMAP. Library training
-  computes exact chunk cMAP when no file manifest is supplied. Approximate
-  Keras PR-AUC is named `pr_auc` and remains a diagnostic. Pruning uses the same
-  macro-AP implementation and full class denominator as evaluation;
-  `--prune_max_auc_drop` is replaced by `--prune_max_cmap_drop`.
+- Standard CLI training selects exact file cMAP. Library training computes
+  exact chunk cMAP when no file manifest is supplied. Approximate Keras PR-AUC
+  is named `pr_auc` and remains a diagnostic.
 - Percentile calibration now serializes real internal frontend bounds into
   the deployment model, then recalibrates that bounded graph. Waveform and
   classifier ranges are not percentile-clipped. The default p100 remains

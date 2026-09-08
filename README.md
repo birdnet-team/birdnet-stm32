@@ -52,6 +52,13 @@ python -m birdnet_stm32 evaluate \
   --model_config checkpoints/best_model_model_config.json \
   --data_path_test data/test --pooling lme
 
+# Apply an explicit operational release profile to the INT8 artifact
+python -m birdnet_stm32 measure-operational \
+  --model_path checkpoints/best_model_quantized.tflite \
+  --model_config checkpoints/best_model_model_config.json \
+  --data_path_test data/test --gate_profile gate.json \
+  --report_json report/operational.json
+
 # Deploy to STM32N6570-DK (requires config.json; see config.example.json)
 python -m birdnet_stm32 deploy
 
@@ -140,15 +147,13 @@ for toolchain setup and troubleshooting.
 
 ### Training
 
-- **Audio frontends**: `hybrid` (linear STFT + learned mel mixer), `raw` (waveform → learned Gabor quadrature filterbank), `librosa` (precomputed mel), `mfcc`, and `log_mel`. The standalone firmware supports `raw`, `hybrid`, and `librosa`.
-- **Magnitude scaling**: `pwl` (piecewise-linear, quantization-friendly), `pcen`, `db`, `none`
-- **Model**: DS-CNN with configurable width (`--alpha`) and depth (`--depth_multiplier`) built from plain depthwise separable blocks, plus optional attention pooling (`--use_attention_pooling`)
+- **Audio frontends**: `hybrid` (linear STFT + learned mel mixer), `raw` (waveform → learned Gabor quadrature filterbank), and `librosa` (precomputed mel). All three are supported by the standalone firmware. The `mfcc` and `log_mel` modes were removed in 1.2.0.
+- **Magnitude scaling**: `pwl` (learned piecewise-linear, quantization-friendly) and `none` (pass-through ablation baseline). `pcen` and `db` were removed in 1.2.0 — dB's log op creates exactly the wide dynamic range INT8 cannot hold, and PCEN was never used by a release.
+- **Model**: DS-CNN with configurable width (`--alpha`) and depth (`--depth_multiplier`) built from plain depthwise separable blocks
 - **Augmentation**: Dirichlet multi-source mixup with multi-label union targets for overlapping vocalizations, SpecAugment (on by default), smart crop for long recordings
 - **Optimization**: linear warmup into cosine LR decay, Adam/SGD/AdamW, gradient clipping (on by default), mixed precision (FP16). Standard training checkpoints track exact validation cMAP; QAT selects matching Keras/TFLite artifacts using actual converted INT8 file cMAP, including the starting checkpoint
 - **QAT**: native Keras 3 quantization-aware fine-tuning via `--qat` — uses the converter's exact calibration manifest to simulate the INT8 input, per-channel kernels, fused activation boundaries, and otherwise-opaque raw-frontend internals; frozen-teacher KL plus mean and configurable worst-sample cosine consistency protect probability calibration and lower-tail parity while exact converted INT8 validation cMAP selects the deployment checkpoint
-- **Pruning**: gradual magnitude pruning via `--prune` — a cubic sparsity ramp over the dense convolution kernels with masks re-derived from live magnitudes, the same frozen-teacher consistency objective as QAT, checkpoint selection deferred until the ramp completes, and a held-out class-macro AP gate that fails the run rather than shipping a degraded model. Unstructured sparsity shrinks the compressed model (~20% off gzip at 50%); it does not change `.tflite` size or NPU latency. QAT preserves a pruned checkpoint's zeros automatically
 - **Linear probing**: `--linear_probe` freezes a pretrained backbone and trains only the classifier head
-- **Hyperparameter tuning**: Optuna search via `--tune --n_trials N`
 
 ### Conversion
 

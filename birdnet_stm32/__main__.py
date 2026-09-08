@@ -4,6 +4,7 @@ Usage:
     python -m birdnet_stm32 train ...
     python -m birdnet_stm32 convert ...
     python -m birdnet_stm32 evaluate ...
+    python -m birdnet_stm32 measure-operational ...
     python -m birdnet_stm32 deploy ...
     python -m birdnet_stm32 board-test ...
 """
@@ -14,7 +15,7 @@ import sys
 def main():
     """Dispatch to the appropriate CLI subcommand."""
     if len(sys.argv) < 2:
-        print("Usage: birdnet-stm32 {train,convert,evaluate,deploy,board-test}")
+        print("Usage: birdnet-stm32 {train,convert,evaluate,measure-operational,deploy,board-test}")
         sys.exit(1)
 
     command = sys.argv[1]
@@ -33,6 +34,10 @@ def main():
         from birdnet_stm32.cli.evaluate import main as evaluate_main
 
         evaluate_main()
+    elif command == "measure-operational":
+        from birdnet_stm32.cli.measure_operational import main as measure_operational_main
+
+        measure_operational_main()
     elif command == "deploy":
         from birdnet_stm32.cli.deploy import main as deploy_main
 
@@ -43,7 +48,7 @@ def main():
         board_test_main()
     else:
         print(f"Unknown command: {command}")
-        print("Usage: birdnet-stm32 {train,convert,evaluate,deploy,board-test}")
+        print("Usage: birdnet-stm32 {train,convert,evaluate,measure-operational,deploy,board-test}")
         sys.exit(1)
 
 

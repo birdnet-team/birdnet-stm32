@@ -33,6 +33,40 @@ Chunk scores are aggregated to file-level predictions using one of:
 
 LME (log-mean-exponential) uses a fixed $\beta = 10$.
 
+## Operational INT8 release gate
+
+`measure-operational` evaluates the converted artifact itself at a pinned
+operating threshold. It refuses non-TFLite and non-INT8 models, mismatched model
+configs, incomplete class coverage, incomplete draws, or datasets without the
+hard negatives required by the gate. Inference is streamed in bounded batches.
+
+Quality limits are release-specific and therefore must be supplied explicitly:
+
+```json
+{
+  "threshold": 0.5,
+  "min_detection_rate": 0.70,
+  "min_macro_detection_rate": 0.60,
+  "max_false_alarm_rate": 0.10,
+  "max_macro_false_alarm_rate": 0.15,
+  "max_negative_alarm_rate": 0.05
+}
+```
+
+```bash
+python -m birdnet_stm32 measure-operational \
+  --model_path release/model_INT8.tflite \
+  --model_config release/model_model_config.json \
+  --data_path_test data/test \
+  --gate_profile release_gate.json \
+  --report_json report/model_INT8_operational.json
+```
+
+The command exits nonzero if any limit is missed. Detection floors use the
+worst seed; alarm ceilings use the worst seed in the opposite direction. The
+report records model, config, class-order, manifest, gate-profile, and measured
+input hashes without embedding machine-local paths.
+
 ## Metrics
 
 | Metric | Description |
