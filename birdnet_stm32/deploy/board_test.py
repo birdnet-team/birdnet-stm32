@@ -90,7 +90,10 @@ def load_model_config(config_path: str) -> dict:
         Dict with model configuration.
     """
     with open(config_path) as f:
-        return json.load(f)
+        config = json.load(f)
+    if not isinstance(config, dict):
+        raise ValueError(f"Model configuration must be a JSON object: {config_path}")
+    return config
 
 
 def load_labels(labels_path: str) -> list[str]:
@@ -129,7 +132,7 @@ def _generate_app_labels_h(labels: list[str]) -> str:
     Returns:
         C header source as a string.
     """
-    return _load_gen_app_config().generate_app_labels_h(labels)
+    return str(_load_gen_app_config().generate_app_labels_h(labels))
 
 
 # ---------------------------------------------------------------------------
