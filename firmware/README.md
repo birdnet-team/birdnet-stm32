@@ -70,6 +70,27 @@ The NPU is a hardware accelerator for INT8 convolutional neural networks:
   streamed to the NPU during inference.
 - Activations live in npuRAM (internal SRAM), not external memory.
 
+#### Clock and core-voltage contract
+
+The NPU's clock rate is only valid at a matching VDDCORE level, and this
+project deploys **without overdrive**. The two supported combinations are:
+
+| `USE_OVERDRIVE` | `NO_OVD_CLK400` | VDDCORE | Clocks |
+|---|---|---|---|
+| 1 | (ignored) | raised via `upscale_vddcore_level()` | CPU 800 MHz / NPU 1 GHz |
+| 0 | defined | nominal | CPU/NIC/NOC/NPU all 400 MHz |
+
+`USE_OVERDRIVE 0` *without* `NO_OVD_CLK400` is not a valid configuration: it
+selects `SystemClock_Config_HSI_no_overdrive()`, which runs the NPU at 800 MHz
+at nominal VDDCORE. Both defines are emitted by `gen_app_config.py`, which
+pairs no-overdrive with `NO_OVD_CLK400` for exactly this reason.
+
+An out-of-spec NPU clock **does not fail loudly**. Every epoch still executes,
+timings stay plausible, and the runtime reports success — the returned scores
+are simply wrong. Do not treat "the board ran and produced output" as evidence
+that the clock configuration is correct; check predicted labels against a host
+run on the same audio.
+
 ### Memory Map (Simplified)
 
 ```

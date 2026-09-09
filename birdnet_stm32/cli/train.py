@@ -569,6 +569,16 @@ def main():
     cfg.save(cfg_path)
     print(f"Saved model config to '{cfg_path}'")
 
+    # Write the labels before training starts. The class list is already fixed
+    # here, and the checkpoint callback can leave a usable .keras behind at any
+    # epoch, so the contract files must not depend on the run reaching its end:
+    # an interrupt or a crash would otherwise strand a checkpoint with no labels.
+    labels_file = args.checkpoint_path.replace(".keras", "_labels.txt")
+    with open(labels_file, "w") as f:
+        for cls in classes:
+            f.write(f"{cls}\n")
+    print(f"Saved labels to '{labels_file}'")
+
     from birdnet_stm32.training.validation import FileCmap
 
     extra_callbacks.append(
@@ -604,12 +614,6 @@ def main():
         print(f"Training complete. Best model saved to '{args.checkpoint_path}'.")
     except KeyboardInterrupt:
         print(f"\nTraining interrupted. Best checkpoint so far: '{args.checkpoint_path}'")
-
-    # Save labels
-    labels_file = args.checkpoint_path.replace(".keras", "_labels.txt")
-    with open(labels_file, "w") as f:
-        for cls in classes:
-            f.write(f"{cls}\n")
 
 
 if __name__ == "__main__":
