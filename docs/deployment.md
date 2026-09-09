@@ -223,6 +223,49 @@ The validation runs inference on the physical board and compares results to the
 reference model. Results are saved to `network_validate_report.txt` in the
 output directory.
 
+Read the **cross-accuracy** block in that report, not just the exit status:
+
+```text
+Output      acc      rmse          cos        tensor
+X-cross #1  99.00%   0.000000000   1.000000   'conversion_72', ...
+```
+
+`cos` is the number that matters — 1.000000 means the device reproduces the
+host exactly. A model can flash, run, report plausible timings and still be
+numerically wrong, so this is the only check that proves the deployed artifact
+computes what the host does. Compare `m_outputs` (host reference) against
+`c_outputs` (target): if the target's range is visibly compressed relative to
+the reference, the graph is not computing correctly regardless of timing.
+
+To localise a mismatch, cut the graph at a node index and validate the partial
+model — `--cut-output-layers N` (and `--cut-input-layers N` to start there
+instead). Bisecting on the first node whose `cos` falls away names the layer.
+
+!!! warning "`n6_loader.py` hangs with ST's stock `NPU_Validation` app"
+    `--mode target` needs ST's stock validation app on the board, and flashing
+    it with `n6_loader.py` hangs at *"Loading internal memories & Running the
+    program"*.
+
+    `RISAF_Config()` programs `RISAF4_S`/`RISAF5_S`, the NPU master ports, and
+    its own comment notes that an IP must be clocked before its RISAF is set.
+    ST's stock `Core/Src/main.c` calls `RISAF_Config()` before anything clocks
+    the NPU, so the write stalls the bus, the app never reaches
+    `aiValidationInit()`, and the temporary GDB breakpoint `n6_loader` sets
+    there never hits — its `continue` then waits forever.
+
+    Fix it by calling `NPU_Config()` immediately before `RISAF_Config()` in
+    ST's `Core/Src/main.c` (keep a backup; it is a vendor file). This project's
+    own firmware already does this and is unaffected.
+
+    Two related traps:
+
+    - `ST-LINK_gdbserver` reports *"Target unknown error 32"* if the probe has
+      not been released after a CubeProgrammer session. Connect once with
+      `STM32_Programmer_CLI -c port=SWD mode=UR`, wait a few seconds, then
+      start the gdb server; retry if needed.
+    - `pkill -f ST-LINK_gdbserver` kills the shell that runs it, because the
+      pattern matches that shell's own command line. Kill by PID instead.
+
 ## Demo application
 
 The demo application is under development. The planned pipeline:

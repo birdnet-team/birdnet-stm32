@@ -69,7 +69,27 @@ requires all of the following:
 5. Export ONNX, run the ONNX checker, and smoke-test it in an ONNX runtime.
 6. Run `stedgeai analyze` or `stedgeai generate` for the STM32N6 target and
    retain its compatibility/memory report.
-7. Run the custom firmware on the physical board and retain the board report.
+7. Run `stedgeai validate --mode target` on the physical board and retain the
+   cross-accuracy report. **The gate is `cos >= 0.99` against the host
+   reference**, measured on the release weights.
+8. Run the custom firmware on the physical board and retain the board report.
+   The board report must include predictions on audio **that the model should
+   actually recognise**, compared against the host's predictions on the same
+   files — not only timing and memory.
+
+!!! danger "Timing is not evidence of correctness"
+    Steps 7 and 8 exist because a model can flash, execute every epoch, report
+    plausible NPU timings and still compute the wrong thing. That is not
+    hypothetical: it went undetected across v1.0, v1.1 and C1a, all of which
+    were selected on host metrics plus board *timing*, because every board run
+    in the project's history used only background audio — where a broken model
+    and a working one both return low scores. See
+    [Audio Frontends](audio-frontends.md#raw-waveform).
+
+    Build the board's audio set so each file is one the host model classifies
+    confidently, and record the host prediction per file alongside the board's.
+    Note the firmware reads only the **first chunk** of each file, so the
+    vocalisation must fall inside it.
 
 Accuracy floors are derived per release, not carried over. Freeze the float
 baseline's catalog metrics *before* any compression runs, and gate every

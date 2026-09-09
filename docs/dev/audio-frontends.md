@@ -86,6 +86,50 @@ Two invariants the geometry guarantees, both covered by tests:
     ~2.7 s — 2.5 s is a comfortable default. Longer chunks need a lower sample
     rate or a different frontend.
 
+!!! danger "The raw filterbank does not currently compute correctly on the NPU"
+    Measured 2026-09-09 with `stedgeai validate --mode target`. The filterbank
+    convolution — 112 input channels x 1x4 kernel, 448 taps — returns wrong
+    results on device while every stage before it is bit-exact:
+
+    | node | target vs host |
+    |---|---|
+    | `slice_1` (the folded waveform) | cos **1.000000** |
+    | `conv2d_3` (the filterbank) | cos **0.683** |
+
+    Only 18 of 64 filters are correct. Recovering the kernel the device
+    actually used shows filters built from many small taps are attenuated or
+    dead (filter 0: 428 non-zero taps, cos 0.003 against its true kernel) while
+    filters built from a few large taps are exact (filter 61: 44 taps,
+    cos 1.000). `corr(gain, non-zero taps) = -0.87`.
+
+    The same geometry with random, uniform, sparsity-matched or
+    wide-scale-spread weights all validate at cos 0.9999. Only the *trained*
+    filterbank fails, and shuffling its values keeps it failing — being matched
+    filters, they accumulate coherently on real audio in a way random weights
+    do not. Scaling the input down recovers it (full 0.756, 1/4 0.964,
+    1/8 0.995), but at a real accuracy cost.
+
+    This is not a general NPU or backbone problem: a `hybrid` model validates
+    on target at **cos 1.000000, rmse 0.000000** — bit-exact, whole model,
+    DS-CNN backbone included.
+
+    **Until this is resolved, deploy with `hybrid`.** It is measured exact on
+    device. Note the defect predates the current code and affects shipped raw
+    models, which were selected on host metrics plus board *timing* — on-board
+    numerical accuracy had never been checked.
+
+    Two tools ship with the repository:
+
+    - `scripts/npu_conv_repro.py` builds a single-Conv2D model with this
+      geometry and selectable weights, so the failure can be reproduced (and
+      reported to ST) without the rest of the network.
+    - `scripts/patch_waveform_scale.py` widens the scale of the int8 waveform
+      tensors feeding the filterbank, which shrinks the input codes and the
+      accumulation with them. At 32x headroom the layer reaches cos 0.99988 on
+      target, but the waveform is left with ~4 int8 codes and host top-1 falls
+      from 25/25 to 22/25 on a 25-species check. It confirms the mechanism; it
+      is not a shippable fix.
+
 ## Magnitude scaling
 
 Magnitude scaling is applied after the mel projection (or filterbank) and
@@ -108,4 +152,13 @@ When modifying or adding frontends, verify:
 - [ ] No ops that expand beyond 16-bit activation limits
 - [ ] All ops are in the [STM32N6 NPU operator set](https://stm32ai-cs.st.com/assets/embedded-docs/command_line_interface.html)
 - [ ] Run `stedgeai analyze` on the exported TFLite to confirm
+- [ ] Run `stedgeai validate --mode target` on the exported TFLite and check the
+      cross-accuracy, **with the trained weights** — see
+      [Validate on-device](../deployment.md#step-6-validate-on-device)
+
+That last item is not optional. `analyze` reports operator coverage and memory,
+not arithmetic: a layer can compile entirely to the NPU, report plausible
+timings, and still return wrong numbers. It is also weight-dependent, so a
+geometry that validates with random weights can still fail once trained — the
+raw filterbank above is exactly that case.
 - [ ] Cosine similarity > 0.95 after quantization

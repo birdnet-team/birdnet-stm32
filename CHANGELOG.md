@@ -93,6 +93,37 @@ checkpoints still load.
   failure, preserves the selected INT8 bytes and leaves catalog-test data for
   final evaluation. Update documentation to distinguish learned PWL scaling,
   numerical diagnostics, task selection and release validation.
+- Pair the no-overdrive firmware build with `NO_OVD_CLK400` and implement that
+  branch. Without it the NPU ran at 800 MHz at nominal VDDCORE, which is out of
+  spec; an under-volted NPU completes every epoch with plausible timings and
+  returns wrong results rather than failing loudly.
+- Write the training labels file next to the model config before training
+  starts, so an interrupted run cannot leave a usable checkpoint without its
+  labels.
+- Correct the `--batch_validate` help text: it repeats validation over the same
+  deterministic manifest to measure runtime repeatability, not "different
+  random seeds".
+
+### Known issues
+
+- **The `raw` audio frontend does not compute correctly on the STM32N6 NPU.**
+  Its learned filterbank convolution (112 input channels, 448 taps) returns
+  wrong results on device — `stedgeai validate --mode target` reports cos 0.683
+  at that layer while every preceding stage is bit-exact, and only 18 of 64
+  filters are correct. The same geometry with random weights validates at
+  0.9999, so it is specific to the trained weights, which accumulate coherently
+  on real audio. A `hybrid` model validates bit-exactly on the same hardware
+  (cos 1.000000, rmse 0.000000), so the NPU, the compiler and the DS-CNN
+  backbone are all sound.
+
+  **Deploy with `hybrid` until this is resolved.** The defect predates this
+  release and affects shipped `raw` models: on-board numerical accuracy had
+  never been checked, because every board run used only background audio, where
+  a broken model and a working one both return low scores. `scripts/`
+  now carries a self-contained reproduction (`npu_conv_repro.py`) and the
+  measured workaround (`patch_waveform_scale.py`), and the release process
+  requires an on-target cross-accuracy gate. See
+  `docs/dev/audio-frontends.md`.
 
 ## [1.1.0] - 2026-09-01
 
