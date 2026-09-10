@@ -468,7 +468,7 @@ def run_qat(args: argparse.Namespace) -> None:
     from birdnet_stm32.models.runners import load_keras_model
     from birdnet_stm32.training.config import ModelConfig
     from birdnet_stm32.training.trainer import train_model
-    from birdnet_stm32.training.validation import Int8Selection
+    from birdnet_stm32.training.validation import VALIDATION_SUBSET_SEED, Int8Selection, stratified_validation_subset
 
     if not args.checkpoint_path.endswith(".keras"):
         raise ValueError("QAT checkpoint must end in .keras")
@@ -630,21 +630,12 @@ def run_qat(args: argparse.Namespace) -> None:
     # manifest. A fixed stratified subset keeps that affordable; it must be the
     # same draw for every arm and epoch or the comparison means nothing, so it
     # is seeded and its hash goes into the selection report.
-    selection_paths = val_paths
     subset = int(getattr(args, "validation_subset", 0) or 0)
-    if subset and subset < len(val_paths):
-        validation_folders = {os.path.basename(os.path.dirname(path)) for path in val_paths}
-        if subset < len(validation_folders):
-            raise ValueError(
-                f"--validation_subset={subset} cannot cover all {len(validation_folders)} validation folders"
-            )
-        selection_paths = stratified_sample_paths(val_paths, subset, seed=1234)
-        selected_folders = {os.path.basename(os.path.dirname(path)) for path in selection_paths}
-        if selected_folders != validation_folders:
-            raise RuntimeError("Validation subset failed to cover every validation folder")
+    selection_paths = stratified_validation_subset(val_paths, subset)
+    if len(selection_paths) < len(val_paths):
         print(
             f"[QAT] Selecting on a fixed stratified subset of {len(selection_paths)} "
-            f"of {len(val_paths)} validation files (seed 1234)"
+            f"of {len(val_paths)} validation files (seed {VALIDATION_SUBSET_SEED})"
         )
     elif subset:
         print(f"[QAT] Requested subset {subset} >= {len(val_paths)} validation files; using all")

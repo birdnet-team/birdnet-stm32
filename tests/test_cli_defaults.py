@@ -55,9 +55,11 @@ class TestCompressionStepDefaults:
         assert args.qat_calibration_samples == 1024
         assert args.qat_calibration_percentile == 100.0
 
-    def test_validation_subset_is_qat_only_and_nonnegative(self):
+    def test_validation_subset_applies_to_all_training_and_is_nonnegative(self):
+        assert _train("--validation_subset", "2513").validation_subset == 2513
+        assert _train("--qat", "--validation_subset", "2513").validation_subset == 2513
         with pytest.raises(SystemExit):
-            _train("--validation_subset", "10")
+            _train("--validation_subset", "-1")
         with pytest.raises(SystemExit):
             _train("--qat", "--validation_subset", "-1")
 

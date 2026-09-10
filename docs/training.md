@@ -295,7 +295,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--qat_calibration_percentile` | 100 | Persistent internal frontend bounds; accepts (50, 100] |
 | `--validation_overlap` | half the chunk duration | File validation overlap in seconds |
 | `--validation_pooling` | max | File validation pooling |
-| `--validation_subset` | 0 | Score selection on a fixed stratified draw of N validation files (0 = all) |
+| `--validation_subset` | 0 | Score checkpoint selection (training and QAT) on a fixed class-balanced draw of N validation files, seed 1234 (0 = all). Biased upward; not comparable to full-manifest cMAP |
 
 ## Data pipeline
 

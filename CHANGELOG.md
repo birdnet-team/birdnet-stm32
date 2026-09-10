@@ -55,7 +55,8 @@ checkpoints still load.
   kills — scores worse while delivering more. Measured: a candidate retaining
   98.3% of float top-1 above 0.5 against an incumbent's 99.6% still delivered
   12.6% more correct detections at a lower false-alarm rate.
-- `--validation_subset N` scores QAT checkpoint selection on a fixed stratified
+- `--validation_subset N` scores checkpoint selection — standard training and
+  QAT alike — on a fixed stratified
   draw instead of the whole manifest. Selection converts and evaluates an INT8
   model every epoch, which dominates run time. The draw is seeded and its hash
   is recorded. Subset cMAP is biased upward and is **not** comparable to

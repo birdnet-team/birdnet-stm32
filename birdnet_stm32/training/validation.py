@@ -9,9 +9,52 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 
-from birdnet_stm32.conversion.quantize import convert_to_tflite
+from birdnet_stm32.conversion.quantize import convert_to_tflite, stratified_sample_paths
 from birdnet_stm32.evaluation.metrics import evaluate, macro_cmap
 from birdnet_stm32.models.runners import KerasRunner, TFLiteRunner
+
+# Seed of the validation subset draw. Fixed so every run, arm and epoch that asks
+# for the same subset size scores the identical files.
+VALIDATION_SUBSET_SEED = 1234
+
+
+def stratified_validation_subset(val_paths: list[str], subset: int, *, seed: int = VALIDATION_SUBSET_SEED) -> list[str]:
+    """Fixed, class-balanced draw of validation files for checkpoint selection.
+
+    Classes are visited round-robin in a seeded order, so the draw is as even
+    across classes as their folder sizes allow: a class with fewer files than
+    its share contributes all of them and the remainder is spread over the
+    rest. With 101 validation folders of which the smallest holds 13 files,
+    ``subset=2513`` gives exactly 25 files per class and all 13 of the small
+    one.
+
+    Subset cMAP is biased upward -- fewer negatives per class to rank against --
+    and is not comparable to full-manifest numbers. It preserves the gap between
+    checkpoints well enough to choose between arms and coarse checkpoints;
+    confirm a final selection on the full manifest.
+
+    Args:
+        val_paths: All validation file paths, one folder per class.
+        subset: Files to draw. 0, or a value at least ``len(val_paths)``, keeps
+            every file.
+        seed: Draw seed.
+
+    Returns:
+        The selected paths.
+
+    Raises:
+        ValueError: If ``subset`` is too small to cover every folder.
+        RuntimeError: If the draw fails to cover every folder.
+    """
+    if not subset or subset >= len(val_paths):
+        return list(val_paths)
+    folders = {os.path.basename(os.path.dirname(path)) for path in val_paths}
+    if subset < len(folders):
+        raise ValueError(f"validation subset {subset} cannot cover all {len(folders)} validation folders")
+    chosen = stratified_sample_paths(val_paths, subset, seed=seed)
+    if {os.path.basename(os.path.dirname(path)) for path in chosen} != folders:
+        raise RuntimeError("Validation subset failed to cover every validation folder")
+    return chosen
 
 
 class ExactCmap(tf.keras.callbacks.Callback):
