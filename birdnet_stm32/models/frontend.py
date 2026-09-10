@@ -6,7 +6,7 @@ representations:
 
 - **precomputed**: Pass-through for offline mel spectrograms.
 - **hybrid**: Linear STFT magnitude -> 1x1 Conv2D mel mixer.
-- **raw**: Raw waveform -> learned Gabor quadrature filterbank -> L1 magnitude.
+- **raw**: Raw waveform -> learned Gabor quadrature filterbank -> magnitude.
 
 Design constraints, in priority order:
 
@@ -16,12 +16,17 @@ Design constraints, in priority order:
 2. **Represent magnitude, not phase.** A single real-valued bandpass filter
    oscillates with the carrier; sampling it at the hop rate aliases. The raw
    path therefore learns a quadrature (cosine/sine) pair and combines them as
-   ``|re| + |im|`` — an L1 magnitude that is exact up to a per-band constant
-   and, unlike ``sqrt(re^2 + im^2)``, keeps its dynamic range INT8-friendly.
+   ``max(|re|, |im|) + 0.4 * min(|re|, |im|)`` — within ~4% of the true
+   modulus and, unlike ``sqrt(re^2 + im^2)``, INT8-friendly.
 3. **Stay on the NPU.** No global reductions and no data-dependent scaling:
    every op here is a convolution, an elementwise op, or a layout change.
    Per-band calibration is learned (BatchNorm + trainable magnitude scaling)
    rather than computed per sample at inference time.
+4. **Compute the same thing on the NPU.** Compiling onto the NPU is not enough;
+   the arithmetic has to survive it. Two measured NPU defects shape the raw
+   path: the filterbank is split into channel-group convolutions (``RAW_SPLIT``)
+   and ``|x|`` is built from ReLUs (``AudioFrontendLayer._abs``). Verify any
+   change here with ``stedgeai validate --mode target`` on trained weights.
 
 The caller is expected to hand over a peak-normalized waveform (the training,
 evaluation, calibration and firmware paths all do this), which is what makes
@@ -41,6 +46,28 @@ VALID_FRONTENDS = ("librosa", "hybrid", "raw")
 RAW_OVERLAP = 2
 # Hops are rounded to this so the derived fold (hop // 2) is a multiple of 8.
 _HOP_ALIGN = 16
+# The filterbank convolution is emitted as this many parallel convolutions over
+# equal groups of the folded channels, summed. The decomposition is exact -- a
+# convolution over `fold` channels is the sum of convolutions over a partition
+# of them -- but each partial convolution accumulates `window / RAW_SPLIT` taps
+# instead of all `window` of them.
+#
+# This is not an optimization. Measured on hardware 2026-09-09 with
+# `stedgeai validate --mode target`, cosine of the filterbank output against the
+# host, using trained weights:
+#
+#     split 1 (one 448-tap conv) .... 0.756
+#     split 2 (224 taps each) ....... 0.864
+#     split 4 (112 taps each) ....... 0.99956
+#     split 8 (56 taps each) ........ 0.99950
+#
+# Undivided, the NPU returns wrong results for filters whose energy is spread
+# across many taps -- the low mel bands, whose Gabor atoms span the whole
+# window. Those outputs are attenuated or collapse to a constant, while the
+# compact high-band filters stay exact. Splitting restores all of them. 8 is no
+# better than 4, so what remains at 4 is the INT8 requantization of the sum
+# rather than the original defect. See docs/dev/audio-frontends.md.
+RAW_SPLIT = 4
 # Width of the per-band temporal lowpass applied after the modulus.
 SMOOTH_TAPS = 5
 
@@ -271,8 +298,10 @@ class AudioFrontendLayer(layers.Layer):
         # serialized, so deployment models retain the ordinary clean graph.
         self._quantization_hook = None
         self.geom: RawGeometry | None = None
-        self.fb_re: layers.Conv2D | None = None
-        self.fb_im: layers.Conv2D | None = None
+        # One Conv2D per folded-channel group, per quadrature component.
+        self.fb_re: list[layers.Conv2D] = []
+        self.fb_im: list[layers.Conv2D] = []
+        self.split = RAW_SPLIT
 
         # Fixed input samples for one chunk
         self._T = int(self.sample_rate * self.chunk_duration)
@@ -326,9 +355,17 @@ class AudioFrontendLayer(layers.Layer):
         )
 
     def _build_raw_filterbank(self, name: str) -> None:
-        """Size and construct the quadrature filterbank for the raw path."""
+        """Size and construct the quadrature filterbank for the raw path.
+
+        Each quadrature component is emitted as ``RAW_SPLIT`` convolutions over
+        equal groups of the folded channels; their sum is the full filterbank.
+        See the note on ``RAW_SPLIT``.
+        """
         geom = raw_filterbank_geometry(self._T, int(self.spec_width))
         self.geom = geom
+        if geom.fold % RAW_SPLIT:
+            raise ValueError(f"fold {geom.fold} is not divisible by RAW_SPLIT {RAW_SPLIT}")
+        self.split = RAW_SPLIT
         conv_kwargs = dict(
             filters=int(self.mel_bins),
             kernel_size=(1, geom.kernel),
@@ -337,19 +374,20 @@ class AudioFrontendLayer(layers.Layer):
             use_bias=False,
             trainable=self.is_trainable,
         )
-        self.fb_re = layers.Conv2D(name=f"{name}_fb_re", **conv_kwargs)
-        self.fb_im = layers.Conv2D(name=f"{name}_fb_im", **conv_kwargs)
+        self.fb_re = [layers.Conv2D(name=f"{name}_fb_re_{i}", **conv_kwargs) for i in range(self.split)]
+        self.fb_im = [layers.Conv2D(name=f"{name}_fb_im_{i}", **conv_kwargs) for i in range(self.split)]
 
     def build(self, input_shape):
         """Build the frontend layer based on the selected mode."""
         if self.mode == "hybrid":
             self._build_and_set_mel_mixer(n_fft=self.fft_length, cin=hybrid_fft_bins(self.fft_length))
         elif self.mode == "raw":
-            if self.geom is None or self.fb_re is None or self.fb_im is None:
+            if self.geom is None or not self.fb_re or not self.fb_im:
                 raise RuntimeError("Raw frontend filterbank was not initialized")
-            folded = tf.TensorShape([None, 1, self.geom.crop // self.geom.fold, self.geom.fold])
-            self.fb_re.build(folded)
-            self.fb_im.build(folded)
+            group = self.geom.fold // self.split
+            folded = tf.TensorShape([None, 1, self.geom.crop // self.geom.fold, group])
+            for conv in (*self.fb_re, *self.fb_im):
+                conv.build(folded)
             self._seed_gabor_weights()
 
         band_shape = tf.TensorShape([None, 1, int(self.spec_width), int(self.mel_bins)])
@@ -366,7 +404,7 @@ class AudioFrontendLayer(layers.Layer):
         g = self.geom
         fb_re = self.fb_re
         fb_im = self.fb_im
-        if g is None or fb_re is None or fb_im is None:
+        if g is None or not fb_re or not fb_im:
             raise RuntimeError("Raw frontend filterbank was not initialized")
         upper = float(self.mel_fmax) if self.mel_fmax is not None else (self.sample_rate / 2.0)
         real, imag = gabor_filterbank(
@@ -386,8 +424,11 @@ class AudioFrontendLayer(layers.Layer):
             """
             return taps.reshape(self.mel_bins, g.kernel, g.fold).transpose(1, 2, 0)[None]
 
-        fb_re.set_weights([_to_folded_kernel(real)])
-        fb_im.set_weights([_to_folded_kernel(imag)])
+        group = g.fold // self.split
+        for i, (conv_re, conv_im) in enumerate(zip(fb_re, fb_im, strict=True)):
+            sl = slice(i * group, (i + 1) * group)
+            conv_re.set_weights([_to_folded_kernel(real)[:, :, sl, :]])
+            conv_im.set_weights([_to_folded_kernel(imag)[:, :, sl, :]])
 
     def _build_and_set_mel_mixer(self, n_fft: int, cin: int):
         """Initialize mel_mixer from a Slaney mel basis."""
@@ -435,6 +476,12 @@ class AudioFrontendLayer(layers.Layer):
             return inputs
         return self._quantization_hook.activation(name, inputs)
 
+    def _abs(self, x, name: str):
+        """Quantization-safe |x| for the NPU: relu(x) + relu(-x)."""
+        pos = self._quantized_activation(f"{name}_pos", tf.nn.relu(x))
+        neg = self._quantized_activation(f"{name}_neg", tf.nn.relu(-x))
+        return self._quantized_activation(name, pos + neg)
+
     def _calibrate(self, y, training, smooth: bool = False):
         """Optional temporal lowpass, then per-band normalization and scaling."""
         if smooth:
@@ -473,15 +520,38 @@ class AudioFrontendLayer(layers.Layer):
         # stride 2 — the only strides the NPU takes — while the effective hop
         # stays at `g.hop` samples.
         y = tf.reshape(inputs[:, : g.crop, :], [-1, 1, g.crop // g.fold, g.fold])
-        re = self._quantized_activation(self.fb_re.name, self._quantized_call(self.fb_re, y))
-        im = self._quantized_activation(self.fb_im.name, self._quantized_call(self.fb_im, y))
+
+        # Sum of convolutions over a partition of the folded channels. Exactly
+        # the full filterbank, but no partial convolution accumulates more than
+        # `window / split` taps, which is what the NPU computes correctly.
+        def _bank(convs, tag):
+            group = g.fold // self.split
+            parts = [
+                self._quantized_call(conv, y[:, :, :, i * group : (i + 1) * group]) for i, conv in enumerate(convs)
+            ]
+            total = parts[0]
+            for j, part in enumerate(parts[1:], start=1):
+                total = self._quantized_activation(f"{tag}_sum_{j}", total + part)
+            return total
+
+        # Named for the bank, not for one of its partial convolutions: this is
+        # the filterbank output, and the name is part of the QAT range contract.
+        re = self._quantized_activation(f"{self.name}_fb_re", _bank(self.fb_re, f"{self.name}_fb_re"))
+        im = self._quantized_activation(f"{self.name}_fb_im", _bank(self.fb_im, f"{self.name}_fb_im"))
 
         # alpha-max-plus-beta-min: |z| ~= max(|re|,|im|) + 0.4*min(|re|,|im|).
         # Within ~4% of the true magnitude, against ~17% ripple for |re|+|im| —
         # and that ripple would beat at the carrier frequency, aliasing into the
         # frame rate. Costs three elementwise ops, all of which stay on the NPU.
-        a = self._quantized_activation(f"{self.name}_abs_re", tf.abs(re))
-        b = self._quantized_activation(f"{self.name}_abs_im", tf.abs(im))
+        # |x| as relu(x) + relu(-x) rather than tf.abs. The identity is exact,
+        # but the N6 NPU's ABS ignores its input's quantization zero-point: on an
+        # isolated ABS with zero-point -9 every element came back short by
+        # `|zp| * scale` (measured 2026-09-09: mean error -0.1543 against mae
+        # 0.1543 -- pure bias, cos 0.951), while the relu pair is bit-exact
+        # (cos 1.000000). The filterbank sums feeding this never have a zero
+        # zero-point, so ABS is never safe here.
+        a = self._abs(re, f"{self.name}_abs_re")
+        b = self._abs(im, f"{self.name}_abs_im")
         maximum = self._quantized_activation(f"{self.name}_maximum", tf.maximum(a, b))
         minimum = self._quantized_activation(f"{self.name}_minimum", tf.minimum(a, b))
         scaled_minimum = self._quantized_activation(f"{self.name}_minimum_scale", 0.4 * minimum)

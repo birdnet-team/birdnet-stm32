@@ -293,11 +293,11 @@ def get_args() -> argparse.Namespace:
         type=int,
         default=0,
         help=(
-            "For QAT, score checkpoint selection on a fixed stratified subset of this many validation "
-            "files instead of all of them. Selection converts and evaluates an INT8 model every "
-            "epoch, so the full manifest costs roughly 20 minutes per epoch; a subset makes arms "
-            "comparable in an hour. The draw is deterministic and its hash is recorded in the "
-            "selection report, so every arm and epoch scores the identical files. 0 uses all."
+            "Score checkpoint selection (standard training and QAT) on a fixed stratified subset of "
+            "this many validation files instead of all of them. Classes are drawn round-robin with "
+            "seed 1234, so the subset is as class-balanced as the folders allow and identical across "
+            "runs and epochs. Subset cMAP is biased upward and not comparable to full-manifest "
+            "numbers. 0 uses all."
         ),
     )
 
@@ -360,8 +360,6 @@ def get_args() -> argparse.Namespace:
 
     if args.validation_subset < 0:
         parser.error("--validation_subset must be non-negative")
-    if args.validation_subset and not args.qat:
-        parser.error("--validation_subset requires --qat")
 
     # The compression steps run one at a time against a converged checkpoint;
     # the documented order is QAT, then convert.
@@ -569,11 +567,27 @@ def main():
     cfg.save(cfg_path)
     print(f"Saved model config to '{cfg_path}'")
 
-    from birdnet_stm32.training.validation import FileCmap
+    # Write the labels before training starts. The class list is already fixed
+    # here, and the checkpoint callback can leave a usable .keras behind at any
+    # epoch, so the contract files must not depend on the run reaching its end:
+    # an interrupt or a crash would otherwise strand a checkpoint with no labels.
+    labels_file = args.checkpoint_path.replace(".keras", "_labels.txt")
+    with open(labels_file, "w") as f:
+        for cls in classes:
+            f.write(f"{cls}\n")
+    print(f"Saved labels to '{labels_file}'")
 
+    from birdnet_stm32.training.validation import VALIDATION_SUBSET_SEED, FileCmap, stratified_validation_subset
+
+    selection_paths = stratified_validation_subset(val_paths, args.validation_subset)
+    if len(selection_paths) < len(val_paths):
+        print(
+            f"Selecting checkpoints on a fixed stratified subset of {len(selection_paths)} "
+            f"of {len(val_paths)} validation files (seed {VALIDATION_SUBSET_SEED})"
+        )
     extra_callbacks.append(
         FileCmap(
-            val_paths,
+            selection_paths,
             classes,
             cfg.to_dict(),
             overlap=args.validation_overlap,
@@ -604,12 +618,6 @@ def main():
         print(f"Training complete. Best model saved to '{args.checkpoint_path}'.")
     except KeyboardInterrupt:
         print(f"\nTraining interrupted. Best checkpoint so far: '{args.checkpoint_path}'")
-
-    # Save labels
-    labels_file = args.checkpoint_path.replace(".keras", "_labels.txt")
-    with open(labels_file, "w") as f:
-        for cls in classes:
-            f.write(f"{cls}\n")
 
 
 if __name__ == "__main__":

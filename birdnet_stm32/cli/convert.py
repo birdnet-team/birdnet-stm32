@@ -80,7 +80,11 @@ def get_args() -> argparse.Namespace:
         "--batch_validate",
         type=int,
         default=0,
-        help="Run validation N times with different random seeds and report worst-case metrics (0 = off).",
+        help=(
+            "Repeat validation N times over the same deterministic manifest and report "
+            "worst-case metrics, measuring runtime repeatability rather than resampling "
+            "(0 = off)."
+        ),
     )
     parser.add_argument(
         "--export_onnx",

@@ -209,3 +209,43 @@ def test_validation_subset_defaults_to_the_whole_manifest():
         assert get_args().validation_subset == 0
     finally:
         sys.argv = argv
+
+
+class TestStratifiedValidationSubset:
+    """The selection subset: balanced, fixed, and covering every class."""
+
+    @staticmethod
+    def _paths(sizes):
+        return [f"/v/{name}/{i:04d}.wav" for name, n in sizes.items() for i in range(n)]
+
+    def test_draws_equally_and_gives_a_short_class_all_of_its_files(self):
+        from collections import Counter
+
+        from birdnet_stm32.training.validation import stratified_validation_subset
+
+        sizes = {"a": 40, "b": 40, "c": 40, "short": 13}
+        # 13 rounds over 4 classes, then 12 over the 3 that still have files.
+        chosen = stratified_validation_subset(self._paths(sizes), 13 * 4 + 12 * 3)
+        counts = Counter(p.split("/")[2] for p in chosen)
+        assert counts == {"a": 25, "b": 25, "c": 25, "short": 13}
+
+    def test_is_deterministic(self):
+        from birdnet_stm32.training.validation import stratified_validation_subset
+
+        paths = self._paths({"a": 30, "b": 30})
+        assert stratified_validation_subset(paths, 20) == stratified_validation_subset(list(reversed(paths)), 20)
+
+    def test_zero_or_oversize_keeps_everything(self):
+        from birdnet_stm32.training.validation import stratified_validation_subset
+
+        paths = self._paths({"a": 3, "b": 3})
+        assert stratified_validation_subset(paths, 0) == paths
+        assert stratified_validation_subset(paths, 99) == paths
+
+    def test_rejects_a_subset_that_cannot_cover_every_class(self):
+        import pytest
+
+        from birdnet_stm32.training.validation import stratified_validation_subset
+
+        with pytest.raises(ValueError):
+            stratified_validation_subset(self._paths({"a": 5, "b": 5, "c": 5}), 2)

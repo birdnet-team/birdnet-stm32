@@ -55,7 +55,8 @@ checkpoints still load.
   kills — scores worse while delivering more. Measured: a candidate retaining
   98.3% of float top-1 above 0.5 against an incumbent's 99.6% still delivered
   12.6% more correct detections at a lower false-alarm rate.
-- `--validation_subset N` scores QAT checkpoint selection on a fixed stratified
+- `--validation_subset N` scores checkpoint selection — standard training and
+  QAT alike — on a fixed stratified
   draw instead of the whole manifest. Selection converts and evaluates an INT8
   model every epoch, which dominates run time. The draw is seeded and its hash
   is recorded. Subset cMAP is biased upward and is **not** comparable to
@@ -66,6 +67,11 @@ checkpoints still load.
 
 ### Changed
 
+- **Breaking.** The raw filterbank is emitted as `RAW_SPLIT` convolutions per
+  quadrature component instead of one, so raw checkpoints saved before this
+  change cannot be loaded and must be retrained. Parameter count is unchanged.
+  The QAT activation-range names `audio_frontend_fb_re` / `_fb_im` still name
+  the filterbank outputs.
 - QAT checkpoints now maximize **exact converted INT8 file cMAP**, using the
   CLI evaluator with max pooling and half-window overlap by default. Epoch zero
   is eligible. Selected Keras and TFLite artifacts are kept together, with
@@ -93,6 +99,36 @@ checkpoints still load.
   failure, preserves the selected INT8 bytes and leaves catalog-test data for
   final evaluation. Update documentation to distinguish learned PWL scaling,
   numerical diagnostics, task selection and release validation.
+- **The `raw` frontend now computes correctly on the STM32N6 NPU.** Two NPU
+  defects were found with `stedgeai validate --mode target` and worked around.
+  A single 448-tap filterbank convolution is miscomputed for filters whose
+  energy spans many taps (the low mel bands; filterbank cos 0.756), so each
+  filterbank is now emitted as `RAW_SPLIT = 4` convolutions over channel groups
+  and summed — an exact decomposition (cos 0.99956). And `ABS` ignores its
+  input's zero-point, returning a constant bias of `|zp| * scale`, so the
+  magnitude uses `relu(x) + relu(-x)`, which is bit-exact. Full model on target:
+  cos 0.285 before, 0.999747 after; a 25-species board test now matches the
+  host's top-1 on 25/25 files, scores within 0.031. Cost: +0.26% MACs, +1.5 kB
+  weights, activations unchanged, 45 → 55 epochs.
+- Pair the no-overdrive firmware build with `NO_OVD_CLK400` and implement that
+  branch. Without it the NPU ran at 800 MHz at nominal VDDCORE, which is out of
+  spec; an under-volted NPU completes every epoch with plausible timings and
+  returns wrong results rather than failing loudly.
+- Write the training labels file next to the model config before training
+  starts, so an interrupted run cannot leave a usable checkpoint without its
+  labels.
+- Correct the `--batch_validate` help text: it repeats validation over the same
+  deterministic manifest to measure runtime repeatability, not "different
+  random seeds".
+
+### Known issues
+
+- **Every `raw` model released before this change computes wrong results on
+  the device** — v1.0, v1.1, and the C1a candidate. On-board numerical accuracy
+  was never checked for them: every board run used only background audio, where
+  a broken model and a working one both return low scores, and "board evidence"
+  meant timing and memory. They must be retrained with the current frontend and
+  pass the new on-target gate before any raw model ships again.
 
 ## [1.1.0] - 2026-09-01
 

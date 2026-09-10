@@ -75,11 +75,18 @@ def generate_app_config_h(model_cfg: dict, num_classes: int) -> str:
 #ifndef USE_USB_PACKET_SIZE
 #define USE_USB_PACKET_SIZE             512
 #endif
+/* Clock/voltage profile. The deployment target runs WITHOUT overdrive, so the
+ * NPU must not be left at its 800 MHz no-overdrive speed: that rate is only in
+ * spec once VDDCORE has been raised, and an under-volted NPU does not fail
+ * loudly -- it completes every epoch with plausible timing and returns wrong
+ * results. Pair no-overdrive with NO_OVD_CLK400 so the clocks come up at ST's
+ * all-400 MHz profile (CPU/NIC/NOC/NPU), which is valid at nominal VDDCORE. */
 #ifndef USE_OVERDRIVE
 #define USE_OVERDRIVE                   0
 #endif
-/* NO_OVD_CLK400: when no overdrive, use clocks all @ 400 MHz */
-/* #define NO_OVD_CLK400 */
+#ifndef NO_OVD_CLK400
+#define NO_OVD_CLK400
+#endif
 
 /* --- Audio parameters (from model_config.json) ---------------------------- */
 #define APP_SAMPLE_RATE       {sr}
