@@ -258,7 +258,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--fft_length` | 512 | FFT window length |
 | `--chunk_duration` | 3 | Chunk duration (seconds) |
 | `--max_duration` | 60 | Max seconds to load per file |
-| `--audio_frontend` | hybrid | `librosa`, `hybrid`, or `raw` — see the [warning on `raw`](dev/audio-frontends.md#raw-waveform) before deploying it |
+| `--audio_frontend` | hybrid | `librosa`, `hybrid`, or `raw` — raw models trained before the [NPU fixes](dev/audio-frontends.md#raw-waveform) must be retrained |
 | `--mag_scale` | pwl | `pwl` or `none` |
 | `--embeddings_size` | 256 | Embedding channels before head |
 | `--alpha` | 1.0 | Model width scaling |

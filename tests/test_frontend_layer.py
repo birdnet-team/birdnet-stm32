@@ -246,7 +246,13 @@ class TestRawFilterbankBehaviour:
     def _modulus(self, layer, wav):
         g = layer.geom
         y = tf.reshape(tf.constant(wav[None, : g.crop, None], tf.float32), [-1, 1, g.crop // g.fold, g.fold])
-        a, b = tf.abs(layer.fb_re(y)), tf.abs(layer.fb_im(y))
+        group = g.fold // layer.split
+
+        def bank(convs):
+            parts = [c(y[:, :, :, i * group : (i + 1) * group]) for i, c in enumerate(convs)]
+            return tf.add_n(parts)
+
+        a, b = tf.abs(bank(layer.fb_re)), tf.abs(bank(layer.fb_im))
         return (tf.maximum(a, b) + 0.4 * tf.minimum(a, b)).numpy()[0, 0]
 
     def test_responds_to_every_region_of_the_input(self):

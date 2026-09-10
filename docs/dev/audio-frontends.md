@@ -56,8 +56,9 @@ The model receives raw waveform samples and computes the spectrogram itself
 with a learned **Gabor quadrature filterbank**.
 
 - **Input**: `[B, samples, 1]` raw audio waveform (peak-normalized)
-- **In-graph ops**: fold → cosine/sine Conv2D pair → magnitude → per-band
-  temporal lowpass → BN → ReLU → magnitude scaling
+- **In-graph ops**: fold → cosine/sine filterbank (each as `RAW_SPLIT`
+  channel-group convolutions, summed) → magnitude → per-band temporal
+  lowpass → BN → ReLU → magnitude scaling
 - **Pros**: end-to-end learnable; no host-side STFT at all
 - **Cons**: highest activation memory; chunk length bounded by the 65,536 limit
 
@@ -86,49 +87,63 @@ Two invariants the geometry guarantees, both covered by tests:
     ~2.7 s — 2.5 s is a comfortable default. Longer chunks need a lower sample
     rate or a different frontend.
 
-!!! danger "The raw filterbank does not currently compute correctly on the NPU"
-    Measured 2026-09-09 with `stedgeai validate --mode target`. The filterbank
-    convolution — 112 input channels x 1x4 kernel, 448 taps — returns wrong
-    results on device while every stage before it is bit-exact:
+!!! warning "Two NPU defects the raw path is built around"
+    The raw frontend is shaped by two defects in how the STM32N6 NPU computes,
+    both found and measured on hardware 2026-09-09 with
+    `stedgeai validate --mode target`. Neither shows up in `stedgeai analyze`,
+    in board timings, or on background audio.
 
-    | node | target vs host |
-    |---|---|
-    | `slice_1` (the folded waveform) | cos **1.000000** |
-    | `conv2d_3` (the filterbank) | cos **0.683** |
+    **1. Long filterbank convolutions are miscomputed.** Emitted as a single
+    convolution — 112 input channels x 1x4 kernel, 448 taps — the trained
+    filterbank comes back wrong (cos 0.683 at that layer, while every stage
+    before it is bit-exact). The failing filters are the ones whose energy is
+    spread over many taps: the low mel bands, whose Gabor atoms span the whole
+    window. Filter 0 (428 non-zero taps) matches its true kernel at cos 0.003;
+    filter 61 (44 taps) at cos 1.000. Random, uniform, sparsity-matched and
+    wide-scale-spread weights all validate at 0.9999 with the same geometry,
+    so a random-weight check does not catch it.
 
-    Only 18 of 64 filters are correct. Recovering the kernel the device
-    actually used shows filters built from many small taps are attenuated or
-    dead (filter 0: 428 non-zero taps, cos 0.003 against its true kernel) while
-    filters built from a few large taps are exact (filter 61: 44 taps,
-    cos 1.000). `corr(gain, non-zero taps) = -0.87`.
+    The fix is `RAW_SPLIT` in `birdnet_stm32/models/frontend.py`: each
+    quadrature filterbank is emitted as parallel convolutions over equal groups
+    of the folded channels, then summed. That is an exact decomposition — the
+    model computes the same function — but each partial convolution
+    accumulates fewer taps. Filterbank output on target, trained weights:
 
-    The same geometry with random, uniform, sparsity-matched or
-    wide-scale-spread weights all validate at cos 0.9999. Only the *trained*
-    filterbank fails, and shuffling its values keeps it failing — being matched
-    filters, they accumulate coherently on real audio in a way random weights
-    do not. Scaling the input down recovers it (full 0.756, 1/4 0.964,
-    1/8 0.995), but at a real accuracy cost.
+    | `RAW_SPLIT` | taps per conv | cos |
+    |---|---|---|
+    | 1 | 448 | 0.756 |
+    | 2 | 224 | 0.864 |
+    | **4** (default) | **112** | **0.99956** |
+    | 8 | 56 | 0.99950 |
 
-    This is not a general NPU or backbone problem: a `hybrid` model validates
-    on target at **cos 1.000000, rmse 0.000000** — bit-exact, whole model,
-    DS-CNN backbone included.
+    8 is no better than 4; what remains at 4 is the INT8 requantization of the
+    sum, not the defect.
 
-    **Until this is resolved, deploy with `hybrid`.** It is measured exact on
-    device. Note the defect predates the current code and affects shipped raw
-    models, which were selected on host metrics plus board *timing* — on-board
-    numerical accuracy had never been checked.
+    **2. `ABS` ignores its input's zero-point.** An isolated `ABS` on a tensor
+    with zero-point -9 returns every element short by `|zp| * scale`: mean
+    error -0.1543 against a mean absolute error of 0.1543, i.e. pure bias
+    (cos 0.951). The filterbank sums feeding the magnitude never have a zero
+    zero-point, so the frontend computes `|x|` as `relu(x) + relu(-x)` — an
+    exact identity that is bit-exact on target (cos 1.000000).
 
-    Two tools ship with the repository:
+    **Result.** Full 25-species model, `stedgeai validate` on target: cos
+    0.285 originally, 0.526 with the split alone, **0.999747** with both. On a
+    25-file board test of audio the host classifies confidently, the board
+    matches the host's top-1 on **25/25** files, scores within 0.031.
 
-    - `scripts/npu_conv_repro.py` builds a single-Conv2D model with this
-      geometry and selectable weights, so the failure can be reproduced (and
-      reported to ST) without the rest of the network.
-    - `scripts/patch_waveform_scale.py` widens the scale of the int8 waveform
-      tensors feeding the filterbank, which shrinks the input codes and the
-      accumulation with them. At 32x headroom the layer reaches cos 0.99988 on
-      target, but the waveform is left with ~4 int8 codes and host top-1 falls
-      from 25/25 to 22/25 on a 25-species check. It confirms the mechanism; it
-      is not a shippable fix.
+    Cost against the unsplit graph: +0.26% MACs, +1.5 kB weights, activation
+    memory unchanged at 292.969 kB, 45 → 55 epochs, the same three software
+    epochs.
+
+    **Raw checkpoints from before this change cannot be loaded** — each
+    filterbank is now `RAW_SPLIT` convolutions rather than one — and every raw
+    model released before it (v1.0, v1.1, and the C1a candidate) computes
+    wrong results on the device. Those have to be retrained. `hybrid` was never
+    affected: it has neither a long filterbank nor an `ABS`, and validates
+    bit-exactly on target (cos 1.000000, rmse 0.000000).
+
+    `scripts/npu_conv_repro.py` reproduces defect 1 in a single Conv2D, for
+    reporting upstream.
 
 ## Magnitude scaling
 
@@ -150,6 +165,8 @@ When modifying or adding frontends, verify:
 
 - [ ] Channel counts are multiples of 8
 - [ ] No ops that expand beyond 16-bit activation limits
+- [ ] No `ABS` on a tensor whose zero-point can be non-zero — use
+      `relu(x) + relu(-x)` (see the raw section above)
 - [ ] All ops are in the [STM32N6 NPU operator set](https://stm32ai-cs.st.com/assets/embedded-docs/command_line_interface.html)
 - [ ] Run `stedgeai analyze` on the exported TFLite to confirm
 - [ ] Run `stedgeai validate --mode target` on the exported TFLite and check the
@@ -161,4 +178,10 @@ not arithmetic: a layer can compile entirely to the NPU, report plausible
 timings, and still return wrong numbers. It is also weight-dependent, so a
 geometry that validates with random weights can still fail once trained — the
 raw filterbank above is exactly that case.
+
+Read `l2r` alongside `cos`. Cosine is scale-invariant, so a layer that keeps
+the right shape but loses gain or picks up a constant offset can still score
+close to 1. The `ABS` defect is the example: its input validated at cos 0.9994
+(l2r 0.034) and its output at cos 0.892 — but l2r 0.572, which is the number
+that shows what happened.
 - [ ] Cosine similarity > 0.95 after quantization

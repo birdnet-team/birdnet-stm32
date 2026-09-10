@@ -19,7 +19,13 @@ Measured 2026-09-09 (cosine, target vs host):
 
 Only the trained weights fail, and shuffling them keeps it failing, so it is
 the value distribution rather than the geometry, the calibration, the bias, the
-sparsity or the scale spread. See docs/dev/audio-frontends.md.
+sparsity or the scale spread.
+
+The frontend now avoids it by splitting the filterbank into channel-group
+convolutions and summing them (``RAW_SPLIT`` in birdnet_stm32/models/frontend.py),
+which with the real weights measures 0.864 at 2 groups, 0.99956 at 4 and
+0.99950 at 8. This script keeps the undivided geometry on purpose: it is the
+reproduction, for reporting upstream. See docs/dev/audio-frontends.md.
 
 Usage:
     python scripts/npu_conv_repro.py <weights> <calib> <out.tflite>

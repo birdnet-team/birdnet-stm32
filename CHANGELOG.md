@@ -66,6 +66,11 @@ checkpoints still load.
 
 ### Changed
 
+- **Breaking.** The raw filterbank is emitted as `RAW_SPLIT` convolutions per
+  quadrature component instead of one, so raw checkpoints saved before this
+  change cannot be loaded and must be retrained. Parameter count is unchanged.
+  The QAT activation-range names `audio_frontend_fb_re` / `_fb_im` still name
+  the filterbank outputs.
 - QAT checkpoints now maximize **exact converted INT8 file cMAP**, using the
   CLI evaluator with max pooling and half-window overlap by default. Epoch zero
   is eligible. Selected Keras and TFLite artifacts are kept together, with
@@ -93,6 +98,17 @@ checkpoints still load.
   failure, preserves the selected INT8 bytes and leaves catalog-test data for
   final evaluation. Update documentation to distinguish learned PWL scaling,
   numerical diagnostics, task selection and release validation.
+- **The `raw` frontend now computes correctly on the STM32N6 NPU.** Two NPU
+  defects were found with `stedgeai validate --mode target` and worked around.
+  A single 448-tap filterbank convolution is miscomputed for filters whose
+  energy spans many taps (the low mel bands; filterbank cos 0.756), so each
+  filterbank is now emitted as `RAW_SPLIT = 4` convolutions over channel groups
+  and summed — an exact decomposition (cos 0.99956). And `ABS` ignores its
+  input's zero-point, returning a constant bias of `|zp| * scale`, so the
+  magnitude uses `relu(x) + relu(-x)`, which is bit-exact. Full model on target:
+  cos 0.285 before, 0.999747 after; a 25-species board test now matches the
+  host's top-1 on 25/25 files, scores within 0.031. Cost: +0.26% MACs, +1.5 kB
+  weights, activations unchanged, 45 → 55 epochs.
 - Pair the no-overdrive firmware build with `NO_OVD_CLK400` and implement that
   branch. Without it the NPU ran at 800 MHz at nominal VDDCORE, which is out of
   spec; an under-volted NPU completes every epoch with plausible timings and
@@ -106,24 +122,12 @@ checkpoints still load.
 
 ### Known issues
 
-- **The `raw` audio frontend does not compute correctly on the STM32N6 NPU.**
-  Its learned filterbank convolution (112 input channels, 448 taps) returns
-  wrong results on device — `stedgeai validate --mode target` reports cos 0.683
-  at that layer while every preceding stage is bit-exact, and only 18 of 64
-  filters are correct. The same geometry with random weights validates at
-  0.9999, so it is specific to the trained weights, which accumulate coherently
-  on real audio. A `hybrid` model validates bit-exactly on the same hardware
-  (cos 1.000000, rmse 0.000000), so the NPU, the compiler and the DS-CNN
-  backbone are all sound.
-
-  **Deploy with `hybrid` until this is resolved.** The defect predates this
-  release and affects shipped `raw` models: on-board numerical accuracy had
-  never been checked, because every board run used only background audio, where
-  a broken model and a working one both return low scores. `scripts/`
-  now carries a self-contained reproduction (`npu_conv_repro.py`) and the
-  measured workaround (`patch_waveform_scale.py`), and the release process
-  requires an on-target cross-accuracy gate. See
-  `docs/dev/audio-frontends.md`.
+- **Every `raw` model released before this change computes wrong results on
+  the device** — v1.0, v1.1, and the C1a candidate. On-board numerical accuracy
+  was never checked for them: every board run used only background audio, where
+  a broken model and a working one both return low scores, and "board evidence"
+  meant timing and memory. They must be retrained with the current frontend and
+  pass the new on-target gate before any raw model ships again.
 
 ## [1.1.0] - 2026-09-01
 

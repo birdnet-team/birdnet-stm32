@@ -237,6 +237,11 @@ computes what the host does. Compare `m_outputs` (host reference) against
 `c_outputs` (target): if the target's range is visibly compressed relative to
 the reference, the graph is not computing correctly regardless of timing.
 
+Check `l2r` as well. Cosine is blind to a uniform gain error or a constant
+offset, so a layer can score cos 0.95 while being clearly wrong; `l2r`
+(L2 relative error) is not. A correct INT8 model sits well below 0.05 — the
+fixed 25-species raw model measures 0.023.
+
 To localise a mismatch, cut the graph at a node index and validate the partial
 model — `--cut-output-layers N` (and `--cut-input-layers N` to start there
 instead). Bisecting on the first node whose `cos` falls away names the layer.

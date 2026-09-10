@@ -1,4 +1,8 @@
-"""Widen the raw-waveform quantisation scale of a birdnet-stm32 INT8 model.
+"""Superseded: the frontend fix is ``RAW_SPLIT`` (exact, no precision cost). Kept
+as the experiment that first confirmed the defect scales with the accumulated
+signal.
+
+Widen the raw-waveform quantisation scale of a birdnet-stm32 INT8 model.
 
 The N6 NPU's convolution accumulator saturates at signed 16 bits. The learned
 raw filterbank convolves 448 taps (fold 112 x kernel 4) that, on real audio,

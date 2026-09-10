@@ -70,8 +70,9 @@ requires all of the following:
 6. Run `stedgeai analyze` or `stedgeai generate` for the STM32N6 target and
    retain its compatibility/memory report.
 7. Run `stedgeai validate --mode target` on the physical board and retain the
-   cross-accuracy report. **The gate is `cos >= 0.99` against the host
-   reference**, measured on the release weights.
+   cross-accuracy report. **The gate is `cos >= 0.99` and `l2r <= 0.05`
+   against the host reference**, measured on the release weights. Both are
+   needed: cosine cannot see a gain error or a constant offset, `l2r` can.
 8. Run the custom firmware on the physical board and retain the board report.
    The board report must include predictions on audio **that the model should
    actually recognise**, compared against the host's predictions on the same
