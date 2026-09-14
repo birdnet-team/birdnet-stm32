@@ -54,6 +54,7 @@ ever used them.
 | Mode | Description | Quantization friendliness |
 |---|---|---|
 | `pwl` (default) | Piecewise-linear learned compression | Excellent — recommended for deployment |
+| `cpwl` | The same, held compressive (concave, monotone) | Experimental — squeezes the output tail into fewer INT8 codes |
 | `none` | No compression | Baseline only, for ablations |
 
 `pcen` and `db` were removed in 1.2.0. dB's log op produces exactly the wide
@@ -259,7 +260,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--chunk_duration` | 3 | Chunk duration (seconds) |
 | `--max_duration` | 60 | Max seconds to load per file |
 | `--audio_frontend` | hybrid | `librosa`, `hybrid`, or `raw` — raw models trained before the [NPU fixes](dev/audio-frontends.md#raw-waveform) must be retrained |
-| `--mag_scale` | pwl | `pwl` or `none` |
+| `--mag_scale` | pwl | `pwl`, `cpwl` or `none` |
 | `--embeddings_size` | 256 | Embedding channels before head |
 | `--alpha` | 1.0 | Model width scaling |
 | `--depth_multiplier` | 1 | Block repeats per stage |

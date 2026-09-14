@@ -37,6 +37,10 @@ checkpoints still load.
 
 ### Added
 
+- **`--mag_scale cpwl`**, an experimental compressive variant of `pwl`: the
+  same learned hinge sum, constrained concave and monotone and initialized
+  log-like, to spread the magnitude layer's output over more INT8 codes.
+  Opt-in; `pwl` remains the default.
 - `birdnet_stm32 measure-operational` and
   `birdnet_stm32/evaluation/operational.py`: the device-facing INT8 release
   gate, promoted out of the untracked experiment directory so a release can be

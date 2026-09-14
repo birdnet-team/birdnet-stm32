@@ -14,7 +14,18 @@ from tensorflow.keras import layers
 
 from birdnet_stm32.models.quantization import clip_activation, validate_bounds
 
-VALID_MAG_SCALES = ("none", "pwl")
+VALID_MAG_SCALES = ("none", "pwl", "cpwl")
+
+
+@tf.keras.utils.register_keras_serializable(package="birdnet_stm32")
+class NonPositive(tf.keras.constraints.Constraint):
+    """Constrain weights to be <= 0 (the compressive PWL's hinge slopes)."""
+
+    def __call__(self, w):
+        return -tf.nn.relu(-w)
+
+    def get_config(self):
+        return {}
 
 
 class MagnitudeScalingLayer(layers.Layer):
@@ -49,12 +60,26 @@ class MagnitudeScalingLayer(layers.Layer):
         self.activation_bounds = validate_bounds(activation_bounds)
         self._quantization_hook = None
 
-        # PWL sublayers
-        if self.method == "pwl":
+        # PWL sublayers. "pwl" is the learned hinge sum with unconstrained slopes;
+        # it initializes expansive (cumulative slope 0.40 -> 0.88) and stays so
+        # after training, which gives its output a heavy upper tail: on the V12
+        # raw model 50/90/99% of values used 1/3/14 of the 255 INT8 codes, the
+        # rare peaks setting the range. "cpwl" is the same hinge sum held
+        # compressive -- k0 >= 0, hinge input weights >= 0, hinge slopes <= 0 --
+        # and initialized log-like (slopes 1.0 -> 0.55 -> 0.25 -> 0.10), so the
+        # tail is squeezed and typical values keep their INT8 resolution. Same
+        # ops, same names; only the constraints and the init differ.
+        if self.method in ("pwl", "cpwl"):
+            compressive = self.method == "cpwl"
+            k0_init = 1.0 if compressive else 0.40
+            k_inits = (-0.45, -0.30, -0.15) if compressive else (0.25, 0.15, 0.08)
+            non_neg = tf.keras.constraints.NonNeg() if compressive else None
+            non_pos = NonPositive() if compressive else None
             self._pwl_k0_dw = layers.DepthwiseConv2D(
                 (1, 1),
                 use_bias=False,
-                depthwise_initializer=tf.keras.initializers.Constant(0.40),
+                depthwise_initializer=tf.keras.initializers.Constant(k0_init),
+                depthwise_constraint=non_neg,
                 padding="same",
                 name=f"{name}_pwl_k0_dw",
                 trainable=self.is_trainable,
@@ -64,6 +89,7 @@ class MagnitudeScalingLayer(layers.Layer):
                     (1, 1),
                     use_bias=True,
                     depthwise_initializer=tf.keras.initializers.Ones(),
+                    depthwise_constraint=tf.keras.constraints.NonNeg() if compressive else None,
                     bias_initializer=tf.keras.initializers.Constant(-t),
                     padding="same",
                     name=f"{name}_pwl_shift{i + 1}_dw",
@@ -76,11 +102,12 @@ class MagnitudeScalingLayer(layers.Layer):
                     (1, 1),
                     use_bias=False,
                     depthwise_initializer=tf.keras.initializers.Constant(k),
+                    depthwise_constraint=non_pos,
                     padding="same",
                     name=f"{name}_pwl_k{i + 1}_dw",
                     trainable=self.is_trainable,
                 )
-                for i, k in enumerate((0.25, 0.15, 0.08))
+                for i, k in enumerate(k_inits)
             ]
         else:
             self._pwl_k0_dw = None
@@ -89,7 +116,7 @@ class MagnitudeScalingLayer(layers.Layer):
 
     def build(self, input_shape):
         """Build magnitude scaling sub-layers for the given input shape."""
-        if self.method == "pwl":
+        if self.method in ("pwl", "cpwl"):
             if self._pwl_k0_dw is not None and not self._pwl_k0_dw.built:
                 self._pwl_k0_dw.build(input_shape)
             for s in self._pwl_shift_dws:
@@ -102,7 +129,7 @@ class MagnitudeScalingLayer(layers.Layer):
 
     def call(self, x, training=None):
         """Apply magnitude scaling to a 4-D tensor [B, H, W, C]."""
-        if self.method == "pwl":
+        if self.method in ("pwl", "cpwl"):
             return self._apply_pwl(x)
         return x
 

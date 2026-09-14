@@ -23,7 +23,7 @@ class ModelConfig:
         chunk_duration: Audio chunk duration in seconds.
         hop_length: STFT hop length in samples.
         audio_frontend: Frontend mode ('librosa', 'hybrid', 'raw').
-        mag_scale: Magnitude scaling ('pwl', 'none').
+        mag_scale: Magnitude scaling ('pwl', 'cpwl', 'none').
         embeddings_size: Dense embedding dimension before classifier.
         alpha: Width multiplier for channel counts.
         depth_multiplier: Block repeat count per stage.
@@ -57,7 +57,7 @@ class ModelConfig:
     # -- Validation ----------------------------------------------------------
 
     _VALID_FRONTENDS = frozenset({"librosa", "hybrid", "raw"})
-    _VALID_MAG_SCALES = frozenset({"pwl", "none"})
+    _VALID_MAG_SCALES = frozenset({"pwl", "cpwl", "none"})
 
     def __post_init__(self) -> None:
         """Validate field values after initialization."""

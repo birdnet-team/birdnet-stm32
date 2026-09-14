@@ -234,7 +234,7 @@ def gabor_filterbank(
     return (real / norm).astype(np.float32), (imag / norm).astype(np.float32)
 
 
-from birdnet_stm32.models.magnitude import MagnitudeScalingLayer  # noqa: E402
+from birdnet_stm32.models.magnitude import VALID_MAG_SCALES, MagnitudeScalingLayer  # noqa: E402
 from birdnet_stm32.models.quantization import clip_activation, validate_bounds  # noqa: E402
 
 
@@ -279,7 +279,7 @@ class AudioFrontendLayer(layers.Layer):
     ):
         super().__init__(name=name, **kwargs)
         assert mode in ("precomputed", "hybrid", "raw")
-        assert mag_scale in ("pwl", "none")
+        assert mag_scale in VALID_MAG_SCALES
         self.mode = mode
         self.mel_bins = int(mel_bins)
         self.spec_width = int(spec_width)

@@ -90,11 +90,12 @@ def get_spectrogram_from_audio(
     # Ensure fixed width
     S = S[:, :spec_width]
 
-    if mag_scale == "pwl":
+    if mag_scale in ("pwl", "cpwl"):
         Smin, Smax = S.min(), S.max()
         Snorm = (S - Smin) / (Smax - Smin + 1e-10)
         t1, t2, t3 = 0.10, 0.35, 0.65
-        k0, k1, k2, k3 = 0.40, 0.25, 0.15, 0.08
+        # The in-graph layer's initial curve: expansive for pwl, compressive for cpwl.
+        k0, k1, k2, k3 = (1.0, -0.45, -0.30, -0.15) if mag_scale == "cpwl" else (0.40, 0.25, 0.15, 0.08)
         relu = lambda z: np.maximum(z, 0.0)  # noqa: E731
         S = k0 * Snorm + k1 * relu(Snorm - t1) + k2 * relu(Snorm - t2) + k3 * relu(Snorm - t3)
 
