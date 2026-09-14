@@ -44,8 +44,9 @@ checkpoints still load.
 - `board-test --host_audio_dir`: host x board parity. The same `.tflite` runs
   on the host over local copies of the SD card's files, through the host's
   evaluation preprocessing, and each file's board result is checked against it:
-  same top-1 (or a tie within `--parity_tolerance`) and every printed score
-  within tolerance. The firmware's top-k order, including ties, is replicated
+  same top-1 (or a tie within `--parity_tolerance`) and the same detection
+  call at `--detection_threshold`, a flip next to the threshold excused as
+  borderline. Larger score gaps are flagged as drift. The firmware's top-k order, including ties, is replicated
   exactly. Prints a per-file table and exits nonzero on a mismatch; with a
   `manifest.csv` it also counts correct detections. Until now this comparison
   was done by hand.

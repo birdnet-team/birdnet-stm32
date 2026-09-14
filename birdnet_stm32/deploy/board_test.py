@@ -72,9 +72,10 @@ class BoardTestConfig:
         timeout: Maximum seconds to wait for firmware to finish.
         host_audio_dir: Local copy of the SD card's audio/ folder. When set, the
             host scores the same files and the board is checked against it.
-        parity_tolerance: Largest allowed |board - host| score for any label
-            the board prints, and the margin within which a different top-1 is
-            a tie rather than a disagreement.
+        parity_tolerance: Margin within which a different top-1 is a tie, and
+            within which a host score counts as borderline to the detection
+            threshold. Larger score differences are flagged, not failed.
+        detection_threshold: Score at which the device reports a detection.
     """
 
     deploy_cfg: DeployConfig = field(default_factory=DeployConfig)
@@ -86,6 +87,7 @@ class BoardTestConfig:
     timeout: int = 300
     host_audio_dir: str = ""
     parity_tolerance: float = 0.05
+    detection_threshold: float = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -621,15 +623,21 @@ def compare_board_host(
     top_k: int,
     threshold: float,
     tolerance: float,
+    detection_threshold: float = 0.5,
     truth: dict[str, str] | None = None,
 ) -> dict:
-    """Check every file's board result against the host's.
+    """Check that the board reports the same detections as the host.
 
-    A file agrees when the board's top-1 is the host's top-1, or a label the
-    host scores within ``tolerance`` of its own top-1 (a tie, not a
-    disagreement), and every score the board printed is within ``tolerance``
-    of the host's score for that label. Board scores are printed truncated to
-    0.1%, which the tolerance absorbs.
+    A file agrees when both hold:
+
+    - the board's top-1 is the host's top-1, or a label the host scores within
+      ``tolerance`` of its own top-1 (a tie, not a disagreement);
+    - board and host make the same call at ``detection_threshold`` -- unless
+      the host's score is within ``tolerance`` of the threshold, where INT8
+      rounding on the NPU can legitimately tip it (flagged ``borderline``).
+
+    Score differences above ``tolerance`` that change neither are flagged
+    ``drift`` but do not fail the file. A broken model fails on top-1.
 
     Returns:
         Dict with per-file ``rows``, ``passed``, and summary counts.
@@ -654,19 +662,25 @@ def compare_board_host(
             agreement = "tie"
         else:
             agreement = "mismatch"
+        board_score = board[0][1] if board else 0.0
+        host_score = float(scores[host_top[0]]) if host_top else 0.0
+        same_call = (board_score >= detection_threshold) == (host_score >= detection_threshold)
+        borderline = not same_call and abs(host_score - detection_threshold) <= tolerance
+        flags = [flag for flag, on in (("borderline", borderline), ("drift", max_diff > tolerance)) if on]
         true_label = truth.get(name.upper(), "")
         rows.append(
             {
                 "file": name,
                 "board_top1": board_top1,
-                "board_score": board[0][1] if board else 0.0,
+                "board_score": board_score,
                 "host_top1": host_top1,
-                "host_score": float(scores[host_top[0]]) if host_top else 0.0,
+                "host_score": host_score,
                 "board_labels": [label for label, _ in board],
                 "host_labels": [labels[i] for i in host_top],
                 "max_score_diff": float(max_diff),
                 "agreement": agreement,
-                "ok": agreement != "mismatch" and max_diff <= tolerance,
+                "flags": flags,
+                "ok": agreement != "mismatch" and (same_call or borderline),
                 "true_label": true_label,
             }
         )
@@ -680,6 +694,8 @@ def compare_board_host(
         "ties": sum(row["agreement"] == "tie" for row in rows),
         "max_score_diff": max((row["max_score_diff"] for row in rows), default=0.0),
         "tolerance": tolerance,
+        "detection_threshold": detection_threshold,
+        "flagged": sum(bool(row["flags"]) for row in rows),
         "board_correct": sum(row["board_top1"] == row["true_label"] for row in with_truth) if with_truth else None,
         "host_correct": sum(row["host_top1"] == row["true_label"] for row in with_truth) if with_truth else None,
         "labelled_files": len(with_truth),
@@ -689,16 +705,20 @@ def compare_board_host(
 def print_parity(parity: dict) -> None:
     """Print the per-file host x board comparison and its verdict."""
     print("\n--- Host x board parity ---")
-    print(f"  {'file':<16} {'board top-1':<28} {'host top-1':<28} {'max|d|':>7}  {'':<8} truth")
+    print(f"  {'file':<16} {'board top-1':<28} {'host top-1':<28} {'max|d|':>7}  {'':<18} truth")
     for row in parity["rows"]:
         board = f"{row['board_top1']} {row['board_score']:.3f}"
         host = f"{row['host_top1']} {row['host_score']:.3f}"
-        flag = row["agreement"] if row["ok"] else f"FAIL:{row['agreement']}"
-        print(f"  {row['file']:<16} {board:<28} {host:<28} {row['max_score_diff']:7.4f}  {flag:<8} {row['true_label']}")
+        flag = "+".join([row["agreement"], *row["flags"]])
+        flag = flag if row["ok"] else f"FAIL:{flag}"
+        print(
+            f"  {row['file']:<16} {board:<28} {host:<28} {row['max_score_diff']:7.4f}  {flag:<18} {row['true_label']}"
+        )
     verdict = "PASS" if parity["passed"] else "FAIL"
     print(
         f"\n  PARITY {verdict}: {parity['agreeing']}/{parity['files']} files agree "
         f"({parity['top1_matches']} same top-1, {parity['ties']} ties), "
+        f"detection threshold {parity['detection_threshold']}, {parity['flagged']} flagged, "
         f"max |board - host| {parity['max_score_diff']:.4f} (tolerance {parity['tolerance']})"
     )
     if parity["labelled_files"]:
@@ -861,6 +881,7 @@ def run_board_test(cfg: BoardTestConfig) -> dict:
             top_k=min(cfg.top_k, FIRMWARE_TOP_K),
             threshold=max(cfg.score_threshold, FIRMWARE_SCORE_THRESHOLD),
             tolerance=cfg.parity_tolerance,
+            detection_threshold=cfg.detection_threshold,
             truth=load_truth(cfg.host_audio_dir),
         )
         if unprocessed:

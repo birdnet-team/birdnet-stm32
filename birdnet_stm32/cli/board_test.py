@@ -62,7 +62,13 @@ def get_args() -> argparse.Namespace:
         "--parity_tolerance",
         type=float,
         default=0.05,
-        help="Largest allowed |board - host| score per printed label, and the top-1 tie margin",
+        help="Top-1 tie margin and borderline margin around --detection_threshold; larger score gaps are flagged",
+    )
+    parser.add_argument(
+        "--detection_threshold",
+        type=float,
+        default=0.5,
+        help="Score at which a detection is reported; board and host must make the same call",
     )
     parser.add_argument(
         "--save_results",
@@ -114,6 +120,7 @@ def main():
         timeout=args.timeout,
         host_audio_dir=args.host_audio_dir,
         parity_tolerance=args.parity_tolerance,
+        detection_threshold=args.detection_threshold,
     )
 
     result = run_board_test(board_cfg)
@@ -137,7 +144,7 @@ def main():
                     line += [
                         row["host_top1"],
                         f"{row['host_score']:.4f}",
-                        row["agreement"] if row["ok"] else f"FAIL:{row['agreement']}",
+                        ("" if row["ok"] else "FAIL:") + "+".join([row["agreement"], *row["flags"]]),
                         f"{row['max_score_diff']:.4f}",
                         row["true_label"],
                     ]

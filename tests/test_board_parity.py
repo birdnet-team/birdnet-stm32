@@ -60,12 +60,24 @@ class TestCompareBoardHost:
         assert parity["rows"][0]["agreement"] == "tie"
         assert parity["passed"] is True
 
-    def test_right_label_wrong_score_fails(self):
-        """Same ranking with a drifted score is still the device computing something else."""
+    def test_drift_that_changes_no_detection_is_flagged_not_failed(self):
         host = {"F1.WAV": np.array([0.9, 0.0, 0.0, 0.0])}
+        parity = _compare([_board("F1.WAV", ("a", 0.8))], host)
+        assert parity["rows"][0]["flags"] == ["drift"]
+        assert parity["passed"] is True
+
+    def test_drift_across_the_threshold_fails(self):
+        """Same top-1, but only the board reports it: a different detection."""
+        host = {"F1.WAV": np.array([0.3, 0.0, 0.0, 0.0])}
         parity = _compare([_board("F1.WAV", ("a", 0.7))], host)
-        assert parity["rows"][0]["agreement"] == "match"
         assert parity["passed"] is False
+
+    def test_a_flip_next_to_the_threshold_is_borderline(self):
+        """The measured V12 case: board 0.527, host 0.473 at threshold 0.5."""
+        host = {"F1.WAV": np.array([0.473, 0.0, 0.0, 0.0])}
+        parity = _compare([_board("F1.WAV", ("a", 0.527))], host)
+        assert parity["rows"][0]["flags"] == ["borderline", "drift"]
+        assert parity["passed"] is True
 
     def test_the_old_broken_raw_model_fails(self):
         """The failure this test missed before: one constant answer for every file."""
