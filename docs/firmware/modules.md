@@ -112,7 +112,10 @@ typedef struct {
 
 **Location:** `firmware/Src/audio_stft.c`
 
-Computes a Hann-windowed magnitude STFT using `fft.c`.
+Computes a magnitude STFT using `fft.c` that reproduces the host's hybrid
+input — `librosa.stft(center=True, pad_mode="constant", window="hann")` — and
+normalizes it like the host. `tests/test_firmware_stft.py` compiles this file
+natively and checks it against `get_spectrogram_from_audio()`.
 
 ### `stft_magnitude()`
 
@@ -124,15 +127,26 @@ void stft_magnitude(const float *audio, uint32_t num_samples,
 
 **Algorithm:**
 
-1. Pre-compute a Hann window of `fft_length` samples (done once, cached).
+1. Pre-compute a periodic Hann window of `fft_length` samples.
 2. For each of `spec_width` time frames:
-   - Extract `fft_length` samples starting at `frame × hop_length`.
+   - Extract `fft_length` samples centred on `frame × hop_length`, taking
+     zeros outside the chunk (librosa's `center=True, pad_mode="constant"`).
    - Multiply by the Hann window.
    - Call `fft_512_real()` for the FFT.
    - Compute magnitude for bins 0–255 and omit Nyquist, matching the model input.
    - Store in output as `out[freq_bin * spec_width + frame]`
      (frequency-major).
-3. Zero-fill if the audio is shorter than expected.
+
+### `spec_minmax_normalize()`
+
+```c
+void spec_minmax_normalize(float *spec, uint32_t count);
+```
+
+Maps a finished spectrogram to [0, 1] in place as
+`(S - min) / (max - min + 1e-10)`, which is what the host does to every
+spectrogram before the model sees it. `main.c` calls it after the STFT on the
+hybrid path and after the mel projection on the precomputed path.
 
 **Output layout:** `[fft_bins, spec_width]` — frequency-major (each row is one
 frequency bin across all time frames). This matches the expected layout

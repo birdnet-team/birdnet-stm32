@@ -3,6 +3,13 @@
  *
  * Produces a linear magnitude spectrogram for the BirdNET hybrid frontend.
  * Output layout: [fft_bins, spec_width, 1] in row-major (freq, time, channel).
+ *
+ * This must compute what the host computes -- get_spectrogram_from_audio() in
+ * birdnet_stm32/audio/spectrogram.py, i.e. librosa.stft(center=True,
+ * pad_mode="constant", window="hann") followed by a per-sample min-max
+ * normalization -- or the model sees a different input on the device than it
+ * was trained and evaluated on. tests/test_firmware_stft.py compiles this file
+ * natively and checks it against the host.
  */
 
 #include "audio_stft.h"
@@ -15,10 +22,11 @@
 #endif
 
 /* ---- Hann window --------------------------------------------------------- */
+/* Periodic, as librosa's "hann" (scipy get_window with fftbins=True). */
 static void hann_window(float *win, uint32_t length)
 {
     for (uint32_t i = 0; i < length; i++)
-        win[i] = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * (float)i / (float)(length - 1)));
+        win[i] = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * (float)i / (float)length));
 }
 
 void stft_magnitude(const float *audio, uint32_t chunk_samples,
@@ -39,12 +47,16 @@ void stft_magnitude(const float *audio, uint32_t chunk_samples,
     memset(out, 0, fft_bins * spec_width * sizeof(float));
 
     for (uint32_t t = 0; t < spec_width; t++) {
-        uint32_t start = t * hop_length;
+        /* Centered frames, as librosa.stft(center=True, pad_mode="constant"):
+         * frame t is centred on sample t * hop, with zeros outside the chunk.
+         * Frames that start at t * hop instead are shifted by half a window
+         * and agree with the host at cos 0.32, measured. */
+        int32_t start = (int32_t)(t * hop_length) - (int32_t)(fft_length / 2);
 
         /* Copy and window the frame */
         for (uint32_t i = 0; i < fft_length; i++) {
-            uint32_t idx = start + i;
-            float sample = (idx < chunk_samples) ? audio[idx] : 0.0f;
+            int32_t idx = start + (int32_t)i;
+            float sample = (idx >= 0 && idx < (int32_t)chunk_samples) ? audio[idx] : 0.0f;
             fft_buf[i] = sample * window[i];
         }
 
@@ -66,4 +78,17 @@ void stft_magnitude(const float *audio, uint32_t chunk_samples,
             out[f * spec_width + t] = sqrtf(re * re + im * im);
         }
     }
+}
+
+void spec_minmax_normalize(float *spec, uint32_t count)
+{
+    /* (S - min) / (max - min + 1e-10), as normalize() on the host. */
+    float lo = spec[0], hi = spec[0];
+    for (uint32_t i = 1; i < count; i++) {
+        if (spec[i] < lo) lo = spec[i];
+        if (spec[i] > hi) hi = spec[i];
+    }
+    float scale = 1.0f / (hi - lo + 1e-10f);
+    for (uint32_t i = 0; i < count; i++)
+        spec[i] = (spec[i] - lo) * scale;
 }

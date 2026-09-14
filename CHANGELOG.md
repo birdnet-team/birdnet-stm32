@@ -109,6 +109,19 @@ checkpoints still load.
 
 ### Fixed
 
+- **The firmware's hybrid frontend fed the model a different input than the
+  host.** `firmware/Src/audio_stft.c` started frame *t* at `t * hop` with a
+  symmetric Hann window, and the firmware never min-max normalized the
+  spectrogram; the host uses `librosa.stft(center=True, pad_mode="constant")`
+  with a periodic Hann window and normalizes every spectrogram to [0, 1]. On a
+  board-test file the two agreed at cos 0.32 (raw magnitudes up to ~70 against
+  the host's [0, 1]). Frames are now centred and zero-padded, the window is
+  periodic, and `spec_minmax_normalize()` runs after the STFT (hybrid) and after
+  the mel projection (precomputed): cos 0.99996 on the same file, max error
+  under 1e-3 on synthetic calls. `stedgeai validate` could not catch this —
+  it feeds the model host-computed inputs — so `tests/test_firmware_stft.py`
+  now compiles the firmware STFT natively and checks it against the host.
+  Hybrid board tests before this fix did not test what the host evaluated.
 - Keep BatchNorm frozen in cloned QAT frontends; simulate sigmoid logit
   quantization and the fixed TFLite 1/256 probability grid. Frozen outer
   convolution/dense kernels also receive deployment quantization noise.

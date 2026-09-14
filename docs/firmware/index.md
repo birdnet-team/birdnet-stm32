@@ -41,7 +41,7 @@ For each `.wav` file on the SD card:
 
 1. **Read** — parse RIFF/WAVE header, load the first chunk (2-3 seconds) as float32.
 2. **Audio Frontend** — depends on `APP_AUDIO_FRONTEND`:
-   - **Hybrid**: 512-point Hann-windowed STFT → `[256, frames]` magnitude spectrogram (Nyquist omitted).
+   - **Hybrid**: 512-point STFT with centred frames and a periodic Hann window, as `librosa.stft` → `[256, frames]` magnitude spectrogram (Nyquist omitted), min-max normalized to [0, 1] like the host.
    - **Precomputed**: STFT followed by an explicitly mapped Mel filterbank → `[64, frames]`.
    - **Raw**: Peak-normalize the PCM waveform, then pass it to the in-model Gabor frontend.
 3. **NPU inference** — copy features to NPU input, run the full DS-CNN (handling mel/PWL mappings intrinsically if required), read class scores.

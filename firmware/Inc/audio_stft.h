@@ -14,7 +14,9 @@
  * Produces a spectrogram of shape [fft_bins, spec_width] stored in
  * row-major order (frequency-major: row = frequency bin, col = time frame).
  *
- * Uses a custom radix-2 FFT and a Hann window.
+ * Uses a custom radix-2 FFT and a periodic Hann window, with frames centred on
+ * t * hop_length and zero-padded at the edges -- librosa.stft(center=True,
+ * pad_mode="constant"), which is what the host feeds the model.
  *
  * @param audio       Input: mono float32 samples, length >= chunk_samples.
  * @param chunk_samples  Number of input samples (e.g. sample_rate * duration).
@@ -28,5 +30,16 @@
 void stft_magnitude(const float *audio, uint32_t chunk_samples,
                     uint32_t fft_length, uint32_t hop_length,
                     uint32_t spec_width, float *out);
+
+/**
+ * Min-max normalize a spectrogram in place to [0, 1]: (S - min) / (max - min + 1e-10).
+ *
+ * The host normalizes every spectrogram this way before the model sees it
+ * (normalize() in birdnet_stm32/audio/spectrogram.py), so the firmware must too.
+ *
+ * @param spec   Spectrogram buffer.
+ * @param count  Number of values (rows x columns).
+ */
+void spec_minmax_normalize(float *spec, uint32_t count);
 
 #endif /* AUDIO_STFT_H */
