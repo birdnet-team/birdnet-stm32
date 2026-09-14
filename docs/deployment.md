@@ -315,7 +315,32 @@ python -m birdnet_stm32 board-test --config config.json
 | `--score_threshold` | 0.01 | Minimum score to display |
 | `--config` | `config.json` | Deploy configuration JSON |
 | `--timeout` | 300 | Max seconds to wait for firmware response |
-| `--save_results` | None | Save results summary to a CSV file |
+| `--host_audio_dir` | None | Local copy of the SD card's `audio/` folder; enables the host x board parity check |
+| `--parity_tolerance` | 0.05 | Largest allowed \|board − host\| score per printed label, and the top-1 tie margin |
+| `--save_results` | None | Save results summary to a CSV file (with host columns when parity is checked) |
+
+### Host x board parity
+
+The board test is only evidence if the board computes what the host computes.
+Pass `--host_audio_dir` a local copy of the files on the SD card and the same
+`.tflite` is run on the host over the same files, through the host's own
+evaluation preprocessing, on the first chunk of each file — the chunk the
+firmware reads. Every file is then checked:
+
+- the board's top-1 must be the host's top-1, or a label the host scores within
+  `--parity_tolerance` of its own top-1 (reported as a tie);
+- every score the board prints must be within `--parity_tolerance` of the
+  host's score for that label (board scores are printed truncated to 0.1%).
+
+The command prints a per-file table and a `PARITY PASS`/`PARITY FAIL` line, and
+exits nonzero on a failure. If a `manifest.csv` with `file` and `true_species`
+columns sits in or beside the audio folder, it also counts correct top-1
+detections for board and host.
+
+Use audio the model classifies confidently, one file per species, with the
+vocalization in the first chunk. Background-only audio proves nothing: a broken
+model and a working one both return low scores on it, which is how the raw
+frontend's NPU defects went unnoticed.
 
 !!! warning "Board test is standalone"
     The board-test command deploys real firmware that does all processing on

@@ -41,6 +41,14 @@ checkpoints still load.
   same learned hinge sum, constrained concave and monotone and initialized
   log-like, to spread the magnitude layer's output over more INT8 codes.
   Opt-in; `pwl` remains the default.
+- `board-test --host_audio_dir`: host x board parity. The same `.tflite` runs
+  on the host over local copies of the SD card's files, through the host's
+  evaluation preprocessing, and each file's board result is checked against it:
+  same top-1 (or a tie within `--parity_tolerance`) and every printed score
+  within tolerance. The firmware's top-k order, including ties, is replicated
+  exactly. Prints a per-file table and exits nonzero on a mismatch; with a
+  `manifest.csv` it also counts correct detections. Until now this comparison
+  was done by hand.
 - `measure-operational` scores **whole files** rather than one random chunk per
   file: each file is chunked with overlap (`--chunk_overlap`, default half the chunk duration),
   and the chunk scores are pooled per file (`--pooling`, default `max`), as in

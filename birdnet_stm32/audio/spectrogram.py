@@ -53,8 +53,8 @@ def get_spectrogram_from_audio(
     """
     if mode not in ("mel", "linear"):
         raise ValueError(f"Invalid spectrogram mode: '{mode}'. Valid options: ('mel', 'linear')")
-    if mag_scale not in ("none", "pwl"):
-        raise ValueError(f"Invalid magnitude scale: '{mag_scale}'. Valid options: ('none', 'pwl')")
+    if mag_scale not in ("none", "pwl", "cpwl"):
+        raise ValueError(f"Invalid magnitude scale: '{mag_scale}'. Valid options: ('none', 'pwl', 'cpwl')")
 
     hop_length = (len(audio) // spec_width) if spec_width > 0 else n_fft // 2
 
