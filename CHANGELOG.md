@@ -41,6 +41,15 @@ checkpoints still load.
   same learned hinge sum, constrained concave and monotone and initialized
   log-like, to spread the magnitude layer's output over more INT8 codes.
   Opt-in; `pwl` remains the default.
+- `measure-operational` scores **whole files** rather than one random chunk per
+  file: each file is chunked with overlap (`--chunk_overlap`, default half the chunk duration),
+  and the chunk scores are pooled per file (`--pooling`, default `max`), as in
+  the catalog evaluation. Draws are sized with `--num_files`, which replaces
+  `--num_chunks`. Reports add threshold-free ranked-list metrics (top-1/3/5,
+  micro and macro, mean reciprocal rank), and a gate profile may require
+  `min_macro_top_k_rates`. On single random chunks, detection at 0.5 was about
+  0.28 for every model tried, because many chunks of a catalog recording hold
+  no call.
 - `birdnet_stm32 measure-operational` and
   `birdnet_stm32/evaluation/operational.py`: the device-facing INT8 release
   gate, promoted out of the untracked experiment directory so a release can be

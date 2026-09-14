@@ -40,6 +40,27 @@ operating threshold. It refuses non-TFLite and non-INT8 models, mismatched model
 configs, incomplete class coverage, incomplete draws, or datasets without the
 hard negatives required by the gate. Inference is streamed in bounded batches.
 
+It scores **whole files**, not single chunks. Each draw is a class-balanced set
+of `--num_files` recordings (round robin across classes, pinned by seed); each
+file's first 60 s is cut into chunks every `chunk_duration - --chunk_overlap`
+seconds (default overlap: half the chunk, 1.25 s for 2.5 s chunks, as in the
+catalog evaluation), every chunk is
+scored, and the scores are pooled per file (`--pooling`, default `max`). One
+random chunk is a poor test of a catalog recording, because many chunks hold no
+call; pooling asks whether the model finds the species anywhere in the file.
+That also makes the hard-negative rate stricter: a noise file alarms if *any* of
+its chunks does.
+
+Two views of the pooled scores are reported per draw:
+
+- **At each threshold**: `detection_rate` (top-1 correct and confident),
+  `false_alarm_rate` (top-1 wrong but confident), their macro versions, and
+  `negative_alarm_rate` on hard negatives.
+- **As a ranked species list**, without a threshold: `top_k_rates` and
+  `macro_top_k_rates` for k = 1, 3, 5 — how often the labelled species is in the
+  top k — plus `mean_reciprocal_rank` and `median_rank`. Ties count against the
+  labelled species.
+
 Quality limits are release-specific and therefore must be supplied explicitly:
 
 ```json
@@ -49,9 +70,14 @@ Quality limits are release-specific and therefore must be supplied explicitly:
   "min_macro_detection_rate": 0.60,
   "max_false_alarm_rate": 0.10,
   "max_macro_false_alarm_rate": 0.15,
-  "max_negative_alarm_rate": 0.05
+  "max_negative_alarm_rate": 0.05,
+  "min_macro_top_k_rates": {"5": 0.80}
 }
 ```
+
+`min_macro_top_k_rates` is optional; the other fields are required. These
+numbers are placeholders, not calibrated limits: set them against a reference
+model on the same test set.
 
 ```bash
 python -m birdnet_stm32 measure-operational \
