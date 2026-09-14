@@ -237,10 +237,12 @@ computes what the host does. Compare `m_outputs` (host reference) against
 `c_outputs` (target): if the target's range is visibly compressed relative to
 the reference, the graph is not computing correctly regardless of timing.
 
-Check `l2r` as well. Cosine is blind to a uniform gain error or a constant
-offset, so a layer can score cos 0.95 while being clearly wrong; `l2r`
-(L2 relative error) is not. A correct INT8 model sits well below 0.05 — the
-fixed 25-species raw model measures 0.023.
+Check `mae` as well. Cosine is blind to a uniform gain error or a constant
+offset, so a layer can score cos 0.95 while being clearly wrong; the mean
+absolute error is not. A correct INT8 model stays under one output LSB
+(1/256 ≈ 0.0039) — the fixed 100-class raw model measures 0.0017. Prefer it
+to `l2r`, which divides by the reference norm and so reads high on sparse
+multi-label outputs even when the device is right (0.108 for that same model).
 
 To localise a mismatch, cut the graph at a node index and validate the partial
 model — `--cut-output-layers N` (and `--cut-input-layers N` to start there

@@ -106,10 +106,12 @@ checkpoints still load.
   filterbank is now emitted as `RAW_SPLIT = 4` convolutions over channel groups
   and summed — an exact decomposition (cos 0.99956). And `ABS` ignores its
   input's zero-point, returning a constant bias of `|zp| * scale`, so the
-  magnitude uses `relu(x) + relu(-x)`, which is bit-exact. Full model on target:
+  magnitude uses `relu(x) + (relu(x) - x)` — ReLU, SUB and ADD, all on the
+  NPU — which is bit-exact. Full model on target:
   cos 0.285 before, 0.999747 after; a 25-species board test now matches the
-  host's top-1 on 25/25 files, scores within 0.031. Cost: +0.26% MACs, +1.5 kB
-  weights, activations unchanged, 45 → 55 epochs.
+  host's top-1 on 25/25 files, scores within 0.031. Cost on the 100-class
+  C1a architecture: +0.31% MACs, +1.7 kB weights, activations unchanged, 47 →
+  58 epochs, still three software epochs.
 - Pair the no-overdrive firmware build with `NO_OVD_CLK400` and implement that
   branch. Without it the NPU ran at 800 MHz at nominal VDDCORE, which is out of
   spec; an under-volted NPU completes every epoch with plausible timings and
