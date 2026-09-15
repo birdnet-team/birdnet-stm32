@@ -110,6 +110,17 @@ checkpoints still load.
 
 ### Fixed
 
+- **The firmware fed a hybrid model 256 of its 65,536 input values.**
+  `run_inference()` sized the input copy as `shape[1] * shape[2]`, but LL_ATON's
+  `shape` is not in tensor order: a `[1, 256, 256, 1]` input is reported as
+  `{1, 256, 1, 256}`. The NPU ran on one frequency row and leftover memory, so
+  the hybrid board test answered nonsense (0/25 top-1 against the host) while
+  `stedgeai validate`, which stages its own inputs, passed. The raw input put
+  every sample in `shape[1]` and worked by coincidence. Both copies are now
+  sized from the buffer's byte range (`offset_end - offset_start`) and the
+  firmware refuses to run if that differs from what its frontend produces.
+  With this and the STFT fix below, the V12 hybrid model matches the host on
+  25/25 board-test files; raw is unchanged.
 - **The firmware's hybrid frontend fed the model a different input than the
   host.** `firmware/Src/audio_stft.c` started frame *t* at `t * hop` with a
   symmetric Hann window, and the firmware never min-max normalized the

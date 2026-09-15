@@ -228,6 +228,10 @@ frontend buffer → memcpy to NPU input → SCB_CleanDCache → LL_ATON_RT_Main(
   normalization during conversion; the raw firmware path additionally applies
   the same peak normalization used by the training pipeline.
 - **Output tensor**: `[1, NUM_CLASSES]` float32 per-class probabilities (sigmoid, multi-label).
+- **Copy sizes** come from each buffer's byte range, `offset_end -
+  offset_start`, never from `shape`: LL_ATON reports a `[1, 256, 256, 1]` input
+  as `{1, 256, 1, 256}`. The firmware checks both sizes against its frontend and
+  class count and refuses to run on a mismatch.
 - **Cache coherency**: The CPU must clean the DCache before the NPU reads the
   input (`SCB_CleanDCache_by_Addr`) and invalidate after the NPU writes the
   output (`SCB_InvalidateDCache_by_Addr`). Missing these calls causes stale
