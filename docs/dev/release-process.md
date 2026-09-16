@@ -95,6 +95,21 @@ requires all of the following:
     Note the firmware reads only the **first chunk** of each file, so the
     vocalisation must fall inside it.
 
+From 1.2.0, two gates changed and the reasons are recorded here rather than
+in a commit message:
+
+- **Keras-to-TFLite cosine parity is a breakage check, not a quality gate.**
+  The numerical question — does the deployed artifact compute what the host
+  computes — is answered directly by step 7 on the device (`cos >= 0.99`,
+  `mae <= 1/256`) and step 8 against the host's own predictions. A sparse
+  100-output multi-label head gives a low cosine p05 (0.58 on the 1.2.0 model)
+  without anything being wrong, so p05 is recorded in the audit and
+  `cosine_mean` keeps a floor that a genuinely broken conversion fails.
+- **Operational floors are measured per file**, with overlapping chunks pooled
+  per recording, and anchored to the incumbent release measured the same way.
+  Scoring one random chunk per file put detection near 0.28 for every model
+  tried, because many chunks of a catalog recording contain no call.
+
 Accuracy floors are derived per release, not carried over. Freeze the float
 baseline's catalog metrics *before* any compression runs, and gate every
 compressed candidate against that frozen reference. A floor set after seeing a
