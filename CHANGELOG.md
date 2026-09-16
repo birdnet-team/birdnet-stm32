@@ -12,12 +12,6 @@ and the firmware now provably computes what the host does. Three device-level
 defects are fixed (raw NPU arithmetic, the hybrid STFT, and the NPU input copy),
 and the board test checks itself against the host instead of being read by eye.
 
-!!! note "Breaking changes in a minor release"
-    This release removes CLI flags that now hard-fail and changes the raw
-    filterbank's structure, so pre-1.2 raw checkpoints cannot be loaded. Under
-    the project's own versioning policy that is a major bump; 1.2.0 was chosen
-    deliberately. Read the **Removed** and **Changed** sections before upgrading.
-
 ### Added
 
 - **`board-test --host_audio_dir`: host x board parity.** The deployed
