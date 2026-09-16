@@ -50,6 +50,27 @@ def get_args() -> argparse.Namespace:
         help="Max seconds to wait for firmware (default: 300)",
     )
     parser.add_argument(
+        "--host_audio_dir",
+        type=str,
+        default="",
+        help=(
+            "Local copy of the SD card's audio/ folder. The host scores the same files with the same "
+            "model and every board result is checked against it; the command exits nonzero on a mismatch"
+        ),
+    )
+    parser.add_argument(
+        "--parity_tolerance",
+        type=float,
+        default=0.05,
+        help="Top-1 tie margin and borderline margin around --detection_threshold; larger score gaps are flagged",
+    )
+    parser.add_argument(
+        "--detection_threshold",
+        type=float,
+        default=0.5,
+        help="Score at which a detection is reported; board and host must make the same call",
+    )
+    parser.add_argument(
         "--save_results",
         type=str,
         default="",
@@ -97,20 +118,41 @@ def main():
         top_k=args.top_k,
         score_threshold=args.score_threshold,
         timeout=args.timeout,
+        host_audio_dir=args.host_audio_dir,
+        parity_tolerance=args.parity_tolerance,
+        detection_threshold=args.detection_threshold,
     )
 
     result = run_board_test(board_cfg)
 
+    parity = result.get("parity")
     if args.save_results and result["results"]:
         import csv
 
+        by_file = {row["file"]: row for row in parity["rows"]} if parity else {}
         with open(args.save_results, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["file", "top_label", "top_score"])
+            header = ["file", "top_label", "top_score"]
+            if parity:
+                header += ["host_top_label", "host_top_score", "agreement", "max_score_diff", "true_label"]
+            writer.writerow(header)
             for r in result["results"]:
                 top = r["detections"][0] if r["detections"] else {"label": "", "score": 0.0}
-                writer.writerow([r["file"], top["label"], f"{top['score']:.4f}"])
+                line = [r["file"], top["label"], f"{top['score']:.4f}"]
+                if parity:
+                    row = by_file[r["file"]]
+                    line += [
+                        row["host_top1"],
+                        f"{row['host_score']:.4f}",
+                        ("" if row["ok"] else "FAIL:") + "+".join([row["agreement"], *row["flags"]]),
+                        f"{row['max_score_diff']:.4f}",
+                        row["true_label"],
+                    ]
+                writer.writerow(line)
         print(f"\nResults saved to {args.save_results}")
+
+    if parity is not None and not parity["passed"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

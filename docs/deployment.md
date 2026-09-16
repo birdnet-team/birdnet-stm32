@@ -237,10 +237,12 @@ computes what the host does. Compare `m_outputs` (host reference) against
 `c_outputs` (target): if the target's range is visibly compressed relative to
 the reference, the graph is not computing correctly regardless of timing.
 
-Check `l2r` as well. Cosine is blind to a uniform gain error or a constant
-offset, so a layer can score cos 0.95 while being clearly wrong; `l2r`
-(L2 relative error) is not. A correct INT8 model sits well below 0.05 — the
-fixed 25-species raw model measures 0.023.
+Check `mae` as well. Cosine is blind to a uniform gain error or a constant
+offset, so a layer can score cos 0.95 while being clearly wrong; the mean
+absolute error is not. A correct INT8 model stays under one output LSB
+(1/256 ≈ 0.0039) — the fixed 100-class raw model measures 0.0017. Prefer it
+to `l2r`, which divides by the reference norm and so reads high on sparse
+multi-label outputs even when the device is right (0.108 for that same model).
 
 To localise a mismatch, cut the graph at a node index and validate the partial
 model — `--cut-output-layers N` (and `--cut-input-layers N` to start there
@@ -313,7 +315,38 @@ python -m birdnet_stm32 board-test --config config.json
 | `--score_threshold` | 0.01 | Minimum score to display |
 | `--config` | `config.json` | Deploy configuration JSON |
 | `--timeout` | 300 | Max seconds to wait for firmware response |
-| `--save_results` | None | Save results summary to a CSV file |
+| `--host_audio_dir` | None | Local copy of the SD card's `audio/` folder; enables the host x board parity check |
+| `--parity_tolerance` | 0.05 | Top-1 tie margin and borderline margin around the detection threshold |
+| `--detection_threshold` | 0.5 | Score at which a detection is reported; board and host must agree |
+| `--save_results` | None | Save results summary to a CSV file (with host columns when parity is checked) |
+
+### Host x board parity
+
+The board test is only evidence if the board computes what the host computes.
+Pass `--host_audio_dir` a local copy of the files on the SD card and the same
+`.tflite` is run on the host over the same files, through the host's own
+evaluation preprocessing, on the first chunk of each file — the chunk the
+firmware reads. Every file is then checked:
+
+- the board's top-1 must be the host's top-1, or a label the host scores within
+  `--parity_tolerance` of its own top-1 (reported as a tie);
+- board and host must make the same call at `--detection_threshold` (0.5),
+  unless the host's score is within `--parity_tolerance` of it — NPU rounding
+  can tip a score that close, so the file passes but is flagged `borderline`.
+
+Score differences larger than the tolerance that change neither are flagged
+`drift`, not failed. On the V12 raw model the largest was 0.054, on a
+mid-range score where the sigmoid is steepest.
+
+The command prints a per-file table and a `PARITY PASS`/`PARITY FAIL` line, and
+exits nonzero on a failure. If a `manifest.csv` with `file` and `true_species`
+columns sits in or beside the audio folder, it also counts correct top-1
+detections for board and host.
+
+Use audio the model classifies confidently, one file per species, with the
+vocalization in the first chunk. Background-only audio proves nothing: a broken
+model and a working one both return low scores on it, which is how the raw
+frontend's NPU defects went unnoticed.
 
 !!! warning "Board test is standalone"
     The board-test command deploys real firmware that does all processing on

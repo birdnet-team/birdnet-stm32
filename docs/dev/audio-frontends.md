@@ -123,17 +123,25 @@ Two invariants the geometry guarantees, both covered by tests:
     with zero-point -9 returns every element short by `|zp| * scale`: mean
     error -0.1543 against a mean absolute error of 0.1543, i.e. pure bias
     (cos 0.951). The filterbank sums feeding the magnitude never have a zero
-    zero-point, so the frontend computes `|x|` as `relu(x) + relu(-x)` — an
-    exact identity that is bit-exact on target (cos 1.000000).
+    zero-point, so the frontend computes `|x|` as `relu(x) + (relu(x) - x)`.
+    That is the identity `relu(x) + relu(-x)` written without a negation, and
+    the difference is not cosmetic: TFLite has no INT8 negate, so `-x` lowers
+    to a DEQUANTIZE → NEG → QUANTIZE round trip that runs in software on the
+    Cortex-M55 — six extra software epochs, about 2.0 of 6.7 ms per inference
+    at 1 GHz, in the 100-class model. ReLU, SUB and ADD all stay on the NPU,
+    and the SUB form is bit-exact on target (cos 1.000000, l2r 0.00036).
 
     **Result.** Full 25-species model, `stedgeai validate` on target: cos
     0.285 originally, 0.526 with the split alone, **0.999747** with both. On a
     25-file board test of audio the host classifies confidently, the board
     matches the host's top-1 on **25/25** files, scores within 0.031.
 
-    Cost against the unsplit graph: +0.26% MACs, +1.5 kB weights, activation
-    memory unchanged at 292.969 kB, 45 → 55 epochs, the same three software
-    epochs.
+    Cost, measured on the 100-class C1a architecture against its unsplit
+    graph: +0.31% MACs (43.38 M → 43.51 M), +1.7 kB weights, activation memory
+    unchanged at 292.969 kB, 47 → 58 epochs, and still only the three software
+    epochs every model has (`QuantizeLinear`, `Transpose`, `DequantizeLinear`).
+    Writing `|x|` as `relu(x) + relu(-x)` instead would have made it 64 epochs,
+    nine of them in software.
 
     **Raw checkpoints from before this change cannot be loaded** — each
     filterbank is now `RAW_SPLIT` convolutions rather than one — and every raw
@@ -155,6 +163,21 @@ before the CNN body. It compresses the dynamic range of spectrogram values.
 Learned piecewise-linear compression using depthwise convolution branches.
 Quantizes cleanly — no log operations, no running statistics.
 
+### `cpwl` (compressive piecewise-linear) — experimental
+
+The same hinge sum as `pwl`, with the same ops and layer names, but held
+compressive: the linear gain and hinge input weights are constrained to be
+non-negative and the hinge slopes non-positive, and the initial curve is
+log-like (slope 1.0, falling to 0.55, 0.25 and 0.10 at the hinges) rather than
+`pwl`'s expansive one (0.40 rising to 0.88).
+
+The reason is INT8 resolution. `pwl` starts expansive and stays so, which
+gives its output a heavy upper tail: in the 25-species raw model (V12), 50, 90
+and 99% of the layer's output values fall into 1, 3 and 14 of the 255 INT8
+codes, because the rare peaks set the quantization range. A concave curve
+squeezes that tail, so typical values keep more codes. Whether that closes the
+float-to-INT8 gap is being measured; until then `pwl` stays the default.
+
 ### `none`
 
 No magnitude scaling. Useful as a baseline for comparison only.
@@ -166,7 +189,8 @@ When modifying or adding frontends, verify:
 - [ ] Channel counts are multiples of 8
 - [ ] No ops that expand beyond 16-bit activation limits
 - [ ] No `ABS` on a tensor whose zero-point can be non-zero — use
-      `relu(x) + relu(-x)` (see the raw section above)
+      `relu(x) + (relu(x) - x)`, and not `relu(-x)`, whose negation runs in
+      software (see the raw section above)
 - [ ] All ops are in the [STM32N6 NPU operator set](https://stm32ai-cs.st.com/assets/embedded-docs/command_line_interface.html)
 - [ ] Run `stedgeai analyze` on the exported TFLite to confirm
 - [ ] Run `stedgeai validate --mode target` on the exported TFLite and check the
@@ -179,9 +203,11 @@ timings, and still return wrong numbers. It is also weight-dependent, so a
 geometry that validates with random weights can still fail once trained — the
 raw filterbank above is exactly that case.
 
-Read `l2r` alongside `cos`. Cosine is scale-invariant, so a layer that keeps
-the right shape but loses gain or picks up a constant offset can still score
-close to 1. The `ABS` defect is the example: its input validated at cos 0.9994
-(l2r 0.034) and its output at cos 0.892 — but l2r 0.572, which is the number
-that shows what happened.
+Pair `cos` with an absolute error. Cosine is scale-invariant, so a layer that
+keeps the right shape but loses gain or picks up a constant offset can still
+score close to 1: the isolated `ABS` defect scored cos 0.951 with a mean
+absolute error of 0.154, all of it bias. Use `mae` for that, not `l2r`. `l2r`
+divides by the norm of the reference, which for a sparse multi-label output is
+small, so it inflates harmless rounding: the correct 100-class raw model reads
+l2r 0.108 at mae 0.0017, under one output LSB.
 - [ ] Cosine similarity > 0.95 after quantization

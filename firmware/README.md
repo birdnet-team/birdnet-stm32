@@ -163,20 +163,33 @@ The branch is selected at build time from the model configuration:
 
 - **raw**: peak-normalize the waveform and send it directly to the NPU. The
   learned Gabor filterbank and PWL magnitude transform are in the model.
-- **hybrid**: compute the STFT below on the Cortex-M55. Mel projection and PWL
-  scaling are in the model.
+- **hybrid**: compute the STFT below on the Cortex-M55 and min-max normalize it
+  to [0, 1]. Mel projection and PWL scaling are in the model.
 - **librosa**: compute the STFT and mel filterbank on the Cortex-M55, then send
   the mel spectrogram to a classifier-only model.
 
 #### STFT (`audio_stft.c` + `fft.c`)
 
 ```
-float32 audio → Hann window → 512-pt FFT → magnitude → [256 × 256] spectrogram
+float32 audio → centred frames → periodic Hann → 512-pt FFT → magnitude
+      → [256 × 256] spectrogram → min-max normalize to [0, 1]
 ```
 
-- **Window**: Hann window of length `APP_FFT_LENGTH` (512 samples).
-- **Hop**: `APP_HOP_LENGTH` samples between frames (typically 281 for 256
-  frames from a 72,000-sample chunk).
+This must reproduce the host's hybrid input, `get_spectrogram_from_audio()` in
+`birdnet_stm32/audio/spectrogram.py`, which is `librosa.stft(center=True,
+pad_mode="constant", window="hann")` followed by a per-sample min-max
+normalization. `tests/test_firmware_stft.py` compiles `audio_stft.c` natively
+and checks it against the host (max error < 1e-3). Until 2026-09-14 the
+firmware framed without centring and skipped the normalization, and agreed with
+the host at cos 0.32 on real audio; `stedgeai validate` cannot see this, because
+it feeds the model host-computed inputs.
+
+- **Frames**: frame *t* is centred on sample `t × APP_HOP_LENGTH`, with zeros
+  outside the chunk — librosa's `center=True, pad_mode="constant"`.
+- **Window**: periodic Hann of length `APP_FFT_LENGTH` (512 samples), as
+  librosa's `"hann"`.
+- **Hop**: `APP_HOP_LENGTH` samples between frames — `chunk_samples //
+  spec_width`, the host's hop (234 for 256 frames from a 60,000-sample chunk).
 - **FFT**: Custom plain-C 512-point real FFT using the "N/2 complex FFT"
   trick:
   1. Treat 512 real samples as 256 complex pairs.
@@ -188,6 +201,11 @@ float32 audio → Hann window → 512-pt FFT → magnitude → [256 × 256] spec
 - **Output layout**: `[fft_bins, spec_width]` = `[256, 256]`, frequency-major
   (row = one frequency bin across all time frames). This matches the hybrid
   frontend's expected input tensor layout `[B, fft_bins, spec_width, 1]`.
+- **Normalization**: `spec_minmax_normalize()` maps the whole spectrogram to
+  [0, 1] as `(S - min) / (max - min + 1e-10)`, like the host. It also makes the
+  input independent of recording level, which is why the hybrid path needs no
+  peak normalization of its own. The precomputed path applies it after the mel
+  projection.
 
 **Why a custom FFT instead of CMSIS-DSP?** The CMSIS-DSP `arm_rfft_fast_f32`
 requires linking `libarm_cortexM55l_math.a`, which adds ~200 KB to the binary
@@ -210,6 +228,10 @@ frontend buffer → memcpy to NPU input → SCB_CleanDCache → LL_ATON_RT_Main(
   normalization during conversion; the raw firmware path additionally applies
   the same peak normalization used by the training pipeline.
 - **Output tensor**: `[1, NUM_CLASSES]` float32 per-class probabilities (sigmoid, multi-label).
+- **Copy sizes** come from each buffer's byte range, `offset_end -
+  offset_start`, never from `shape`: LL_ATON reports a `[1, 256, 256, 1]` input
+  as `{1, 256, 1, 256}`. The firmware checks both sizes against its frontend and
+  class count and refuses to run on a mismatch.
 - **Cache coherency**: The CPU must clean the DCache before the NPU reads the
   input (`SCB_CleanDCache_by_Addr`) and invalidate after the NPU writes the
   output (`SCB_InvalidateDCache_by_Addr`). Missing these calls causes stale
@@ -273,11 +295,12 @@ Parses standard RIFF/WAVE files with PCM encoding:
 
 ### `audio_stft.c` — STFT Engine
 
-Computes a Hann-windowed magnitude STFT:
+Computes a centred, periodic-Hann magnitude STFT matching `librosa.stft`:
 - Stack-allocated working buffers (512 floats for window + 512 for FFT = 4 KB).
 - Output is frequency-major: `out[f * spec_width + t]` — this matches the
   tensor layout expected by the TFLite model's hybrid frontend.
-- Zero-pads the last frame if the audio chunk is shorter than expected.
+- Zero-pads frames that extend past either end of the chunk.
+- `spec_minmax_normalize()` normalizes a finished spectrogram to [0, 1].
 
 ### `fft.c` — 512-Point Real FFT
 

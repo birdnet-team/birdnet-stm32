@@ -230,7 +230,13 @@ def get_args() -> argparse.Namespace:
         choices=["hybrid", "raw", "librosa"],
         help="Audio frontend mode",
     )
-    parser.add_argument("--mag_scale", type=str, default="pwl", choices=["pwl", "none"])
+    parser.add_argument(
+        "--mag_scale",
+        type=str,
+        default="pwl",
+        choices=["pwl", "cpwl", "none"],
+        help="Magnitude scaling: learned hinge sum (pwl), the same held compressive (cpwl), or none",
+    )
 
     # -- Model architecture ---------------------------------------------------
     parser.add_argument("--embeddings_size", type=int, default=256, help="Embeddings layer size")

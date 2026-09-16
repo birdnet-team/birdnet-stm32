@@ -5,7 +5,149 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-09-16
+
+The `raw` frontend computes correctly on the STM32N6 NPU for the first time,
+and the firmware now provably computes what the host does. Three device-level
+defects are fixed (raw NPU arithmetic, the hybrid STFT, and the NPU input copy),
+and the board test checks itself against the host instead of being read by eye.
+
+### Added
+
+- **`board-test --host_audio_dir`: host x board parity.** The deployed
+  `.tflite` runs on the host over local copies of the SD card's files, through
+  the host's evaluation preprocessing, and every file's board result is checked
+  against it: the same top-1 (or a tie within `--parity_tolerance`) and the same
+  detection call at `--detection_threshold`. A flip next to the threshold is
+  excused as `borderline`, since NPU rounding can tip a score that close; larger
+  score gaps that change neither are flagged as `drift`. The firmware's top-k
+  order, including ties between saturated INT8 outputs, is replicated exactly.
+  It prints a per-file table, counts correct detections when a `manifest.csv`
+  is present, and exits nonzero on a mismatch. This comparison was previously
+  done by hand.
+- **`birdnet_stm32 measure-operational`** and
+  `birdnet_stm32/evaluation/operational.py`: the device-facing INT8 release
+  gate, promoted out of the untracked experiment directory so a release can be
+  reproduced from the tracked repository alone. It scores the converted model
+  **on its own**, with no float reference, reporting detection and false-alarm
+  rates at real operating thresholds, micro and macro, plus the false-positive
+  rate on all-zero hard negatives. A required gate profile supplies explicit
+  release limits and the command exits nonzero when any is missed. Reports bind
+  the model, config, class order, manifest, measured inputs, and gate profile by
+  SHA-256.
+
+  It scores **whole files**: each file is chunked with overlap
+  (`--chunk_overlap`, default half the chunk) and the chunk scores are pooled
+  per file (`--pooling`, default `max`), as in the catalog evaluation. Draws are
+  sized with `--num_files`, which replaces `--num_chunks`. Reports add
+  threshold-free ranked-list metrics (top-1/3/5, micro and macro, mean
+  reciprocal rank), and a gate profile may require `min_macro_top_k_rates`.
+  Scoring one random chunk per file put detection at 0.5 near 0.28 for every
+  model tried, because many chunks of a catalog recording hold no call; whole
+  files separate models instead.
+
+  The command exists because both parity-shaped metrics punish the better
+  model. Cosine p05 runs anti-correlated with float quality, and float-to-INT8
+  top-1 *retention* carries the float model in its denominator, so a stronger
+  float model — which has more marginal-but-correct chunks, exactly what
+  quantization kills — scores worse while delivering more. Measured: a
+  candidate retaining 98.3% of float top-1 above 0.5 against an incumbent's
+  99.6% still delivered 12.6% more correct detections at a lower false-alarm
+  rate.
+- **`--validation_subset N`** scores checkpoint selection — standard training
+  and QAT alike — on a fixed stratified draw instead of the whole manifest.
+  Selection converts and evaluates an INT8 model every epoch, which dominates
+  run time. The draw is seeded and its hash is recorded. Subset cMAP is biased
+  upward and is **not** comparable to full-manifest numbers; it is valid only
+  for comparing checkpoints scored on the same draw.
+- **`--mag_scale cpwl`**, an experimental compressive variant of `pwl`: the
+  same learned hinge sum, constrained concave and monotone and initialized
+  log-like, to spread the magnitude layer's output over more INT8 codes.
+  Measured on the 100-output raw model it trains to the best float cMAP of the
+  three frontend/scaling combinations tried (0.6608) but quantizes worst
+  (PTQ 0.4878, QAT INT8 0.5798 against `pwl`'s 0.5895), so it stays opt-in and
+  `pwl` remains the default.
+- `tests/test_firmware_stft.py` compiles the firmware's STFT natively and
+  checks it against the host's spectrogram, so frontend drift is caught without
+  a board.
+- A test pinning the documented argument reference to the actual parser, so the
+  table cannot drift back out of step with the code.
+
+### Changed
+
+- **Breaking.** The raw filterbank is emitted as `RAW_SPLIT` convolutions per
+  quadrature component instead of one, so raw checkpoints saved before this
+  change cannot be loaded and must be retrained. Parameter count is unchanged.
+  The QAT activation-range names `audio_frontend_fb_re` / `_fb_im` still name
+  the filterbank outputs.
+- QAT checkpoints now maximize **exact converted INT8 file cMAP**, using the
+  CLI evaluator with max pooling and half-window overlap by default. Epoch zero
+  is eligible. Selected Keras and TFLite artifacts are kept together, with
+  hashes, calibration identity, epoch history and loss against untouched float
+  in a selection report. QAT requires explicit disjoint validation data and a
+  new output location; proxy checkpoint-monitor overrides are removed.
+- Standard CLI training selects exact file cMAP. Library training computes
+  exact chunk cMAP when no file manifest is supplied. Approximate Keras PR-AUC
+  is named `pr_auc` and remains a diagnostic.
+- Percentile calibration now serializes real internal frontend bounds into the
+  deployment model, then recalibrates that bounded graph. Waveform and
+  classifier ranges are not percentile-clipped. The default p100 remains
+  unbounded. This fixes the previous training-only clip disappearing at export.
+
+### Fixed
+
+- **The `raw` frontend now computes correctly on the STM32N6 NPU.** Two NPU
+  defects were found with `stedgeai validate --mode target` and worked around.
+  A single 448-tap filterbank convolution is miscomputed for filters whose
+  energy spans many taps (the low mel bands; filterbank cos 0.756), so each
+  filterbank is now emitted as `RAW_SPLIT = 4` convolutions over channel groups
+  and summed — an exact decomposition (cos 0.99956). And `ABS` ignores its
+  input's zero-point, returning a constant bias of `|zp| * scale`, so the
+  magnitude uses `relu(x) + (relu(x) - x)` — ReLU, SUB and ADD, all on the
+  NPU — which is bit-exact. Full model on target: cos 0.285 before, 0.999747
+  after; a 25-species board test now matches the host's top-1 on 25/25 files.
+  Cost on the 100-output architecture: +0.31% MACs, +1.7 kB weights,
+  activations unchanged, 47 -> 58 epochs, still three software epochs.
+- **The firmware fed a hybrid model 256 of its 65,536 input values.**
+  `run_inference()` sized the input copy as `shape[1] * shape[2]`, but
+  LL_ATON's `shape` is not in tensor order: a `[1, 256, 256, 1]` input is
+  reported as `{1, 256, 1, 256}`. The NPU ran on one frequency row and leftover
+  memory, so the hybrid board test answered nonsense (0/25 top-1 against the
+  host) while `stedgeai validate`, which stages its own inputs, passed. The raw
+  input put every sample in `shape[1]` and worked by coincidence. Both copies
+  are now sized from the buffer's byte range (`offset_end - offset_start`) and
+  the firmware refuses to run if that differs from what its frontend produces.
+- **The firmware's hybrid frontend fed the model a different input than the
+  host.** `firmware/Src/audio_stft.c` started frame *t* at `t * hop` with a
+  symmetric Hann window, and the firmware never min-max normalized the
+  spectrogram; the host uses `librosa.stft(center=True, pad_mode="constant")`
+  with a periodic Hann window and normalizes every spectrogram to [0, 1]. On a
+  board-test file the two agreed at cos 0.32 (raw magnitudes up to ~70 against
+  the host's [0, 1]). Frames are now centred and zero-padded, the window is
+  periodic, and `spec_minmax_normalize()` runs after the STFT (hybrid) and
+  after the mel projection (precomputed): cos 0.99996 on the same file. With
+  the input-size fix above, the hybrid model matches the host on 25/25
+  board-test files.
+- Pair the no-overdrive firmware build with `NO_OVD_CLK400` and implement that
+  branch. Without it the NPU ran at 800 MHz at nominal VDDCORE, which is out of
+  spec; an under-volted NPU completes every epoch with plausible timings and
+  returns wrong results rather than failing loudly.
+- Keep BatchNorm frozen in cloned QAT frontends; simulate sigmoid logit
+  quantization and the fixed TFLite 1/256 probability grid. Frozen outer
+  convolution/dense kernels also receive deployment quantization noise.
+- Compute validation metrics before checkpoint/early-stop callbacks and never
+  overwrite a selected shared checkpoint at training end. Fresh runs truncate
+  old CSV headers. Calibration sampling is independent of incoming path order
+  and rejects incomplete QAT manifests.
+- Write the training labels file next to the model config before training
+  starts, so an interrupted run cannot leave a usable checkpoint without its
+  labels.
+- Correct the `--batch_validate` help text: it repeats validation over the same
+  deterministic manifest to measure runtime repeatability, not "different
+  random seeds".
+- Consolidate Magpie RT experiments around an isolated driver that stops on
+  failure, preserves the selected INT8 bytes and leaves catalog-test data for
+  final evaluation.
 
 ### Removed
 
@@ -35,92 +177,6 @@ The `train` CLI drops from 68 options to 50, and the package from 10,295 to
 9,020 lines. Model configs are loaded with unknown keys ignored, so existing
 checkpoints still load.
 
-### Added
-
-- `birdnet_stm32 measure-operational` and
-  `birdnet_stm32/evaluation/operational.py`: the device-facing INT8 release
-  gate, promoted out of the untracked experiment directory so a release can be
-  reproduced from the tracked repository alone. It scores the converted model
-  **on its own**, with no float reference, reporting detection and false-alarm
-  rates at real operating thresholds, micro and macro, plus the false-positive
-  rate on all-zero hard negatives. A required gate profile supplies explicit
-  release limits and the command exits nonzero when any is missed. Inference is
-  bounded by `--batch_size`; reports bind the model, config, class order,
-  manifest, measured inputs, and gate profile by SHA-256.
-
-  It exists because both parity-shaped metrics punish the better model. Cosine
-  p05 runs anti-correlated with float quality, and float-to-INT8 top-1
-  *retention* carries the float model in its denominator, so a stronger float
-  model — which has more marginal-but-correct chunks, exactly what quantization
-  kills — scores worse while delivering more. Measured: a candidate retaining
-  98.3% of float top-1 above 0.5 against an incumbent's 99.6% still delivered
-  12.6% more correct detections at a lower false-alarm rate.
-- `--validation_subset N` scores checkpoint selection — standard training and
-  QAT alike — on a fixed stratified
-  draw instead of the whole manifest. Selection converts and evaluates an INT8
-  model every epoch, which dominates run time. The draw is seeded and its hash
-  is recorded. Subset cMAP is biased upward and is **not** comparable to
-  full-manifest numbers; it is valid only for comparing checkpoints scored on
-  the same draw.
-- A test pinning the documented argument reference to the actual parser, so the
-  table cannot drift back out of step with the code.
-
-### Changed
-
-- **Breaking.** The raw filterbank is emitted as `RAW_SPLIT` convolutions per
-  quadrature component instead of one, so raw checkpoints saved before this
-  change cannot be loaded and must be retrained. Parameter count is unchanged.
-  The QAT activation-range names `audio_frontend_fb_re` / `_fb_im` still name
-  the filterbank outputs.
-- QAT checkpoints now maximize **exact converted INT8 file cMAP**, using the
-  CLI evaluator with max pooling and half-window overlap by default. Epoch zero
-  is eligible. Selected Keras and TFLite artifacts are kept together, with
-  hashes, calibration identity, epoch history and loss against untouched float
-  in a selection report. QAT requires explicit disjoint validation data and a
-  new output location; proxy checkpoint-monitor overrides are removed.
-- Standard CLI training selects exact file cMAP. Library training computes
-  exact chunk cMAP when no file manifest is supplied. Approximate Keras PR-AUC
-  is named `pr_auc` and remains a diagnostic.
-- Percentile calibration now serializes real internal frontend bounds into
-  the deployment model, then recalibrates that bounded graph. Waveform and
-  classifier ranges are not percentile-clipped. The default p100 remains
-  unbounded. This fixes the previous training-only clip disappearing at export.
-
-### Fixed
-
-- Keep BatchNorm frozen in cloned QAT frontends; simulate sigmoid logit
-  quantization and the fixed TFLite 1/256 probability grid. Frozen outer
-  convolution/dense kernels also receive deployment quantization noise.
-- Compute validation metrics before checkpoint/early-stop callbacks and never
-  overwrite a selected shared checkpoint at training end. Fresh runs truncate
-  old CSV headers. Calibration sampling is independent of incoming path order
-  and rejects incomplete QAT manifests.
-- Consolidate Magpie RT experiments around an isolated driver that stops on
-  failure, preserves the selected INT8 bytes and leaves catalog-test data for
-  final evaluation. Update documentation to distinguish learned PWL scaling,
-  numerical diagnostics, task selection and release validation.
-- **The `raw` frontend now computes correctly on the STM32N6 NPU.** Two NPU
-  defects were found with `stedgeai validate --mode target` and worked around.
-  A single 448-tap filterbank convolution is miscomputed for filters whose
-  energy spans many taps (the low mel bands; filterbank cos 0.756), so each
-  filterbank is now emitted as `RAW_SPLIT = 4` convolutions over channel groups
-  and summed — an exact decomposition (cos 0.99956). And `ABS` ignores its
-  input's zero-point, returning a constant bias of `|zp| * scale`, so the
-  magnitude uses `relu(x) + relu(-x)`, which is bit-exact. Full model on target:
-  cos 0.285 before, 0.999747 after; a 25-species board test now matches the
-  host's top-1 on 25/25 files, scores within 0.031. Cost: +0.26% MACs, +1.5 kB
-  weights, activations unchanged, 45 → 55 epochs.
-- Pair the no-overdrive firmware build with `NO_OVD_CLK400` and implement that
-  branch. Without it the NPU ran at 800 MHz at nominal VDDCORE, which is out of
-  spec; an under-volted NPU completes every epoch with plausible timings and
-  returns wrong results rather than failing loudly.
-- Write the training labels file next to the model config before training
-  starts, so an interrupted run cannot leave a usable checkpoint without its
-  labels.
-- Correct the `--batch_validate` help text: it repeats validation over the same
-  deterministic manifest to measure runtime repeatability, not "different
-  random seeds".
-
 ### Known issues
 
 - **Every `raw` model released before this change computes wrong results on
@@ -128,7 +184,15 @@ checkpoints still load.
   was never checked for them: every board run used only background audio, where
   a broken model and a working one both return low scores, and "board evidence"
   meant timing and memory. They must be retrained with the current frontend and
-  pass the new on-target gate before any raw model ships again.
+  pass the on-target gate before any raw model ships again.
+- **Hybrid board runs before this release measured the wrong input.** The two
+  firmware defects above mean any hybrid board result recorded before 1.2.0 —
+  timings included — describes a model fed something other than what the host
+  evaluated.
+- **The v1.2 raw model loses more to quantization than v1.1 did**: 0.070 cMAP
+  end to end (float 0.6595 -> INT8 0.5895) against v1.1's 0.047. It still ships
+  a higher absolute INT8 cMAP than v1.1's 0.565, and unlike v1.1 it is verified
+  correct on the device. Closing that gap is the next quantization task.
 
 ## [1.1.0] - 2026-09-01
 

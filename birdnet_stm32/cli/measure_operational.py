@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from birdnet_stm32.evaluation.operational import (
+    DEFAULT_POOLING,
     DEFAULT_THRESHOLDS,
+    VALID_POOLING,
     evaluate_release_gate,
     measure_operational,
     summarize_draws,
@@ -20,8 +22,23 @@ def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model_path", type=Path, required=True, help="Converted full-INT8 .tflite to gate")
     parser.add_argument("--model_config", type=Path, required=True)
-    parser.add_argument("--data_path_test", type=Path, required=True, help="Class-directory root to draw chunks from")
-    parser.add_argument("--num_chunks", type=int, default=3000)
+    parser.add_argument("--data_path_test", type=Path, required=True, help="Class-directory root to draw files from")
+    parser.add_argument(
+        "--num_files", type=int, default=3000, help="Whole files per draw, class-balanced by round robin"
+    )
+    parser.add_argument(
+        "--pooling",
+        type=str,
+        default=DEFAULT_POOLING,
+        choices=VALID_POOLING,
+        help="How chunk scores combine into one score per file",
+    )
+    parser.add_argument(
+        "--chunk_overlap",
+        type=float,
+        default=None,
+        help="Overlap between consecutive chunks of a file, in seconds (default: half the chunk duration)",
+    )
     parser.add_argument("--batch_size", type=int, default=16, help="Bounded TFLite inference batch size")
     parser.add_argument(
         "--seeds",
@@ -76,14 +93,16 @@ def main() -> None:
             args.model_path,
             args.model_config,
             args.data_path_test,
-            args.num_chunks,
+            args.num_files,
             seed,
             thresholds=thresholds,
             batch_size=args.batch_size,
+            pooling=args.pooling,
+            chunk_overlap=args.chunk_overlap,
         )
         for seed in args.seeds
     ]
-    summary = summarize_draws(draws, args.seeds, args.model_path, args.data_path_test, args.num_chunks)
+    summary = summarize_draws(draws, args.seeds, args.model_path, args.data_path_test, args.num_files)
     summary["gate_profile"] = args.gate_profile.name
     summary["gate_profile_sha256"] = hashlib.sha256(profile_bytes).hexdigest()
     summary["gate"] = evaluate_release_gate(summary, profile)

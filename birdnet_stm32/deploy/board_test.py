@@ -6,6 +6,11 @@ Full on-device pipeline — nothing is precomputed on the host:
 2. Firmware on board: read WAV from SD card → frontend-specific preprocessing
    (raw normalization, STFT, or STFT + mel) → NPU inference → UART results.
 3. This script captures UART output and parses per-file predictions.
+4. Optionally, the same .tflite runs on the host over local copies of the SD
+   card's WAV files, through the host's own evaluation preprocessing, and each
+   file's board result is checked against it. That comparison is the point of
+   the test: a model that ships has to compute on the device what it computes
+   on the host.
 
 Requires:
 - USB-connected STM32N6570-DK with an SD card containing audio/ WAV files.
@@ -25,6 +30,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import serial
 
 from birdnet_stm32.deploy.config import DeployConfig
@@ -64,6 +70,12 @@ class BoardTestConfig:
         top_k: Number of top predictions to show per file.
         score_threshold: Minimum score to display.
         timeout: Maximum seconds to wait for firmware to finish.
+        host_audio_dir: Local copy of the SD card's audio/ folder. When set, the
+            host scores the same files and the board is checked against it.
+        parity_tolerance: Margin within which a different top-1 is a tie, and
+            within which a host score counts as borderline to the detection
+            threshold. Larger score differences are flagged, not failed.
+        detection_threshold: Score at which the device reports a detection.
     """
 
     deploy_cfg: DeployConfig = field(default_factory=DeployConfig)
@@ -73,6 +85,9 @@ class BoardTestConfig:
     top_k: int = 5
     score_threshold: float = 0.01
     timeout: int = 300
+    host_audio_dir: str = ""
+    parity_tolerance: float = 0.05
+    detection_threshold: float = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +526,209 @@ def parse_serial_output(
 
 
 # ---------------------------------------------------------------------------
+# Host x board parity
+# ---------------------------------------------------------------------------
+
+# Firmware defaults (firmware/gen_app_config.py): it prints at most this many
+# labels per file, and none scoring below the threshold.
+FIRMWARE_TOP_K = 5
+FIRMWARE_SCORE_THRESHOLD = 0.01
+
+
+def firmware_top_k(scores: np.ndarray, k: int, threshold: float) -> list[int]:
+    """Return the class indices the firmware would print, in its order.
+
+    A replica of ``print_top_k`` in firmware/Src/main.c: a partial selection
+    sort that swaps only on a strictly greater score, stopping at the first
+    score below ``threshold``. INT8 outputs tie often -- several classes can
+    saturate at the same code -- so the tie order has to be the firmware's,
+    not numpy's.
+    """
+    scores = np.asarray(scores, dtype=np.float32)
+    indices = list(range(len(scores)))
+    for i in range(min(k, len(scores))):
+        for j in range(i + 1, len(scores)):
+            if scores[indices[j]] > scores[indices[i]]:
+                indices[i], indices[j] = indices[j], indices[i]
+    picked = []
+    for i in range(min(k, len(scores))):
+        if scores[indices[i]] < threshold:
+            break
+        picked.append(indices[i])
+    return picked
+
+
+def host_reference_scores(
+    model_path: str, model_cfg: dict, audio_dir: str | Path, board_files: list[str]
+) -> dict[str, np.ndarray]:
+    """Score the board's files on the host with the same .tflite.
+
+    Each file goes through the host's evaluation preprocessing
+    (``make_chunks_for_file``), and its first chunk is scored -- the chunk the
+    firmware reads. Using the host pipeline rather than a re-implementation of
+    the firmware is deliberate: a firmware frontend that diverges from what the
+    model was evaluated with has to show up as a parity failure.
+
+    Args:
+        model_path: The .tflite deployed to the board.
+        model_cfg: Its model config.
+        audio_dir: Local copy of the SD card's audio/ folder.
+        board_files: File names as the board printed them (FAT may upper-case).
+
+    Returns:
+        Board file name -> [num_classes] host scores.
+    """
+    from birdnet_stm32.evaluation.metrics import make_chunks_for_file
+    from birdnet_stm32.models.runners import TFLiteRunner
+
+    local = {path.name.upper(): path for path in Path(audio_dir).iterdir() if path.suffix.lower() == ".wav"}
+    missing = [name for name in board_files if name.upper() not in local]
+    if missing:
+        raise FileNotFoundError(f"No local copy of board file(s) {missing} in {audio_dir}")
+    runner = TFLiteRunner(model_path)
+    scores = {}
+    for name in board_files:
+        chunks = make_chunks_for_file(
+            str(local[name.upper()]),
+            model_cfg,
+            model_cfg["audio_frontend"],
+            model_cfg.get("mag_scale", "none"),
+            int(model_cfg["fft_length"]),
+            0.0,
+        )
+        if not chunks:
+            raise RuntimeError(f"Host could not read {name}")
+        scores[name] = np.asarray(runner.predict(np.asarray(chunks[0], np.float32)[None]))[0]
+    return scores
+
+
+def load_truth(audio_dir: str | Path) -> dict[str, str]:
+    """Read ``file -> true_species`` from a manifest.csv beside or above audio_dir."""
+    import csv
+
+    for candidate in (Path(audio_dir) / "manifest.csv", Path(audio_dir).parent / "manifest.csv"):
+        if candidate.is_file():
+            with candidate.open(newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            if rows and {"file", "true_species"} <= rows[0].keys():
+                return {row["file"].upper(): row["true_species"] for row in rows}
+    return {}
+
+
+def compare_board_host(
+    board_results: list[dict],
+    host_scores: dict[str, np.ndarray],
+    labels: list[str],
+    *,
+    top_k: int,
+    threshold: float,
+    tolerance: float,
+    detection_threshold: float = 0.5,
+    truth: dict[str, str] | None = None,
+) -> dict:
+    """Check that the board reports the same detections as the host.
+
+    A file agrees when both hold:
+
+    - the board's top-1 is the host's top-1, or a label the host scores within
+      ``tolerance`` of its own top-1 (a tie, not a disagreement);
+    - board and host make the same call at ``detection_threshold`` -- unless
+      the host's score is within ``tolerance`` of the threshold, where INT8
+      rounding on the NPU can legitimately tip it (flagged ``borderline``).
+
+    Score differences above ``tolerance`` that change neither are flagged
+    ``drift`` but do not fail the file. A broken model fails on top-1.
+
+    Returns:
+        Dict with per-file ``rows``, ``passed``, and summary counts.
+    """
+    index = {label: position for position, label in enumerate(labels)}
+    truth = truth or {}
+    rows = []
+    for result in board_results:
+        name = result["file"]
+        scores = np.asarray(host_scores[name], dtype=np.float32)
+        host_top = firmware_top_k(scores, top_k, threshold)
+        board = [(d["label"], d["score"]) for d in result["detections"]]
+        unknown = [label for label, _ in board if label not in index]
+        if unknown:
+            raise ValueError(f"{name}: board printed labels the model does not have: {unknown}")
+        board_top1 = board[0][0] if board else ""
+        host_top1 = labels[host_top[0]] if host_top else ""
+        max_diff = max((abs(score - float(scores[index[label]])) for label, score in board), default=0.0)
+        if board_top1 == host_top1:
+            agreement = "match"
+        elif board_top1 and host_top1 and scores[index[board_top1]] >= scores[host_top[0]] - tolerance:
+            agreement = "tie"
+        else:
+            agreement = "mismatch"
+        board_score = board[0][1] if board else 0.0
+        host_score = float(scores[host_top[0]]) if host_top else 0.0
+        same_call = (board_score >= detection_threshold) == (host_score >= detection_threshold)
+        borderline = not same_call and abs(host_score - detection_threshold) <= tolerance
+        flags = [flag for flag, on in (("borderline", borderline), ("drift", max_diff > tolerance)) if on]
+        true_label = truth.get(name.upper(), "")
+        rows.append(
+            {
+                "file": name,
+                "board_top1": board_top1,
+                "board_score": board_score,
+                "host_top1": host_top1,
+                "host_score": host_score,
+                "board_labels": [label for label, _ in board],
+                "host_labels": [labels[i] for i in host_top],
+                "max_score_diff": float(max_diff),
+                "agreement": agreement,
+                "flags": flags,
+                "ok": agreement != "mismatch" and (same_call or borderline),
+                "true_label": true_label,
+            }
+        )
+    with_truth = [row for row in rows if row["true_label"]]
+    return {
+        "rows": rows,
+        "passed": bool(rows) and all(row["ok"] for row in rows),
+        "files": len(rows),
+        "agreeing": sum(row["ok"] for row in rows),
+        "top1_matches": sum(row["agreement"] == "match" for row in rows),
+        "ties": sum(row["agreement"] == "tie" for row in rows),
+        "max_score_diff": max((row["max_score_diff"] for row in rows), default=0.0),
+        "tolerance": tolerance,
+        "detection_threshold": detection_threshold,
+        "flagged": sum(bool(row["flags"]) for row in rows),
+        "board_correct": sum(row["board_top1"] == row["true_label"] for row in with_truth) if with_truth else None,
+        "host_correct": sum(row["host_top1"] == row["true_label"] for row in with_truth) if with_truth else None,
+        "labelled_files": len(with_truth),
+    }
+
+
+def print_parity(parity: dict) -> None:
+    """Print the per-file host x board comparison and its verdict."""
+    print("\n--- Host x board parity ---")
+    print(f"  {'file':<16} {'board top-1':<28} {'host top-1':<28} {'max|d|':>7}  {'':<18} truth")
+    for row in parity["rows"]:
+        board = f"{row['board_top1']} {row['board_score']:.3f}"
+        host = f"{row['host_top1']} {row['host_score']:.3f}"
+        flag = "+".join([row["agreement"], *row["flags"]])
+        flag = flag if row["ok"] else f"FAIL:{flag}"
+        print(
+            f"  {row['file']:<16} {board:<28} {host:<28} {row['max_score_diff']:7.4f}  {flag:<18} {row['true_label']}"
+        )
+    verdict = "PASS" if parity["passed"] else "FAIL"
+    print(
+        f"\n  PARITY {verdict}: {parity['agreeing']}/{parity['files']} files agree "
+        f"({parity['top1_matches']} same top-1, {parity['ties']} ties), "
+        f"detection threshold {parity['detection_threshold']}, {parity['flagged']} flagged, "
+        f"max |board - host| {parity['max_score_diff']:.4f} (tolerance {parity['tolerance']})"
+    )
+    if parity["labelled_files"]:
+        print(
+            f"  Correct top-1: board {parity['board_correct']}/{parity['labelled_files']}, "
+            f"host {parity['host_correct']}/{parity['labelled_files']}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Main entry
 # ---------------------------------------------------------------------------
 
@@ -648,4 +866,28 @@ def run_board_test(cfg: BoardTestConfig) -> dict:
         print(f"  Real-time factor: {rtf:.4f}x  ({speedup:.0f}x faster than real-time)")
 
     parsed["labels"] = labels
+    parsed["parity"] = None
+    if cfg.host_audio_dir:
+        if not labels:
+            raise ValueError("Host x board parity needs the model's labels file")
+        board_files = [r["file"] for r in parsed["results"]]
+        local = [p for p in Path(cfg.host_audio_dir).iterdir() if p.suffix.lower() == ".wav"]
+        unprocessed = sorted({p.name.upper() for p in local} - {name.upper() for name in board_files})
+        host_scores = host_reference_scores(deploy.model_path, model_cfg, cfg.host_audio_dir, board_files)
+        parity = compare_board_host(
+            parsed["results"],
+            host_scores,
+            labels,
+            top_k=min(cfg.top_k, FIRMWARE_TOP_K),
+            threshold=max(cfg.score_threshold, FIRMWARE_SCORE_THRESHOLD),
+            tolerance=cfg.parity_tolerance,
+            detection_threshold=cfg.detection_threshold,
+            truth=load_truth(cfg.host_audio_dir),
+        )
+        if unprocessed:
+            parity["passed"] = False
+            print(f"\n[WARN] Not processed on the board: {unprocessed}")
+        parity["unprocessed"] = unprocessed
+        print_parity(parity)
+        parsed["parity"] = parity
     return parsed

@@ -25,7 +25,7 @@ Design constraints, in priority order:
 4. **Compute the same thing on the NPU.** Compiling onto the NPU is not enough;
    the arithmetic has to survive it. Two measured NPU defects shape the raw
    path: the filterbank is split into channel-group convolutions (``RAW_SPLIT``)
-   and ``|x|`` is built from ReLUs (``AudioFrontendLayer._abs``). Verify any
+   and ``|x|`` is built from ReLU/SUB/ADD (``AudioFrontendLayer._abs``). Verify any
    change here with ``stedgeai validate --mode target`` on trained weights.
 
 The caller is expected to hand over a peak-normalized waveform (the training,
@@ -234,7 +234,7 @@ def gabor_filterbank(
     return (real / norm).astype(np.float32), (imag / norm).astype(np.float32)
 
 
-from birdnet_stm32.models.magnitude import MagnitudeScalingLayer  # noqa: E402
+from birdnet_stm32.models.magnitude import VALID_MAG_SCALES, MagnitudeScalingLayer  # noqa: E402
 from birdnet_stm32.models.quantization import clip_activation, validate_bounds  # noqa: E402
 
 
@@ -279,7 +279,7 @@ class AudioFrontendLayer(layers.Layer):
     ):
         super().__init__(name=name, **kwargs)
         assert mode in ("precomputed", "hybrid", "raw")
-        assert mag_scale in ("pwl", "none")
+        assert mag_scale in VALID_MAG_SCALES
         self.mode = mode
         self.mel_bins = int(mel_bins)
         self.spec_width = int(spec_width)
@@ -477,9 +477,19 @@ class AudioFrontendLayer(layers.Layer):
         return self._quantization_hook.activation(name, inputs)
 
     def _abs(self, x, name: str):
-        """Quantization-safe |x| for the NPU: relu(x) + relu(-x)."""
+        """Quantization-safe |x| for the NPU: relu(x) + (relu(x) - x).
+
+        ``relu(x) - x`` is exactly ``relu(-x)``, so this is the identity
+        ``|x| = relu(x) + relu(-x)`` written without a negation. That matters:
+        TFLite has no INT8 negate, so ``-x`` lowers to DEQUANTIZE -> NEG ->
+        QUANTIZE and runs in software on the Cortex-M55. In the raw frontend
+        that cost six extra software epochs, about 2.0 of 6.7 ms per inference
+        at 1 GHz (measured 2026-09-10). RELU, SUB and ADD all stay on the NPU,
+        and this form is bit-exact on target (cos 1.000000, l2r 0.00036).
+        Activation names are unchanged, so QAT ranges still apply.
+        """
         pos = self._quantized_activation(f"{name}_pos", tf.nn.relu(x))
-        neg = self._quantized_activation(f"{name}_neg", tf.nn.relu(-x))
+        neg = self._quantized_activation(f"{name}_neg", pos - x)
         return self._quantized_activation(name, pos + neg)
 
     def _calibrate(self, y, training, smooth: bool = False):
@@ -543,12 +553,11 @@ class AudioFrontendLayer(layers.Layer):
         # Within ~4% of the true magnitude, against ~17% ripple for |re|+|im| —
         # and that ripple would beat at the carrier frequency, aliasing into the
         # frame rate. Costs three elementwise ops, all of which stay on the NPU.
-        # |x| as relu(x) + relu(-x) rather than tf.abs. The identity is exact,
-        # but the N6 NPU's ABS ignores its input's quantization zero-point: on an
-        # isolated ABS with zero-point -9 every element came back short by
-        # `|zp| * scale` (measured 2026-09-09: mean error -0.1543 against mae
-        # 0.1543 -- pure bias, cos 0.951), while the relu pair is bit-exact
-        # (cos 1.000000). The filterbank sums feeding this never have a zero
+        # |x| via _abs (ReLU, SUB, ADD) rather than tf.abs. The N6 NPU's ABS
+        # ignores its input's quantization zero-point: on an isolated ABS with
+        # zero-point -9 every element came back short by `|zp| * scale`
+        # (measured 2026-09-09: mean error -0.1543 against mae 0.1543 -- pure
+        # bias, cos 0.951). The filterbank sums feeding this never have a zero
         # zero-point, so ABS is never safe here.
         a = self._abs(re, f"{self.name}_abs_re")
         b = self._abs(im, f"{self.name}_abs_im")

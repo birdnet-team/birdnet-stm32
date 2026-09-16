@@ -4,10 +4,17 @@ This measurement decides whether a conversion ships, so the arithmetic is
 pinned here rather than only exercised during a release.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
-from birdnet_stm32.evaluation.operational import evaluate_release_gate, operating_point, summarize_draws
+from birdnet_stm32.evaluation.operational import (
+    evaluate_release_gate,
+    operating_point,
+    ranking_metrics,
+    summarize_draws,
+)
 
 
 class TestOperatingPoint:
@@ -80,7 +87,9 @@ class TestSummarizeDraws:
             "model_sha256": sha,
             "model_config_sha256": "f" * 64,
             "seed": seed,
-            "chunks": 10,
+            "files": 10,
+            "pooling": "max",
+            "chunk_overlap": 1.25,
             "thresholds": {
                 "0.5": {
                     "detection_rate": detection,
@@ -106,6 +115,13 @@ class TestSummarizeDraws:
         draws = [self.draw("a" * 64, 0.2, 7), self.draw("b" * 64, 0.3, 11)]
         with pytest.raises(RuntimeError, match="one model artifact"):
             summarize_draws(draws, [7, 11], "m.tflite", "catalog_test", 10)
+
+    def test_draws_pooled_differently_are_refused(self):
+        """Max- and average-pooled rates are different quantities."""
+        other = self.draw("a" * 64, 0.3, 11)
+        other["pooling"] = "avg"
+        with pytest.raises(RuntimeError, match="pooling"):
+            summarize_draws([self.draw("a" * 64, 0.2, 7), other], [7, 11], "m.tflite", "catalog_test", 10)
 
     def test_the_summary_carries_the_artifact_hash_and_seeds(self):
         """A release gate binds the report to the file and the pinned seeds."""
@@ -157,12 +173,11 @@ class TestReleaseGate:
             evaluate_release_gate(self.summary(), profile)
 
 
-def test_measurement_streams_bounded_batches_and_hashes_contract(tmp_path, monkeypatch):
-    from birdnet_stm32.evaluation import operational
+def _fixture(tmp_path, folders, class_names):
     from birdnet_stm32.training.config import ModelConfig
 
     data = tmp_path / "test"
-    for folder in ("a", "b", "background"):
+    for folder in folders:
         path = data / folder
         path.mkdir(parents=True)
         (path / "sample.wav").write_bytes(b"audio")
@@ -174,11 +189,18 @@ def test_measurement_streams_bounded_batches_and_hashes_contract(tmp_path, monke
         fft_length=4,
         chunk_duration=1,
         audio_frontend="raw",
-        num_classes=2,
-        class_names=["a", "b"],
+        num_classes=len(class_names),
+        class_names=class_names,
     ).save(config)
     model = tmp_path / "model.tflite"
     model.write_bytes(b"model")
+    return data, config, model
+
+
+def test_measurement_streams_bounded_batches_and_hashes_contract(tmp_path, monkeypatch):
+    from birdnet_stm32.evaluation import operational
+
+    data, config, model = _fixture(tmp_path, ("a", "b", "background"), ["a", "b"])
 
     class Runner:
         batch_sizes = []
@@ -189,15 +211,16 @@ def test_measurement_streams_bounded_batches_and_hashes_contract(tmp_path, monke
 
     runner = Runner()
     monkeypatch.setattr(operational, "_load_and_validate_int8_model", lambda *args: runner)
+    # Two chunks per file: batches of 2 over 3 files x 2 chunks.
     monkeypatch.setattr(
-        operational,
-        "representative_data_gen",
-        lambda paths, cfg, num_samples: ([np.zeros((1, 8, 1), np.float32)] for _ in paths),
+        operational, "make_chunks_for_file", lambda *args: [np.zeros((8, 1), np.float32) for _ in range(2)]
     )
 
     result = operational.measure_operational(model, config, data, 3, seed=7, batch_size=2)
-    assert runner.batch_sizes == [2, 1]
-    assert result["chunks"] == 3
+    assert runner.batch_sizes == [2, 2, 2]
+    assert result["files"] == 3
+    assert result["chunks"] == 6
+    assert result["pooling"] == "max"
     assert result["manifest"]["count"] == 3
     assert len(result["model_config_sha256"]) == 64
     assert len(result["input_tensors_sha256"]) == 64
@@ -206,28 +229,53 @@ def test_measurement_streams_bounded_batches_and_hashes_contract(tmp_path, monke
         operational.measure_operational(model, config, data, 4, seed=7, batch_size=2)
 
 
+def test_a_call_anywhere_in_the_file_counts(tmp_path, monkeypatch):
+    """The point of file-level scoring: a call in the last chunk is found.
+
+    Scored on its first chunk alone, the bird file below is a miss; pooled over
+    the file, it is a confident, correct detection.
+    """
+    from birdnet_stm32.evaluation import operational
+
+    data, config, model = _fixture(tmp_path, ("bird", "background"), ["bird"])
+    chunks = {
+        "bird": [np.full((8, 1), 0.0, np.float32), np.full((8, 1), 0.0, np.float32), np.full((8, 1), 1.0, np.float32)],
+        "background": [np.full((8, 1), 0.0, np.float32)] * 3,
+    }
+
+    class Runner:
+        @staticmethod
+        def predict(batch):
+            # Score = 0.9 on a chunk holding the call, 0.1 elsewhere.
+            return np.where(batch.reshape(len(batch), -1)[:, :1] > 0.5, 0.9, 0.1).astype(np.float32)
+
+    monkeypatch.setattr(operational, "_load_and_validate_int8_model", lambda *args: Runner())
+    monkeypatch.setattr(operational, "make_chunks_for_file", lambda path, *args: chunks[Path(path).parent.name])
+
+    result = operational.measure_operational(model, config, data, 2, seed=7, thresholds=(0.5,))
+    assert result["thresholds"]["0.5"]["detection_rate"] == pytest.approx(1.0)
+    assert result["thresholds"]["0.5"]["negative_alarm_rate"] == pytest.approx(0.0)
+    assert result["ranking"]["top_k_rates"]["1"] == pytest.approx(1.0)
+
+    average = operational.measure_operational(model, config, data, 2, seed=7, thresholds=(0.5,), pooling="avg")
+    assert average["thresholds"]["0.5"]["detection_rate"] == pytest.approx(0.0)
+
+
+def test_a_file_that_yields_no_audio_is_refused(tmp_path, monkeypatch):
+    """Silently dropping it would make two models' draws incomparable."""
+    from birdnet_stm32.evaluation import operational
+
+    data, config, model = _fixture(tmp_path, ("bird", "background"), ["bird"])
+    monkeypatch.setattr(operational, "_load_and_validate_int8_model", lambda *args: object())
+    monkeypatch.setattr(operational, "make_chunks_for_file", lambda *args: [])
+    with pytest.raises(RuntimeError, match="No audio chunks"):
+        operational.measure_operational(model, config, data, 2, seed=7)
+
+
 def test_measurement_rejects_non_finite_model_scores(tmp_path, monkeypatch):
     from birdnet_stm32.evaluation import operational
-    from birdnet_stm32.training.config import ModelConfig
 
-    data = tmp_path / "test"
-    for folder in ("bird", "background"):
-        path = data / folder
-        path.mkdir(parents=True)
-        (path / "sample.wav").write_bytes(b"audio")
-    config = tmp_path / "model_config.json"
-    ModelConfig(
-        sample_rate=8,
-        num_mels=2,
-        spec_width=2,
-        fft_length=4,
-        chunk_duration=1,
-        audio_frontend="raw",
-        num_classes=1,
-        class_names=["bird"],
-    ).save(config)
-    model = tmp_path / "model.tflite"
-    model.write_bytes(b"model")
+    data, config, model = _fixture(tmp_path, ("bird", "background"), ["bird"])
 
     class Runner:
         @staticmethod
@@ -235,11 +283,54 @@ def test_measurement_rejects_non_finite_model_scores(tmp_path, monkeypatch):
             return np.full((len(batch), 1), np.nan, dtype=np.float32)
 
     monkeypatch.setattr(operational, "_load_and_validate_int8_model", lambda *args: Runner())
-    monkeypatch.setattr(
-        operational,
-        "representative_data_gen",
-        lambda paths, cfg, num_samples: ([np.zeros((1, 8, 1), np.float32)] for _ in paths),
-    )
+    monkeypatch.setattr(operational, "make_chunks_for_file", lambda *args: [np.zeros((8, 1), np.float32)])
 
     with pytest.raises(RuntimeError, match="non-finite scores"):
         operational.measure_operational(model, config, data, 2, seed=7)
+
+
+class TestRanking:
+    def test_top_k_counts_the_target_anywhere_in_the_list(self):
+        labels = np.array([0, 1, 2])
+        scores = np.array(
+            [
+                [0.9, 0.1, 0.0, 0.0],  # rank 1
+                [0.9, 0.5, 0.1, 0.0],  # rank 2
+                [0.9, 0.8, 0.7, 0.1],  # rank 3
+            ]
+        )
+        ranking = ranking_metrics(labels, scores, top_k=(1, 3, 5))
+        assert ranking["top_k_rates"] == {"1": pytest.approx(1 / 3), "3": pytest.approx(1.0)}
+        assert ranking["mean_reciprocal_rank"] == pytest.approx((1 + 1 / 2 + 1 / 3) / 3)
+        assert ranking["median_rank"] == pytest.approx(2)
+
+    def test_ties_go_against_the_target(self):
+        """Two classes saturated at the same INT8 code: neither is ranked first."""
+        ranking = ranking_metrics(np.array([0]), np.array([[1.0, 1.0, 0.0]]), top_k=(1, 2))
+        assert ranking["top_k_rates"]["1"] == pytest.approx(0.0)
+        assert ranking["top_k_rates"]["2"] == pytest.approx(1.0)
+
+    def test_hard_negatives_are_not_ranked_and_macro_weighs_classes_equally(self):
+        labels = np.array([0, 0, 0, 1, -1])
+        scores = np.array([[0.9, 0.1], [0.9, 0.1], [0.9, 0.1], [0.9, 0.1], [0.9, 0.1]])
+        ranking = ranking_metrics(labels, scores, top_k=(1,))
+        assert ranking["top_k_rates"]["1"] == pytest.approx(3 / 4)
+        assert ranking["macro_top_k_rates"]["1"] == pytest.approx(0.5)
+
+
+def test_gate_can_require_a_top_k_rate():
+    point = {
+        "detection_rate": 0.9,
+        "macro_detection_rate": 0.9,
+        "false_alarm_rate": 0.0,
+        "macro_false_alarm_rate": 0.0,
+        "negative_alarm_rate": 0.0,
+    }
+    summary = {"draws": [{"thresholds": {"0.5": point}, "ranking": {"macro_top_k_rates": {"5": 0.7}}}]}
+    profile = {**TestReleaseGate.PROFILE, "min_macro_top_k_rates": {"5": 0.8}}
+    gate = evaluate_release_gate(summary, profile)
+    assert gate["passed"] is False
+    assert gate["failures"] == ["macro_top_5_rate 0.700000 must be >= 0.800000"]
+    assert evaluate_release_gate(summary, {**profile, "min_macro_top_k_rates": {"5": 0.6}})["passed"] is True
+    with pytest.raises(ValueError, match="top-3"):
+        evaluate_release_gate(summary, {**profile, "min_macro_top_k_rates": {"3": 0.6}})

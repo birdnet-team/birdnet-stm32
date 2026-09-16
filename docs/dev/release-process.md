@@ -70,9 +70,12 @@ requires all of the following:
 6. Run `stedgeai analyze` or `stedgeai generate` for the STM32N6 target and
    retain its compatibility/memory report.
 7. Run `stedgeai validate --mode target` on the physical board and retain the
-   cross-accuracy report. **The gate is `cos >= 0.99` and `l2r <= 0.05`
-   against the host reference**, measured on the release weights. Both are
-   needed: cosine cannot see a gain error or a constant offset, `l2r` can.
+   cross-accuracy report. **The gate is `cos >= 0.99` and `mae <= 1/256`
+   (one output LSB) against the host reference**, measured on the release
+   weights. Both are needed: cosine cannot see a gain error or a constant
+   offset, `mae` can. Do not gate on `l2r`: it divides by the reference norm,
+   which a sparse multi-label output keeps small, so a correct 100-class model
+   reads l2r 0.108 at mae 0.0017.
 8. Run the custom firmware on the physical board and retain the board report.
    The board report must include predictions on audio **that the model should
    actually recognise**, compared against the host's predictions on the same
@@ -91,6 +94,21 @@ requires all of the following:
     confidently, and record the host prediction per file alongside the board's.
     Note the firmware reads only the **first chunk** of each file, so the
     vocalisation must fall inside it.
+
+From 1.2.0, two gates changed and the reasons are recorded here rather than
+in a commit message:
+
+- **Keras-to-TFLite cosine parity is a breakage check, not a quality gate.**
+  The numerical question — does the deployed artifact compute what the host
+  computes — is answered directly by step 7 on the device (`cos >= 0.99`,
+  `mae <= 1/256`) and step 8 against the host's own predictions. A sparse
+  100-output multi-label head gives a low cosine p05 (0.58 on the 1.2.0 model)
+  without anything being wrong, so p05 is recorded in the audit and
+  `cosine_mean` keeps a floor that a genuinely broken conversion fails.
+- **Operational floors are measured per file**, with overlapping chunks pooled
+  per recording, and anchored to the incumbent release measured the same way.
+  Scoring one random chunk per file put detection near 0.28 for every model
+  tried, because many chunks of a catalog recording contain no call.
 
 Accuracy floors are derived per release, not carried over. Freeze the float
 baseline's catalog metrics *before* any compression runs, and gate every

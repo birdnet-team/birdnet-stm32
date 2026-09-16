@@ -120,13 +120,35 @@ static void peak_normalize(float *audio, uint32_t num_samples)
  * returns the same near-constant scores for every file. This ordering (stage
  * input, reset instance, run epochs) matches ST's own NPU_Validation wrapper.
  */
+/* Floats the frontend hands the NPU, per frontend. */
+#if APP_AUDIO_FRONTEND == APP_FRONTEND_RAW
+#define APP_INPUT_FLOATS  (APP_CHUNK_SAMPLES)
+#elif APP_AUDIO_FRONTEND == APP_FRONTEND_PRECOMPUTED
+#define APP_INPUT_FLOATS  (APP_NUM_MELS * APP_SPEC_WIDTH)
+#else
+#define APP_INPUT_FLOATS  (APP_FFT_BINS * APP_SPEC_WIDTH)
+#endif
+
 static bool run_inference(const float *spect, float *output)
 {
     const LL_Buffer_InfoTypeDef *in_info = LL_ATON_Input_Buffers_Info_Default();
     const LL_Buffer_InfoTypeDef *out_info = LL_ATON_Output_Buffers_Info_Default();
 
-    uint32_t input_bytes = in_info->shape[1] * in_info->shape[2] * sizeof(float);
-    uint32_t output_bytes = out_info->shape[2] * sizeof(float);
+    /* Size both copies from the buffers' byte ranges, never from `shape`.
+     * LL_ATON's `shape` is not in tensor order: a [1, 256, 256, 1] hybrid input
+     * is reported as {1, 256, 1, 256}, so shape[1] * shape[2] copied 256 of
+     * 65,536 values and the model ran on leftover memory. The raw input put
+     * all its samples in shape[1] and only worked by coincidence. */
+    uint32_t input_bytes = in_info->offset_end - in_info->offset_start;
+    uint32_t output_bytes = out_info->offset_end - out_info->offset_start;
+    if (input_bytes != APP_INPUT_FLOATS * sizeof(float) ||
+        output_bytes != APP_NUM_CLASSES * sizeof(float)) {
+        printf("  [ERROR] Model I/O is %lu/%lu bytes, firmware expects %lu/%lu\n",
+               (unsigned long)input_bytes, (unsigned long)output_bytes,
+               (unsigned long)(APP_INPUT_FLOATS * sizeof(float)),
+               (unsigned long)(APP_NUM_CLASSES * sizeof(float)));
+        return false;
+    }
 
     float *input_ptr = (float *)(in_info->addr_base.i + in_info->offset_start);
 
@@ -456,6 +478,7 @@ int main(void)
                        APP_SPEC_WIDTH, spec_buf);
         mel_filterbank(spec_buf, APP_FFT_BINS, APP_SPEC_WIDTH,
                        APP_NUM_MELS, mel_buf);
+        spec_minmax_normalize(mel_buf, APP_NUM_MELS * APP_SPEC_WIDTH);
         stft_ms = HAL_GetTick() - t0;
         npu_input = mel_buf;
 #else
@@ -464,6 +487,9 @@ int main(void)
         stft_magnitude(audio_buf, APP_CHUNK_SAMPLES,
                        APP_FFT_LENGTH, APP_HOP_LENGTH,
                        APP_SPEC_WIDTH, spec_buf);
+        /* The host min-max normalizes the spectrogram; without this the model
+         * sees raw magnitudes (up to ~70) instead of [0, 1]. */
+        spec_minmax_normalize(spec_buf, APP_FFT_BINS * APP_SPEC_WIDTH);
         stft_ms = HAL_GetTick() - t0;
         npu_input = spec_buf;
 #endif
