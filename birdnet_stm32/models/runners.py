@@ -4,6 +4,8 @@ Provides a uniform predict(x_batch) interface for both model formats,
 enabling the evaluation pipeline to be agnostic to the model type.
 """
 
+import os
+
 import numpy as np
 import tensorflow as tf
 
@@ -35,10 +37,10 @@ class KerasRunner:
             model: Loaded Keras model (compiled=False is fine).
         """
         self.model = model
-        try:
-            self.input_names = [t.name.split(":")[0] for t in self.model.inputs]
-        except Exception:
-            self.input_names = []
+        # One traced graph per input shape instead of op-by-op eager dispatch,
+        # which dominated evaluation time. The graph reads the model's variables,
+        # so weights updated after construction are still used.
+        self._forward = tf.function(lambda x: self.model(x, training=False), reduce_retracing=True)
 
     def predict(self, x_batch: np.ndarray) -> np.ndarray:
         """Run a forward pass on a batch.
@@ -50,25 +52,22 @@ class KerasRunner:
             Model outputs [B, C] as float32.
         """
         x_batch = x_batch.astype(np.float32, copy=False)
-        if getattr(self, "input_names", None) and len(self.input_names) == 1:
-            feed = {self.input_names[0]: x_batch}
-            try:
-                return np.asarray(self.model(feed, training=False).numpy(), dtype=np.float32)
-            except Exception:
-                pass
-        return np.asarray(self.model(x_batch, training=False).numpy(), dtype=np.float32)
+        return np.asarray(self._forward(tf.convert_to_tensor(x_batch)), dtype=np.float32)
 
 
 class TFLiteRunner:
     """TFLite model runner using the builtin interpreter (no delegates)."""
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, num_threads: int | None = None):
         """Initialize with a TFLite model file.
 
         Args:
             model_path: Path to a .tflite model file.
+            num_threads: Interpreter threads (default: up to 8). Only the
+                builtin kernels run, so outputs do not depend on this.
         """
-        self.interpreter = tf.lite.Interpreter(model_path=model_path, experimental_delegates=[])
+        threads = num_threads if num_threads is not None else min(8, os.cpu_count() or 1)
+        self.interpreter = tf.lite.Interpreter(model_path=model_path, experimental_delegates=[], num_threads=threads)
         self.input_index = None
         self.output_index = None
         self._allocate()

@@ -548,8 +548,19 @@ def main():
         time_mask_max=args.time_mask_max,
         **train_kwargs,
     )
+    from birdnet_stm32.training.validation import VALIDATION_SUBSET_SEED, FileCmap, stratified_validation_subset
+
+    selection_paths = stratified_validation_subset(val_paths, args.validation_subset)
+    if len(selection_paths) < len(val_paths):
+        print(
+            f"Selecting checkpoints on a fixed stratified subset of {len(selection_paths)} "
+            f"of {len(val_paths)} validation files (seed {VALIDATION_SUBSET_SEED})"
+        )
+    # Keras' own per-epoch validation pass (val_loss and the chunk metrics in the
+    # history) reads the same files as selection. Over the full manifest it
+    # re-decoded every validation file each epoch for numbers that select nothing.
     val_dataset = load_dataset(
-        val_paths,
+        selection_paths,
         classes,
         audio_frontend=args.audio_frontend,
         batch_size=args.batch_size,
@@ -566,7 +577,7 @@ def main():
     steps_per_epoch = max(
         1, math.ceil(estimate_samples_per_epoch(len(train_paths), args.max_chunks_per_file) / float(args.batch_size))
     )
-    val_steps = max(1, math.ceil(len(val_paths) / float(args.batch_size)))
+    val_steps = max(1, math.ceil(len(selection_paths) / float(args.batch_size)))
 
     # Build model
     print("Building model...")
@@ -623,14 +634,6 @@ def main():
             f.write(f"{cls}\n")
     print(f"Saved labels to '{labels_file}'")
 
-    from birdnet_stm32.training.validation import VALIDATION_SUBSET_SEED, FileCmap, stratified_validation_subset
-
-    selection_paths = stratified_validation_subset(val_paths, args.validation_subset)
-    if len(selection_paths) < len(val_paths):
-        print(
-            f"Selecting checkpoints on a fixed stratified subset of {len(selection_paths)} "
-            f"of {len(val_paths)} validation files (seed {VALIDATION_SUBSET_SEED})"
-        )
     extra_callbacks.append(
         FileCmap(
             selection_paths,

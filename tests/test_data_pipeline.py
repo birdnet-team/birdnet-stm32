@@ -163,7 +163,7 @@ class TestProcessFile:
             observed["random_offset"] = random_offset
             return np.ones(int(sample_rate * chunk_duration * 4), dtype=np.float32)
 
-        monkeypatch.setattr("birdnet_stm32.data.generator.load_audio_window", fake_load_audio_window)
+        monkeypatch.setattr("birdnet_stm32.data.worker.load_audio_window", fake_load_audio_window)
 
         cfg = {
             "audio_frontend": "raw",
@@ -199,7 +199,7 @@ class TestProcessFile:
         paths, classes = _make_long_dataset(tmp_path, file_duration=12)
 
         monkeypatch.setattr(
-            "birdnet_stm32.data.generator.load_audio_window",
+            "birdnet_stm32.data.worker.load_audio_window",
             lambda *args, **kwargs: np.empty((0,), dtype=np.float32),
         )
 
@@ -376,7 +376,7 @@ class TestLoadDataset:
             def join(self):
                 return None
 
-        monkeypatch.setattr("birdnet_stm32.data.generator.mp.Pool", FakePool)
+        monkeypatch.setattr("birdnet_stm32.data.generator._pool_context", lambda: type("Ctx", (), {"Pool": FakePool}))
         monkeypatch.setattr("birdnet_stm32.data.generator.random.shuffle", lambda seq: None)
         monkeypatch.setattr("birdnet_stm32.data.generator._POOL_POLL_INTERVAL_S", 0.0)
 

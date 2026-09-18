@@ -546,8 +546,24 @@ def run_qat(args: argparse.Namespace) -> None:
         spec_augment=False,
         **common_kwargs,
     )
+    # Selection converts and scores an INT8 model every epoch, twice over the
+    # manifest. A fixed stratified subset keeps that affordable; it must be the
+    # same draw for every arm and epoch or the comparison means nothing, so it
+    # is seeded and its hash goes into the selection report.
+    subset = int(getattr(args, "validation_subset", 0) or 0)
+    selection_paths = stratified_validation_subset(val_paths, subset)
+    if len(selection_paths) < len(val_paths):
+        print(
+            f"[QAT] Selecting on a fixed stratified subset of {len(selection_paths)} "
+            f"of {len(val_paths)} validation files (seed {VALIDATION_SUBSET_SEED})"
+        )
+    elif subset:
+        print(f"[QAT] Requested subset {subset} >= {len(val_paths)} validation files; using all")
+    # Keras' per-epoch validation pass reads the selection files, not the whole
+    # manifest: its val_loss selects nothing and the full pass re-decoded every
+    # validation file each epoch.
     val_dataset = load_dataset(
-        val_paths,
+        selection_paths,
         classes,
         audio_frontend=cfg.audio_frontend,
         batch_size=args.batch_size,
@@ -610,19 +626,6 @@ def run_qat(args: argparse.Namespace) -> None:
     cfg.save(qat_path.replace(".keras", "_model_config.json"))
     with open(qat_path.replace(".keras", "_labels.txt"), "w", encoding="utf-8") as handle:
         handle.write("\n".join(classes) + "\n")
-    # Selection converts and scores an INT8 model every epoch, twice over the
-    # manifest. A fixed stratified subset keeps that affordable; it must be the
-    # same draw for every arm and epoch or the comparison means nothing, so it
-    # is seeded and its hash goes into the selection report.
-    subset = int(getattr(args, "validation_subset", 0) or 0)
-    selection_paths = stratified_validation_subset(val_paths, subset)
-    if len(selection_paths) < len(val_paths):
-        print(
-            f"[QAT] Selecting on a fixed stratified subset of {len(selection_paths)} "
-            f"of {len(val_paths)} validation files (seed {VALIDATION_SUBSET_SEED})"
-        )
-    elif subset:
-        print(f"[QAT] Requested subset {subset} >= {len(val_paths)} validation files; using all")
     if getattr(args, "qat_range_refresh", False):
         # Before the selector, so the simulated score it logs uses the new grid.
         extra_callbacks.append(
@@ -650,7 +653,7 @@ def run_qat(args: argparse.Namespace) -> None:
     )
     extra_callbacks.append(selector)
     steps_per_epoch = max(1, math.ceil(len(train_paths) / float(args.batch_size)))
-    val_steps = max(1, math.ceil(len(val_paths) / float(args.batch_size)))
+    val_steps = max(1, math.ceil(len(selection_paths) / float(args.batch_size)))
     print(f"[QAT] Training on {len(train_paths)} files, validating on {len(val_paths)} files")
     print(f"[QAT] Fine-tuning for {args.epochs} epochs at LR={args.learning_rate}")
     train_model(
