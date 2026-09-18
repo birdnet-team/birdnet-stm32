@@ -54,6 +54,10 @@ architecture the one you got unless you opted out.
 All channel counts are rounded to the nearest multiple of 8 via
 `_make_divisible(channels, 8)` (defined in `birdnet_stm32/models/blocks.py`).
 
+The base widths (32, 64, 128, 256) can be replaced with `stage_widths`. When
+the last stage's width equals `embeddings_size`, there is no separate 1 × 1
+embedding convolution.
+
 Depthwise kernels are 3 × 3. `dw_kernel_size=5` widens them in stages 2–4;
 stage 1 carries the largest feature map and stays 3 × 3.
 

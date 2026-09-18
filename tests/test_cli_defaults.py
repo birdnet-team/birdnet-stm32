@@ -91,6 +91,7 @@ class TestBestPathDefaults:
         assert args.embeddings_size == 512
         assert args.head_pooling == "gap"
         assert args.dw_kernel_size == 3
+        assert args.stage_widths == [32, 64, 128, 256]
         assert args.max_chunks_per_file == 1
         assert args.epochs == 50
         assert args.learning_rate == pytest.approx(5e-4)

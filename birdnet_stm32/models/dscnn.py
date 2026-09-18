@@ -20,6 +20,7 @@ from birdnet_stm32.models.blocks import _make_divisible
 from birdnet_stm32.models.frontend import AudioFrontendLayer, hybrid_fft_bins, normalize_frontend_name
 
 HEAD_POOLINGS = ("gap", "freq_mean_time_maxmean")
+STAGE_WIDTHS = (32, 64, 128, 256)
 DW_KERNEL_SIZES = (3, 5)
 
 
@@ -141,6 +142,7 @@ def build_dscnn_model(
     weight_decay: float = 1e-4,
     head_pooling: str = "gap",
     dw_kernel_size: int = 3,
+    stage_widths: tuple[int, ...] | list[int] | None = None,
 ) -> tf.keras.Model:
     """Build a DS-CNN model with a selectable audio frontend.
 
@@ -162,19 +164,27 @@ def build_dscnn_model(
         head_pooling: Pooling head, one of ``HEAD_POOLINGS``.
         dw_kernel_size: Depthwise kernel size in stages 2-4; stage 1, which
             carries the largest feature map, stays 3x3.
+        stage_widths: Base output channels of the four stages before the
+            alpha multiplier; defaults to ``STAGE_WIDTHS``. When the last
+            stage's width equals ``embeddings_size``, there is no separate
+            embedding conv.
 
     Returns:
         Uncompiled DS-CNN Keras model.
 
     Raises:
         ValueError: If raw frontend exceeds STM32N6 input size limit (65536),
-            or on an unknown head_pooling or dw_kernel_size.
+            or on an unknown head_pooling or dw_kernel_size, or stage_widths
+            that are not four positive widths.
     """
     audio_frontend = normalize_frontend_name(audio_frontend)
     if head_pooling not in HEAD_POOLINGS:
         raise ValueError(f"head_pooling '{head_pooling}' not in {HEAD_POOLINGS}")
     if dw_kernel_size not in DW_KERNEL_SIZES:
         raise ValueError(f"dw_kernel_size {dw_kernel_size} not in {DW_KERNEL_SIZES}")
+    stage_widths = tuple(STAGE_WIDTHS if stage_widths is None else stage_widths)
+    if len(stage_widths) != 4 or any(int(w) <= 0 for w in stage_widths):
+        raise ValueError(f"stage_widths must be four positive widths, got {stage_widths}")
 
     # Enforce STM32N6 constraint for raw frontend
     if audio_frontend == "raw":
@@ -236,7 +246,7 @@ def build_dscnn_model(
     x = layers.ReLU(max_value=6, name="stem_relu")(x)
 
     # Four stages: (base_filters, base_repeats, (stride_f, stride_t))
-    base_filters = [32, 64, 128, 256]
+    base_filters = [int(w) for w in stage_widths]
     base_repeats = [2, 3, 4, 2]
     base_strides = [(2, 2), (2, 2), (2, 2), (2, 2)]
 

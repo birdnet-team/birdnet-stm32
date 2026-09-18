@@ -16,7 +16,7 @@ from birdnet_stm32.data.dataset import (
     upsample_minority_classes,
 )
 from birdnet_stm32.data.generator import estimate_samples_per_epoch, load_dataset
-from birdnet_stm32.models.dscnn import DW_KERNEL_SIZES, HEAD_POOLINGS, build_dscnn_model
+from birdnet_stm32.models.dscnn import DW_KERNEL_SIZES, HEAD_POOLINGS, STAGE_WIDTHS, build_dscnn_model
 from birdnet_stm32.models.frontend import normalize_frontend_name
 from birdnet_stm32.models.profiler import print_profile
 from birdnet_stm32.training.config import ModelConfig
@@ -271,6 +271,14 @@ def get_args() -> argparse.Namespace:
         default=3,
         choices=list(DW_KERNEL_SIZES),
         help="Depthwise kernel size in stages 2-4 (stage 1 stays 3x3)",
+    )
+    parser.add_argument(
+        "--stage_widths",
+        type=int,
+        nargs=4,
+        default=list(STAGE_WIDTHS),
+        metavar="W",
+        help="Base output channels of the four stages, before --alpha",
     )
     parser.add_argument("--frontend_trainable", action="store_true", default=False)
 
@@ -606,6 +614,7 @@ def main():
         depth_multiplier=args.depth_multiplier,
         head_pooling=args.head_pooling,
         dw_kernel_size=args.dw_kernel_size,
+        stage_widths=args.stage_widths,
         embeddings_size=args.embeddings_size,
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
@@ -633,6 +642,7 @@ def main():
         depth_multiplier=args.depth_multiplier,
         head_pooling=args.head_pooling,
         dw_kernel_size=args.dw_kernel_size,
+        stage_widths=list(args.stage_widths),
         num_classes=len(classes),
         class_names=classes,
         frontend_trainable=args.frontend_trainable,

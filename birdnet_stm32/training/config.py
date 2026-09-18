@@ -31,6 +31,7 @@ class ModelConfig:
         depth_multiplier: Block repeat count per stage.
         head_pooling: Pooling head ('gap', 'freq_mean_time_maxmean').
         dw_kernel_size: Depthwise kernel size in stages 2-4 (3 or 5).
+        stage_widths: Base output channels of the four stages, before alpha.
         num_classes: Number of output classes.
         class_names: Ordered list of class label strings.
         frontend_trainable: Whether frontend weights are trainable.
@@ -54,6 +55,7 @@ class ModelConfig:
     depth_multiplier: int = 1
     head_pooling: str = "gap"
     dw_kernel_size: int = 3
+    stage_widths: list[int] = field(default_factory=lambda: [32, 64, 128, 256])
     dropout_rate: float = 0.5
     frontend_trainable: bool = False
 
@@ -99,6 +101,8 @@ class ModelConfig:
             raise ValueError(f"head_pooling '{self.head_pooling}' not in {sorted(self._VALID_HEAD_POOLINGS)}")
         if self.dw_kernel_size not in self._VALID_DW_KERNEL_SIZES:
             raise ValueError(f"dw_kernel_size {self.dw_kernel_size} not in {sorted(self._VALID_DW_KERNEL_SIZES)}")
+        if len(self.stage_widths) != 4 or any(int(w) <= 0 for w in self.stage_widths):
+            raise ValueError(f"stage_widths must be four positive widths, got {self.stage_widths}")
         if not 0 <= self.dropout_rate < 1:
             raise ValueError(f"dropout_rate must be in [0, 1), got {self.dropout_rate}")
         if self.num_classes < 0:

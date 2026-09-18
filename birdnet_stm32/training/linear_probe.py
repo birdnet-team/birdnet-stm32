@@ -168,6 +168,7 @@ def run_linear_probe(args: argparse.Namespace) -> None:
         depth_multiplier=old_cfg.depth_multiplier,
         head_pooling=old_cfg.head_pooling,
         dw_kernel_size=old_cfg.dw_kernel_size,
+        stage_widths=old_cfg.stage_widths,
         num_classes=len(classes),
         class_names=classes,
         frontend_trainable=old_cfg.frontend_trainable,

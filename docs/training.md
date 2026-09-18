@@ -83,6 +83,11 @@ architecture, and neither has been validated on INT8 or on the board yet:
   It adds no weights.
 - **`--dw_kernel_size`**: depthwise kernel size in stages 2–4, `3` (default) or
   `5`. Stage 1 stays 3 × 3.
+- **`--stage_widths`**: base output channels of the four stages before
+  `--alpha`, default `32 64 128 256`. Use it to widen only the late stages,
+  where the feature map is small and extra channels are cheap in activation
+  memory. When the last stage is as wide as `--embeddings_size`, the separate
+  1 × 1 embedding convolution is left out.
 
 !!! tip "Channel alignment"
     Keep channel counts as multiples of 8 for optimal NPU vectorization. The
@@ -300,6 +305,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--depth_multiplier` | 1 | Block repeats per stage |
 | `--head_pooling` | gap | `gap` or `freq_mean_time_maxmean` (experimental) |
 | `--dw_kernel_size` | 3 | Depthwise kernel in stages 2–4: `3` or `5` (experimental) |
+| `--stage_widths` | 32 64 128 256 | Base channels of the four stages, before `--alpha` (experimental) |
 | `--frontend_trainable` | False | Make frontend weights trainable |
 | `--mixup_alpha` | 0.2 | Mixup alpha (0 disables) |
 | `--mixup_probability` | 0.25 | Fraction of batch to mix |

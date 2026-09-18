@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model. The frequency mean is a frozen depthwise convolution: an
   `AveragePool` or `MEAN` over frequency alone falls back to the Cortex-M55.
   Neither option has been validated on INT8 or on the board.
+- **`--stage_widths`** (also a `ModelConfig` field) sets the base channels of
+  the four stages before `--alpha`, so the late stages can be widened alone.
+  The default is the release architecture.
 
 ## [1.3.1] - 2026-09-18
 
