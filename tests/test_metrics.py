@@ -9,17 +9,20 @@ from birdnet_stm32.evaluation.metrics import evaluate
 
 
 class FakeRunner:
-    """Fake model runner that returns fixed predictions."""
+    """Fake model runner that returns fixed predictions, one row per chunk in order.
+
+    Chunks from several files may share a batch, so rows are assigned per sample,
+    not per call.
+    """
 
     def __init__(self, scores: np.ndarray):
         self.scores = scores
         self._idx = 0
 
     def predict(self, x_batch: np.ndarray) -> np.ndarray:
-        batch_size = x_batch.shape[0]
-        out = np.tile(self.scores[self._idx % len(self.scores)], (batch_size, 1))
-        self._idx += batch_size
-        return out.astype(np.float32)
+        rows = (self._idx + np.arange(x_batch.shape[0])) % len(self.scores)
+        self._idx += x_batch.shape[0]
+        return self.scores[rows].astype(np.float32)
 
 
 class TestEvaluateMetrics:

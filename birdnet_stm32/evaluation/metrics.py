@@ -3,6 +3,8 @@
 import os
 import resource
 import time
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from typing import Protocol
 
 import numpy as np
@@ -117,6 +119,49 @@ def make_chunks_for_file(
     return out
 
 
+def _prepared_files(
+    files: list[str],
+    classes: list[str],
+    cfg: dict,
+    frontend: str,
+    mag_scale: str,
+    n_fft: int,
+    overlap: float,
+    num_workers: int | None,
+) -> Iterator[tuple[str, str, np.ndarray | None, list[np.ndarray]]]:
+    """Yield ``(path, label, target, chunks)`` in input order, preprocessed on threads.
+
+    ``target`` is None for files whose folder is neither a class nor noise.
+    """
+    num_classes = len(classes)
+    class_index = {c: i for i, c in enumerate(classes)}
+
+    def prepare(path: str):
+        label_name = os.path.basename(os.path.dirname(path))
+        is_noise = label_name.lower() in NOISE_CLASSES
+        if label_name not in class_index and not is_noise:
+            return path, label_name, None, []
+        target = np.zeros((num_classes,), dtype=np.float32)
+        if not is_noise:
+            target[class_index[label_name]] = 1.0
+        return path, label_name, target, make_chunks_for_file(path, cfg, frontend, mag_scale, n_fft, overlap)
+
+    workers = num_workers if num_workers is not None else min(8, os.cpu_count() or 1)
+    if workers <= 1:
+        yield from map(prepare, files)
+        return
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # Bounded read-ahead keeps memory flat on long file lists.
+        window = 4 * workers
+        futures = [pool.submit(prepare, f) for f in files[:window]]
+        for i in range(len(files)):
+            result = futures[i].result()
+            futures[i] = None
+            if i + window < len(files):
+                futures.append(pool.submit(prepare, files[i + window]))
+            yield result
+
+
 def evaluate(
     model_runner: ModelRunner,
     files: list[str],
@@ -128,6 +173,7 @@ def evaluate(
     mep_beta: float = 10.0,
     measure_latency: bool = False,
     profile_memory: bool = False,
+    num_workers: int | None = None,
 ) -> tuple[dict, list[dict], np.ndarray, np.ndarray]:
     """Run inference per chunk, pool to file-level, and compute metrics.
 
@@ -142,6 +188,8 @@ def evaluate(
         mep_beta: Temperature for LME pooling.
         measure_latency: If True, measure per-chunk inference latency.
         profile_memory: If True, report peak RSS during inference.
+        num_workers: Threads that decode and preprocess files ahead of
+            inference (default: up to 8).
 
     Returns:
         Tuple of (metrics dict, per_file list, y_true array, y_scores array).
@@ -149,7 +197,6 @@ def evaluate(
     frontend = normalize_frontend_name(cfg["audio_frontend"])
     mag_scale = cfg.get("mag_scale", "none")
     n_fft = int(cfg["fft_length"])
-    num_classes = len(classes)
 
     y_true: list[np.ndarray] = []
     y_scores: list[np.ndarray] = []
@@ -159,39 +206,59 @@ def evaluate(
 
     rss_before_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss if profile_memory else 0
 
-    for path in tqdm(files, total=len(files), desc="Evaluating", unit="file"):
-        label_name = os.path.basename(os.path.dirname(path))
-        is_noise = label_name.lower() in NOISE_CLASSES
-        if label_name not in classes and not is_noise:
+    def run_batch(batch: np.ndarray) -> np.ndarray:
+        # Always a full batch, so a runner sees one input shape: no retracing or
+        # interpreter reallocation between files. Padding rows are discarded.
+        n = batch.shape[0]
+        if n < batch_size:
+            batch = np.concatenate([batch, np.zeros((batch_size - n, *batch.shape[1:]), batch.dtype)])
+        if measure_latency:
+            t0 = time.perf_counter()
+            p = model_runner.predict(batch)
+            chunk_latencies_ms.extend([(time.perf_counter() - t0) * 1000 / batch_size] * n)
+        else:
+            p = model_runner.predict(batch)
+        return np.asarray(p)[:n]
+
+    # Files are preprocessed ahead on threads (decode and numpy release the GIL)
+    # and their chunks are batched across file boundaries. Per-chunk predictions
+    # do not depend on batch composition, so results match per-file batching.
+    pending: list[tuple[str, str, np.ndarray, int]] = []  # files awaiting scores
+    buffered: list[np.ndarray] = []  # chunks not yet predicted
+    scored: list[np.ndarray] = []  # predictions not yet assigned to a file
+
+    def drain(final: bool) -> None:
+        nonlocal total_chunks
+        while len(buffered) >= batch_size or (final and buffered):
+            n = min(batch_size, len(buffered))
+            scored.append(run_batch(np.stack(buffered[:n], axis=0)))
+            del buffered[:n]
+            total_chunks += n
+        if not scored:
+            return
+        available = np.concatenate(scored, axis=0)
+        offset = 0
+        while pending and pending[0][3] <= len(available) - offset:
+            path, label_name, target, n = pending.pop(0)
+            pooled = pool_scores(available[offset : offset + n], method=pooling, beta=mep_beta)
+            offset += n
+            y_true.append(target)
+            y_scores.append(pooled)
+            per_file.append({"file": path, "label": label_name, "scores": pooled.tolist()})
+        scored[:] = [available[offset:]] if offset < len(available) else []
+
+    for path, label_name, target, chunks in tqdm(
+        _prepared_files(files, classes, cfg, frontend, mag_scale, n_fft, overlap, num_workers),
+        total=len(files),
+        desc="Evaluating",
+        unit="file",
+    ):
+        if target is None or len(chunks) == 0:
             continue
-        target = np.zeros((num_classes,), dtype=np.float32)
-        if not is_noise:
-            target[classes.index(label_name)] = 1.0
-
-        chunks = make_chunks_for_file(path, cfg, frontend, mag_scale, n_fft, overlap)
-        if len(chunks) == 0:
-            continue
-
-        preds: list[np.ndarray] = []
-        for i in range(0, len(chunks), batch_size):
-            batch = np.stack(chunks[i : i + batch_size], axis=0)
-            if measure_latency:
-                t0 = time.perf_counter()
-                p = model_runner.predict(batch)
-                elapsed_ms = (time.perf_counter() - t0) * 1000
-                per_sample_ms = elapsed_ms / batch.shape[0]
-                chunk_latencies_ms.extend([per_sample_ms] * batch.shape[0])
-            else:
-                p = model_runner.predict(batch)
-            preds.append(p)
-            total_chunks += batch.shape[0]
-        chunk_scores = np.concatenate(preds, axis=0)
-
-        pooled = pool_scores(chunk_scores, method=pooling, beta=mep_beta)
-
-        y_true.append(target)
-        y_scores.append(pooled)
-        per_file.append({"file": path, "label": label_name, "scores": pooled.tolist()})
+        pending.append((path, label_name, target, len(chunks)))
+        buffered.extend(chunks)
+        drain(final=False)
+    drain(final=True)
 
     if len(y_true) == 0:
         raise RuntimeError("No valid test samples found for the provided class set.")

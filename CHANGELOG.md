@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-09-18
+
+Training throughput. A full 50-epoch run of the 1.3 recipe drops from about 8 h
+to about 2.6 h on the development host (one epoch over the 91k-file training set
+plus selection: 186 s instead of ~9.6 min). Two runs can now share the host
+(1.56× the throughput of running them one after the other). Results are
+unchanged: evaluation scores match the previous code to float32 rounding
+(identical for TFLite), and the full test suite passes.
+
+### Fixed
+
+- **Loader workers intermittently deadlocked, leaving training input-starved.**
+  The worker pool forked the TensorFlow training process, and
+  `maxtasksperchild` respawned every worker every 100 files; a child forked
+  while another thread held a lock hung forever. The same seeded run trained at
+  55 or at 390 ms/step (GPU at 6%), in 4 of 7 runs. Workers now start from a
+  `forkserver` that preloads only the new TensorFlow-free
+  `birdnet_stm32.data.worker` module: 5 of 5 runs at 49–57 ms/step.
+
+### Changed
+
+- **`evaluate()` batches chunks across files** and preprocesses files on a
+  thread pool (`num_workers`, default up to 8). It previously ran one small
+  batch per file. `KerasRunner` runs a traced `tf.function` instead of eager
+  op-by-op dispatch, and `TFLiteRunner` uses up to 8 interpreter threads
+  (`num_threads`). On 500 validation files: Keras 29.2 → 3.7 s, INT8 TFLite
+  23.2 → 6.8 s. This speeds up per-epoch selection, QAT selection and the
+  `evaluate` CLI alike.
+- **Keras' per-epoch validation pass reads the `--validation_subset` files**,
+  in `train` and in QAT. It previously re-decoded the entire validation set
+  every epoch for `val_loss` and chunk metrics that select nothing.
+- The training loader hands whole batches to `tf.data` instead of single
+  samples: 32× fewer Python-to-TensorFlow conversions per step, so loading
+  and the training step overlap (loader alone 46.7 → 37.4 ms per batch).
+
 ## [1.3.0] - 2026-09-18
 
 INT8 quality. With the device proven to reproduce the host in 1.2.0, the
