@@ -38,8 +38,10 @@ def test_stft_magnitude_matches_librosa(seed):
 def test_mel_filterbank_matches_librosa_slaney(n_mels, fmin):
     full = librosa.filters.mel(sr=24000, n_fft=512, n_mels=n_mels, fmin=fmin, fmax=12000.0, htk=False, norm="slaney")
     np.testing.assert_allclose(ref.mel_filterbank(24000, 512, n_mels, fmin, 12000.0), full[:, :256], atol=1e-7)
-    # Dropping Nyquist is exact when the top edge is Nyquist.
-    assert np.abs(full[:, 256]).max() == 0.0
+    # Dropping Nyquist loses nothing when the top edge is Nyquist. librosa's
+    # weight there is zero up to rounding, which depends on the CPU: some CI
+    # runners leave ~5e-18 instead of an exact 0.
+    np.testing.assert_allclose(full[:, 256], 0.0, atol=1e-12)
 
 
 def test_mel_scale_round_trip_and_breakpoint():
