@@ -9,8 +9,8 @@ BirdNET-STM32: bird sound classification for edge deployment on STM32N6570-DK wi
 pip install -e ".[dev]"  # needs CUDA-enabled TensorFlow
 
 # Train (outputs .keras + _model_config.json + _labels.txt)
-python -m birdnet_stm32 train --data_path_train data/train --audio_frontend hybrid --mag_scale pwl \
-  --alpha 1 --depth_multiplier 1 --embeddings_size 256 --batch_size 32 --max_samples 500
+# Defaults are the release recipe (raw frontend, 2.5 s, 512-d embedding)
+python -m birdnet_stm32 train --data_path_train data/train --max_samples 500
 
 # Convert to quantized TFLite (outputs _quantized.tflite + _validation_data.npz)
 python -m birdnet_stm32 convert --checkpoint_path checkpoints/best_model.keras \

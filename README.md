@@ -35,10 +35,9 @@ cd birdnet-stm32
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Train
+# Train (the defaults are the release recipe: raw frontend, 2.5 s at 24 kHz)
 python -m birdnet_stm32 train \
-  --data_path_train data/train \
-  --audio_frontend hybrid --mag_scale pwl
+  --data_path_train data/train
 
 # Convert to quantized TFLite
 python -m birdnet_stm32 convert \
@@ -79,7 +78,7 @@ Prepare the SD card as follows:
 1. Format as FAT32.
 2. Create an `audio/` directory at the root.
 3. Copy `.wav` files (mono or stereo, 16-bit PCM) into `audio/`.
-   Each file should be at least as long as the model's chunk duration (default 3 s).
+   Each file should be at least as long as the model's chunk duration (default 2.5 s).
 4. Insert the SD card into the STM32N6570-DK board slot.
 
 See the [full documentation](https://birdnet-team.github.io/birdnet-stm32) for detailed guides on [dataset preparation](https://birdnet-team.github.io/birdnet-stm32/dataset/), [training](https://birdnet-team.github.io/birdnet-stm32/training/), [conversion](https://birdnet-team.github.io/birdnet-stm32/conversion/), [evaluation](https://birdnet-team.github.io/birdnet-stm32/evaluation/), and [deployment](https://birdnet-team.github.io/birdnet-stm32/deployment/).
@@ -91,7 +90,17 @@ the [latest release](https://github.com/birdnet-team/birdnet-stm32/releases/late
 
 ### What's in a bundle
 
-Every file shares one basename, `BirdNET_Tiny_N6_<REGION>_<SPECIES>_V<VERSION>`:
+Every file shares one basename, `BirdNET_Tiny_N6_<REGION>_<SPECIES>_V<VERSION>`,
+with a `_Raw` or `_Hybrid` suffix from 1.3 on, when a release ships both
+frontends:
+
+- **`_Raw`** takes 2.5 s of audio; the whole pipeline runs on the NPU (71 ms per
+  file on the board). This is the reference release model.
+- **`_Hybrid`** takes a spectrogram the firmware computes on the Cortex-M55; it
+  has the better INT8 accuracy, at 117 ms per file. On any other device, compute
+  its input exactly as specified in
+  [Spectrogram Input](https://birdnet-team.github.io/birdnet-stm32/dev/spectrogram-input/).
+
 
 | File | Use it for |
 |---|---|
@@ -147,7 +156,7 @@ for toolchain setup and troubleshooting.
 
 ### Training
 
-- **Audio frontends**: `hybrid` (linear STFT + learned mel mixer), `raw` (waveform → learned Gabor quadrature filterbank), and `librosa` (precomputed mel). All three are supported by the standalone firmware. The `mfcc` and `log_mel` modes were removed in 1.2.0.
+- **Audio frontends**: `raw` (waveform → learned Gabor quadrature filterbank, default), `hybrid` (linear STFT + learned mel mixer), and `librosa` (precomputed mel). All three are supported by the standalone firmware. `hybrid` and `librosa` take an optional `--input_compression` (`sqrt`, `log`) applied before the first INT8 tensor. The `mfcc` and `log_mel` modes were removed in 1.2.0.
 - **Magnitude scaling**: `pwl` (learned piecewise-linear, quantization-friendly) and `none` (pass-through ablation baseline). `pcen` and `db` were removed in 1.2.0 — dB's log op creates exactly the wide dynamic range INT8 cannot hold, and PCEN was never used by a release.
 - **Model**: DS-CNN with configurable width (`--alpha`) and depth (`--depth_multiplier`) built from plain depthwise separable blocks
 - **Augmentation**: Dirichlet multi-source mixup with multi-label union targets for overlapping vocalizations, SpecAugment (on by default), smart crop for long recordings

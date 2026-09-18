@@ -5,15 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.3.0] - Unreleased
+## [1.3.0] - 2026-09-18
 
 INT8 quality. With the device proven to reproduce the host in 1.2.0, the
 remaining float-to-INT8 loss was measured, attributed and cut: for `raw` from
-−0.070 to −0.043 catalog cMAP (INT8 0.5895 → 0.6161), for `hybrid` from −0.042
-to −0.013 with a compressed input (INT8 0.6496, the best measured). `raw` stays
+−0.070 to −0.042 catalog cMAP (INT8 0.5895 → 0.6173), for `hybrid` from −0.042
+to −0.013 with a compressed input (INT8 0.6498, the best measured). `raw` stays
 the release frontend. Options that measurement disproved are removed, and the
 CLI defaults are now the best measured recipe. Full results and the negative
 findings: [INT8 quality](docs/dev/int8-parity-plan.md).
+
+### Models
+
+1.3 ships two bundles of the same 100-output USNE family (90 birds, 10 nuisance
+sounds, dataset v0.2.0). From this release a family basename carries its
+frontend as a suffix when more than one ships.
+
+| | v1.2 | `BirdNET_Tiny_N6_USNE_90_V1.3_Raw` | `BirdNET_Tiny_N6_USNE_90_V1.3_Hybrid` |
+|---|---|---|---|
+| Input | 2.5 s audio | 2.5 s audio | `256 x 256` sqrt-compressed STFT, computed on the M55 |
+| Catalog INT8 cMAP | 0.5895 | **0.6173** | **0.6498** |
+| Detection / false alarm @0.5 | 0.562 / 0.229 | 0.591 / 0.218 | 0.614 / 0.212 |
+| Hard-negative alarms @0.5 | 0.237 | 0.192 | 0.146 |
+| Top-1 / MRR | 0.602 / 0.701 | 0.638 / 0.732 | 0.659 / 0.755 |
+| On-target cos / mae | 0.99965 / 0.00045 | 0.99945 / 0.00063 | 0.99886 / 0.00059 |
+| Board parity (25 files) | 25/25, max 0.054 | 25/25, max 0.043 | 25/25, max 0.032 |
+| Per file on STM32N6570-DK | 71 ms | 71 ms | 117 ms |
+
+Both beat v1.2 at every operating threshold, with more detections *and* fewer
+false alarms. `_Raw` is the v1.2 float model, per-band equalized and QAT-tuned;
+the whole pipeline runs on the NPU. `_Hybrid` is post-training quantized (QAT
+made it worse) and needs its input computed exactly as in
+[Spectrogram Input](docs/dev/spectrogram-input.md); the firmware does this.
+Both carry the backbone/classifier split pair. Release gates were anchored to
+v1.2 before either candidate was measured: INT8 cMAP ≥ 0.6045, detection
+≥ 0.552 and false alarm ≤ 0.234 at 0.5, on-target cos ≥ 0.99 and
+mae ≤ 1/256, and board parity against the host.
 
 ### Added
 
@@ -28,7 +55,7 @@ findings: [INT8 quality](docs/dev/int8-parity-plan.md).
 - **`--input_compression {none,sqrt,log}`** for the `hybrid` and `librosa`
   frontends: compresses the spectrogram where it is computed (host, or the
   Cortex-M55 via the new firmware `spec_compress()`), before the model's first
-  INT8 tensor. `hybrid` + `sqrt`: float 0.6624, INT8 0.6496, board parity 25/25
+  INT8 tensor. `hybrid` + `sqrt`: float 0.6624, INT8 0.6498, board parity 25/25
   with the tightest residual of any model (0.032). Stored in the model config,
   so evaluation, calibration, `board-test` and `gen_app_config.py` follow it.
   Training still ranks chunks by activity on the uncompressed spectrogram.

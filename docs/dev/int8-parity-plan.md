@@ -16,11 +16,16 @@ including the negative ones, so they are not repeated.
   −0.042 to −0.013 cMAP. It is the best INT8 model measured, on every metric.
 - **The `raw` frontend loses its precision in the filterbank.** Per-band gain
   equalization (`equalize`) and a faithful QAT simulation recover about 40% of
-  the loss: catalog INT8 0.5895 → 0.6161.
+  the loss: catalog INT8 0.5895 → 0.6173 (1.3 release).
 - **`raw` stays the release frontend** (the whole pipeline is one NPU model,
   71 ms per file). `hybrid` + `--input_compression sqrt`, quantized
   post-training, is the best INT8 model measured and a verified alternative at
-  117 ms per file.
+  117 ms per file. 1.3.0 ships both (`_Raw`, `_Hybrid`).
+- **The 1.3 raw model is the equalized QAT checkpoint without the later
+  simulation fixes**, converted with the 1.3 graph (magnitude without
+  MIN/MAX). That conversion alone lifted it from 0.6069 to 0.6173, level with
+  the arm that had every fix, and it beats v1.2 at every threshold with fewer
+  false alarms, where that arm raised more.
 
 ## Results
 
@@ -33,8 +38,9 @@ USNE architecture (100 classes, `alpha` 1.0, 512-d embedding).
 | hybrid, v1.2 recipe | 0.6458 | 0.6042 | −0.042 | 113 |
 | raw, equalized, QAT | 0.6595 | 0.6069 | −0.053 | 72 |
 | raw, equalized, QAT with the simulation fixes | 0.6595 | 0.6161 | −0.043 | 71 |
+| **raw, equalized, QAT, 1.3 release conversion** | 0.6595 | **0.6173** | **−0.042** | **71** |
 | precomputed mel (`librosa`), `log` input | 0.6145 | 0.6068 | −0.008 | not timed |
-| **hybrid, `sqrt` input** | **0.6624** | **0.6496** | **−0.013** | **117** |
+| **hybrid, `sqrt` input, 1.3 release conversion** | **0.6624** | **0.6498** | **−0.013** | **117** |
 
 Operational measurement (`measure-operational`, 3 seeds × 3,000 files, max
 pooling), macro detection / false-alarm rate:
@@ -44,7 +50,8 @@ pooling), macro detection / false-alarm rate:
 | raw, v1.2 shipped | 0.598 / 0.331 | 0.562 / 0.229 | 0.481 / 0.133 | 0.237 | 0.602 | 0.701 |
 | raw, equalized | 0.617 / 0.304 | 0.576 / 0.219 | 0.487 / 0.125 | 0.169 | 0.626 | 0.723 |
 | raw, equalized + simulation fixes | 0.629 / 0.315 | 0.596 / 0.235 | 0.523 / 0.141 | 0.293 | 0.634 | 0.728 |
-| **hybrid, `sqrt` input** | **0.655 / 0.290** | **0.613 / 0.213** | **0.527 / 0.132** | **0.146** | **0.659** | **0.755** |
+| **raw, 1.3 release** | **0.630 / 0.301** | **0.591 / 0.218** | **0.502 / 0.127** | **0.192** | **0.638** | **0.732** |
+| **hybrid, `sqrt` input, 1.3 release** | **0.655 / 0.290** | **0.614 / 0.212** | **0.527 / 0.132** | **0.146** | **0.659** | **0.755** |
 
 Device checks (`stedgeai validate --mode target`, gate cos ≥ 0.99 and
 mae ≤ 1/256; `board-test --host_audio_dir` on 25 files):
@@ -54,7 +61,8 @@ mae ≤ 1/256; `board-test --host_audio_dir` on 25 files):
 | raw, v1.2 shipped | 0.999648 | 0.000453 | 25/25, 3 flagged | 0.054 |
 | raw, equalized | 0.999682 | 0.000609 | 25/25, 1 flagged | 0.071 |
 | raw, equalized + simulation fixes | 0.999806 | 0.000359 | **24/25** | 0.075 |
-| **hybrid, `sqrt` input** | 0.998337 | 0.000700 | **25/25, 0 flagged** | **0.032** |
+| **raw, 1.3 release** | 0.999445 | 0.000633 | **25/25, 1 flagged** | 0.043 |
+| **hybrid, `sqrt` input, 1.3 release** | 0.998863 | 0.000588 | **25/25, 0 flagged** | **0.032** |
 
 The one parity failure is a score of 0.476 on the board against 0.551 on the host,
 across the 0.5 detection threshold. All 25 files keep the same top-1. See
@@ -183,12 +191,13 @@ A model counts as validated only after the device checks in
 
 ## Open questions
 
-- **Parity residual on equalized raw models.** Both equalized raw models show
-  NPU-versus-TFLite score gaps of ~0.07 against 0.054 for v1.2, always at
-  mid-range scores. One of them crossed the detection threshold. Whether
-  equalization enlarges requantization rounding could be checked per layer with
-  `stedgeai validate --cut-output-layers`. This only matters if raw is kept as a
-  fallback.
+- **Parity residual on equalized raw models.** The two experiment conversions
+  of equalized raw models showed NPU-versus-TFLite score gaps of ~0.07 against
+  0.054 for v1.2, and one crossed the detection threshold. The 1.3 release
+  conversion of the same checkpoint (no MIN/MAX in the graph) measures 0.043,
+  so the residual looks tied to the old magnitude graph rather than to
+  equalization. Not yet confirmed per layer (`stedgeai validate
+  --cut-output-layers`).
 - **Truly earlier QAT.** Every QAT run fine-tuned a finished float model.
   Training with fake quantization from the start is untested.
 - **Capacity.** The 512-d embedding was chosen before the raw frontend computed
