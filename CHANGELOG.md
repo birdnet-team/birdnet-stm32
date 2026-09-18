@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Two experimental backbone options**, `--head_pooling` and
+  `--dw_kernel_size` (also `ModelConfig` fields). Both default to the release
+  architecture, so existing checkpoints and configs are unchanged.
+  `freq_mean_time_maxmean` averages over frequency, then adds the max and the
+  mean over time, instead of global average pooling. `--dw_kernel_size 5`
+  widens the depthwise kernels in stages 2–4. `stedgeai analyze` keeps both on
+  the NPU, with the same software epochs and activation arena as the release
+  model. The frequency mean is a frozen depthwise convolution: an
+  `AveragePool` or `MEAN` over frequency alone falls back to the Cortex-M55.
+  Neither option has been validated on INT8 or on the board.
+
 ## [1.3.1] - 2026-09-18
 
 Training throughput. A full 50-epoch run of the 1.3 recipe drops from about 8 h

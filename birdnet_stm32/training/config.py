@@ -29,6 +29,8 @@ class ModelConfig:
         embeddings_size: Dense embedding dimension before classifier.
         alpha: Width multiplier for channel counts.
         depth_multiplier: Block repeat count per stage.
+        head_pooling: Pooling head ('gap', 'freq_mean_time_maxmean').
+        dw_kernel_size: Depthwise kernel size in stages 2-4 (3 or 5).
         num_classes: Number of output classes.
         class_names: Ordered list of class label strings.
         frontend_trainable: Whether frontend weights are trainable.
@@ -50,6 +52,8 @@ class ModelConfig:
     embeddings_size: int = 256
     alpha: float = 1.0
     depth_multiplier: int = 1
+    head_pooling: str = "gap"
+    dw_kernel_size: int = 3
     dropout_rate: float = 0.5
     frontend_trainable: bool = False
 
@@ -62,6 +66,8 @@ class ModelConfig:
     _VALID_FRONTENDS = frozenset({"librosa", "hybrid", "raw"})
     _VALID_MAG_SCALES = frozenset({"pwl", "none"})
     _VALID_INPUT_COMPRESSIONS = frozenset({"none", "sqrt", "log"})
+    _VALID_HEAD_POOLINGS = frozenset({"gap", "freq_mean_time_maxmean"})
+    _VALID_DW_KERNEL_SIZES = frozenset({3, 5})
 
     def __post_init__(self) -> None:
         """Validate field values after initialization."""
@@ -89,6 +95,10 @@ class ModelConfig:
             raise ValueError(f"alpha must be positive, got {self.alpha}")
         if self.depth_multiplier < 1:
             raise ValueError(f"depth_multiplier must be >= 1, got {self.depth_multiplier}")
+        if self.head_pooling not in self._VALID_HEAD_POOLINGS:
+            raise ValueError(f"head_pooling '{self.head_pooling}' not in {sorted(self._VALID_HEAD_POOLINGS)}")
+        if self.dw_kernel_size not in self._VALID_DW_KERNEL_SIZES:
+            raise ValueError(f"dw_kernel_size {self.dw_kernel_size} not in {sorted(self._VALID_DW_KERNEL_SIZES)}")
         if not 0 <= self.dropout_rate < 1:
             raise ValueError(f"dropout_rate must be in [0, 1), got {self.dropout_rate}")
         if self.num_classes < 0:

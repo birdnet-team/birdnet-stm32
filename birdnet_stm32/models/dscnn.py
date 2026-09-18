@@ -4,7 +4,8 @@ The model consists of:
 - An AudioFrontendLayer (from frontend.py) for feature extraction.
 - A stem convolution to lift channels.
 - Four stages of depthwise-separable blocks with stride-2 downsampling.
-- Global average pooling, dropout, and a dense classifier head.
+- A pooling head (global average, or frequency mean then time max + mean),
+  dropout, and a dense classifier head.
 
 Scaling is controlled via alpha (width multiplier) and depth_multiplier (block repeats).
 All channel counts are aligned to multiples of 8 for NPU vectorization.
@@ -18,6 +19,9 @@ from tensorflow.keras import layers, regularizers
 from birdnet_stm32.models.blocks import _make_divisible
 from birdnet_stm32.models.frontend import AudioFrontendLayer, hybrid_fft_bins, normalize_frontend_name
 
+HEAD_POOLINGS = ("gap", "freq_mean_time_maxmean")
+DW_KERNEL_SIZES = (3, 5)
+
 
 def ds_conv_block(
     x: tf.Tensor,
@@ -27,8 +31,9 @@ def ds_conv_block(
     name: str = "ds",
     weight_decay: float = 1e-4,
     drop_rate: float = 0.1,
+    dw_kernel_size: int = 3,
 ) -> tf.Tensor:
-    """Depthwise-separable block (3x3 DW + 1x1 PW) with optional residual.
+    """Depthwise-separable block (k x k DW + 1x1 PW) with optional residual.
 
     Args:
         x: Input tensor [B, H, W, C].
@@ -38,6 +43,7 @@ def ds_conv_block(
         name: Base name for layers.
         weight_decay: L2 regularization for DW/PW kernels.
         drop_rate: Spatial dropout rate after PW BN.
+        dw_kernel_size: Square depthwise kernel size.
 
     Returns:
         Output tensor [B, H', W', out_ch].
@@ -46,7 +52,7 @@ def ds_conv_block(
     in_ch = x.shape[-1]
 
     y = layers.DepthwiseConv2D(
-        kernel_size=(3, 3),
+        kernel_size=(dw_kernel_size, dw_kernel_size),
         strides=(stride_f, stride_t),
         padding="same",
         use_bias=False,
@@ -78,6 +84,46 @@ def ds_conv_block(
     return y
 
 
+def pooling_head(x: tf.Tensor, head_pooling: str = "gap") -> tf.Tensor:
+    """Collapse a [B, F, T, C] feature map into a [B, C] embedding vector.
+
+    ``gap`` averages over frequency and time. ``freq_mean_time_maxmean``
+    averages over frequency, then adds the max and the mean over time, so a
+    call that fills a few frames of the window is not averaged away. It adds no
+    trainable weights.
+
+    The frequency mean is a frozen depthwise convolution with a constant
+    1/F kernel rather than a pooling op: on the STM32N6 an average that
+    collapses frequency but keeps time (``AveragePool`` or ``MEAN`` alike) falls
+    back to the Cortex-M55, while the convolution stays on the NPU. For F = 4
+    the kernel value 0.25 is exact on the per-channel INT8 grid.
+
+    Args:
+        x: Feature map with static frequency and time dimensions.
+        head_pooling: One of ``HEAD_POOLINGS``.
+
+    Returns:
+        Embedding tensor [B, C].
+    """
+    if head_pooling == "gap":
+        return layers.GlobalAveragePooling2D(name="gap")(x)
+    if head_pooling == "freq_mean_time_maxmean":
+        n_freq, n_time = int(x.shape[1]), int(x.shape[2])
+        x = layers.DepthwiseConv2D(
+            kernel_size=(n_freq, 1),
+            padding="valid",
+            use_bias=False,
+            depthwise_initializer=tf.keras.initializers.Constant(1.0 / n_freq),
+            trainable=False,
+            name="pool_freq_mean",
+        )(x)
+        t_max = layers.MaxPooling2D(pool_size=(1, n_time), name="pool_time_max")(x)
+        t_mean = layers.GlobalAveragePooling2D(keepdims=True, name="pool_time_mean")(x)
+        x = layers.Add(name="pool_time_maxmean")([t_max, t_mean])
+        return layers.Flatten(name="pool_flatten")(x)
+    raise ValueError(f"head_pooling '{head_pooling}' not in {HEAD_POOLINGS}")
+
+
 def build_dscnn_model(
     num_mels: int,
     spec_width: int,
@@ -93,6 +139,8 @@ def build_dscnn_model(
     frontend_trainable: bool = False,
     dropout_rate: float = 0.5,
     weight_decay: float = 1e-4,
+    head_pooling: str = "gap",
+    dw_kernel_size: int = 3,
 ) -> tf.keras.Model:
     """Build a DS-CNN model with a selectable audio frontend.
 
@@ -111,14 +159,22 @@ def build_dscnn_model(
         frontend_trainable: Make frontend sub-layers trainable.
         dropout_rate: Dropout rate before the classifier head.
         weight_decay: L2 regularization weight for DS-CNN blocks.
+        head_pooling: Pooling head, one of ``HEAD_POOLINGS``.
+        dw_kernel_size: Depthwise kernel size in stages 2-4; stage 1, which
+            carries the largest feature map, stays 3x3.
 
     Returns:
         Uncompiled DS-CNN Keras model.
 
     Raises:
-        ValueError: If raw frontend exceeds STM32N6 input size limit (65536).
+        ValueError: If raw frontend exceeds STM32N6 input size limit (65536),
+            or on an unknown head_pooling or dw_kernel_size.
     """
     audio_frontend = normalize_frontend_name(audio_frontend)
+    if head_pooling not in HEAD_POOLINGS:
+        raise ValueError(f"head_pooling '{head_pooling}' not in {HEAD_POOLINGS}")
+    if dw_kernel_size not in DW_KERNEL_SIZES:
+        raise ValueError(f"dw_kernel_size {dw_kernel_size} not in {DW_KERNEL_SIZES}")
 
     # Enforce STM32N6 constraint for raw frontend
     if audio_frontend == "raw":
@@ -187,10 +243,15 @@ def build_dscnn_model(
     for si, (bf, br, (sf, st)) in enumerate(zip(base_filters, base_repeats, base_strides, strict=True), start=1):
         out_ch = _make_divisible(int(bf * alpha), 8)
         reps = max(1, int(math.ceil(br * depth_multiplier)))
+        k = 3 if si == 1 else dw_kernel_size
 
-        x = ds_conv_block(x, out_ch, stride_f=sf, stride_t=st, name=f"stage{si}_ds1", weight_decay=weight_decay)
+        x = ds_conv_block(
+            x, out_ch, stride_f=sf, stride_t=st, name=f"stage{si}_ds1", weight_decay=weight_decay, dw_kernel_size=k
+        )
         for bi in range(2, reps + 1):
-            x = ds_conv_block(x, out_ch, stride_f=1, stride_t=1, name=f"stage{si}_ds{bi}", weight_decay=weight_decay)
+            x = ds_conv_block(
+                x, out_ch, stride_f=1, stride_t=1, name=f"stage{si}_ds{bi}", weight_decay=weight_decay, dw_kernel_size=k
+            )
 
     # Final 1x1 conv to embeddings
     emb_ch = _make_divisible(int(embeddings_size), 8)
@@ -200,7 +261,7 @@ def build_dscnn_model(
         x = layers.ReLU(max_value=6, name="emb_relu")(x)
 
     # Head
-    x = layers.GlobalAveragePooling2D(name="gap")(x)
+    x = pooling_head(x, head_pooling)
     x = layers.Dropout(dropout_rate, name="dropout")(x)
     # Keep the head in float32: under a mixed_float16 policy a float16 sigmoid
     # saturates well before the loss does, which stalls training.

@@ -89,6 +89,8 @@ class TestBestPathDefaults:
         assert args.sample_rate == 24000
         assert args.chunk_duration == pytest.approx(2.5)
         assert args.embeddings_size == 512
+        assert args.head_pooling == "gap"
+        assert args.dw_kernel_size == 3
         assert args.max_chunks_per_file == 1
         assert args.epochs == 50
         assert args.learning_rate == pytest.approx(5e-4)

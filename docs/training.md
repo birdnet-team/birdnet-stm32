@@ -74,6 +74,16 @@ The DS-CNN is scaled with two knobs:
 - **`--depth_multiplier`**: repeats each depthwise-separable block. Default 1.
   Increase to 2 for deeper models.
 
+Two experimental options change the backbone shape. Both default to the release
+architecture, and neither has been validated on INT8 or on the board yet:
+
+- **`--head_pooling`**: `gap` (default) averages the final feature map over
+  frequency and time. `freq_mean_time_maxmean` averages over frequency, then
+  adds the max and the mean over time, so a short call is not averaged away.
+  It adds no weights.
+- **`--dw_kernel_size`**: depthwise kernel size in stages 2–4, `3` (default) or
+  `5`. Stage 1 stays 3 × 3.
+
 !!! tip "Channel alignment"
     Keep channel counts as multiples of 8 for optimal NPU vectorization. The
     model builder enforces this automatically via `_make_divisible`.
@@ -288,6 +298,8 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--embeddings_size` | 512 | Embedding channels before head |
 | `--alpha` | 1.0 | Model width scaling |
 | `--depth_multiplier` | 1 | Block repeats per stage |
+| `--head_pooling` | gap | `gap` or `freq_mean_time_maxmean` (experimental) |
+| `--dw_kernel_size` | 3 | Depthwise kernel in stages 2–4: `3` or `5` (experimental) |
 | `--frontend_trainable` | False | Make frontend weights trainable |
 | `--mixup_alpha` | 0.2 | Mixup alpha (0 disables) |
 | `--mixup_probability` | 0.25 | Fraction of batch to mix |

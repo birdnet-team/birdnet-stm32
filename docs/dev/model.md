@@ -54,11 +54,20 @@ architecture the one you got unless you opted out.
 All channel counts are rounded to the nearest multiple of 8 via
 `_make_divisible(channels, 8)` (defined in `birdnet_stm32/models/blocks.py`).
 
+Depthwise kernels are 3 × 3. `dw_kernel_size=5` widens them in stages 2–4;
+stage 1 carries the largest feature map and stays 3 × 3.
+
 ### Head
 
 After the final stage:
 
-1. **Global Average Pooling**
+1. **Pooling** (`head_pooling`):
+    - `gap` (default): global average pooling over frequency and time.
+    - `freq_mean_time_maxmean`: mean over frequency, then the sum of max and
+      mean over time, flattened. No trainable weights. The frequency mean is a
+      frozen depthwise convolution with a constant 1/F kernel, because the N6
+      runs an average that collapses frequency but keeps time (`AveragePool`
+      or `MEAN`) on the Cortex-M55; the convolution stays on the NPU.
 2. **Dropout** (0.5)
 3. **Dense** with sigmoid activation → `[B, num_classes]`
 
