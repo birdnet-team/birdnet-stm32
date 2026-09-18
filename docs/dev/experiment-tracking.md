@@ -27,7 +27,8 @@ Public release names are separate from experiment names. Use
 a version 1.2 model for the northeastern United States covering 60 bird species
 would be `BirdNET_Tiny_N6_USNE_60_V1.2`. The species count covers bird species
 only and excludes nuisance/background outputs, so a model with that name may
-well have more than 60 outputs. Precision-bearing
+well have more than 60 outputs. A release shipping several frontends suffixes
+each family basename with the frontend (`_Raw`, `_Hybrid`). Precision-bearing
 release files append `_FP32`, `_FP16`, or `_INT8` to that family basename.
 
 ## Evaluation run naming

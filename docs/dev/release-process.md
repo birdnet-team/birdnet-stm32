@@ -28,7 +28,11 @@ BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>
 ```
 
 So `BirdNET_Tiny_N6_USNE_60_V1.2` would identify a version 1.2 model for the
-northeastern United States covering 60 bird species. `SPECIES_COUNT` does not
+northeastern United States covering 60 bird species. When one release ships the
+same model family with more than one frontend, every family basename carries
+the frontend as a suffix: `BirdNET_Tiny_N6_USNE_90_V1.3_Raw` and
+`BirdNET_Tiny_N6_USNE_90_V1.3_Hybrid`. Each is its own bundle and its own
+contract; files never mix between them. `SPECIES_COUNT` does not
 include nuisance or background outputs; those remain in the ordered labels and
 model config, so the output count is generally higher than the name suggests.
 
@@ -142,7 +146,7 @@ nothing else. It must contain exactly:
 | File | Purpose |
 |---|---|
 | `<basename>_FP32.keras` | Deployable FP32 Keras checkpoint used for exports |
-| `<basename>_original_FP32.keras` | Untouched FP32 training checkpoint when QAT was used |
+| `<basename>_original_FP32.keras` | Pre-QAT FP32 checkpoint; only when QAT changed the release checkpoint |
 | `<basename>_INT8.tflite` | Validated full-INT8 model with float32 I/O |
 | `<basename>_FP32.onnx` | Validated FP32 ONNX export |
 | `<basename>_model_config.json` | Input, frontend, architecture, and class contract |

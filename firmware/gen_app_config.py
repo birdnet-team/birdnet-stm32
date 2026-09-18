@@ -27,6 +27,13 @@ _FRONTEND_MAP = {
     "librosa": "APP_FRONTEND_PRECOMPUTED",
 }
 
+# input_compression string -> spec_compress() mode in audio_stft.h
+_COMPRESSION_MAP = {
+    "none": "SPEC_COMPRESS_NONE",
+    "sqrt": "SPEC_COMPRESS_SQRT",
+    "log": "SPEC_COMPRESS_LOG",
+}
+
 
 def generate_app_config_h(model_cfg: dict, num_classes: int) -> str:
     """Return the full contents of ``app_config.h``."""
@@ -37,6 +44,11 @@ def generate_app_config_h(model_cfg: dict, num_classes: int) -> str:
     sw = int(model_cfg["spec_width"])
     num_mels = int(model_cfg.get("num_mels", 64))
     chunk_samples = int(sr * chunk)
+
+    compression = model_cfg.get("input_compression", "none")
+    if compression not in _COMPRESSION_MAP:
+        raise ValueError(f"Unsupported input_compression for firmware: {compression!r}")
+    compression_define = _COMPRESSION_MAP[compression]
 
     frontend_str = model_cfg.get("audio_frontend", "hybrid")
     frontend_define = _FRONTEND_MAP.get(frontend_str, "APP_FRONTEND_HYBRID")
@@ -107,6 +119,9 @@ def generate_app_config_h(model_cfg: dict, num_classes: int) -> str:
 #define APP_FRONTEND_RAW          1
 #define APP_FRONTEND_PRECOMPUTED  2
 #define APP_AUDIO_FRONTEND        {frontend_define}
+
+/* --- Input compression (hybrid / precomputed), before min-max normalization */
+#define APP_INPUT_COMPRESSION     {compression_define}
 
 /* --- SD card paths -------------------------------------------------------- */
 #define APP_AUDIO_DIR         "audio"

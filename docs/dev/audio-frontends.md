@@ -12,13 +12,13 @@ no release ever used them.
 flowchart LR
     subgraph librosa ["librosa (precomputed mel)"]
         direction LR
-        L1["WAV"] --> L2["Offline\nlibrosa mel"] --> L3["Mel spectrogram\n→ model"]
+        L1["WAV"] --> L2["Mel spectrogram\nhost or M55"] --> L3["→ model"]
     end
-    subgraph hybrid ["hybrid (default)"]
+    subgraph hybrid ["hybrid"]
         direction LR
         H1["WAV"] --> H2["Linear STFT |X|\nhost or M55"] --> H3["Learned mel\nConv2D 1×1"] --> H4["Mag scaling\n→ CNN"]
     end
-    subgraph raw ["raw (waveform)"]
+    subgraph raw ["raw (waveform, default)"]
         direction LR
         R1["WAV"] --> R2["Gabor quadrature bank\nConv2D + BN + ReLU"] --> R3["Mag scaling\n→ CNN"]
     end
@@ -28,8 +28,10 @@ flowchart LR
 
 ### `librosa` (precomputed)
 
-Spectrograms are computed offline using librosa before being fed to the model.
-The model receives a ready-made mel spectrogram tensor.
+Mel spectrograms are computed outside the model (on the host, or on the
+Cortex-M55 in the firmware) and fed as a ready-made tensor. The mode keeps its
+historical name; librosa is no longer used: the computation is
+`birdnet_stm32.audio.stft`, specified in [Spectrogram Input](spectrogram-input.md).
 
 - **Input**: `[B, num_mels, spec_width, 1]` mel spectrogram
 - **In-graph ops**: magnitude scaling only (if enabled)
@@ -37,20 +39,22 @@ The model receives a ready-made mel spectrogram tensor.
 - **Cons**: frontend is not part of the TFLite model; preprocessing must be
   replicated on-device
 
-### `hybrid` (default)
+### `hybrid`
 
 The model receives a linear magnitude STFT (`|STFT|`). A 1×1 Conv2D applies a
 learned mel filter bank, optionally with magnitude scaling.
 
 - **Input**: `[B, fft_length // 2, spec_width, 1]` linear magnitude spectrogram
 - **In-graph ops**: mel projection (Conv2D) + magnitude scaling
-- **Mel initialization**: weights seeded from a librosa Slaney mel basis
+- **Mel initialization**: weights seeded from the Slaney mel basis in `birdnet_stm32.audio.stft`
 - **Trainable**: optionally via `--frontend_trainable`
-- **Pros**: mel projection is trainable and travels with the model; good default
+- **Pros**: mel projection is trainable and travels with the model; with
+  `--input_compression sqrt`, the best INT8 accuracy measured
 - **Cons**: requires STFT outside the graph (host-side for training/evaluation,
-  Cortex-M55 in the standalone firmware)
+  Cortex-M55 in the standalone firmware). Any other device has to reproduce it
+  exactly: see [Spectrogram Input](spectrogram-input.md)
 
-### `raw` (waveform)
+### `raw` (waveform, default)
 
 The model receives raw waveform samples and computes the spectrogram itself
 with a learned **Gabor quadrature filterbank**.
@@ -163,20 +167,10 @@ before the CNN body. It compresses the dynamic range of spectrogram values.
 Learned piecewise-linear compression using depthwise convolution branches.
 Quantizes cleanly — no log operations, no running statistics.
 
-### `cpwl` (compressive piecewise-linear) — experimental
-
-The same hinge sum as `pwl`, with the same ops and layer names, but held
-compressive: the linear gain and hinge input weights are constrained to be
-non-negative and the hinge slopes non-positive, and the initial curve is
-log-like (slope 1.0, falling to 0.55, 0.25 and 0.10 at the hinges) rather than
-`pwl`'s expansive one (0.40 rising to 0.88).
-
-The reason is INT8 resolution. `pwl` starts expansive and stays so, which
-gives its output a heavy upper tail: in the 25-species raw model (V12), 50, 90
-and 99% of the layer's output values fall into 1, 3 and 14 of the 255 INT8
-codes, because the rare peaks set the quantization range. A concave curve
-squeezes that tail, so typical values keep more codes. Whether that closes the
-float-to-INT8 gap is being measured; until then `pwl` stays the default.
+A compressive variant (`cpwl`, concave and monotone) was removed in 1.3.0: it
+gave the best float accuracy of any raw model and the worst INT8 accuracy. To
+compress a spectrogram input, use `--input_compression` instead: it runs before
+the first INT8 tensor, where compression helps.
 
 ### `none`
 

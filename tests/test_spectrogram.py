@@ -46,6 +46,35 @@ class TestGetSpectrogram:
         with pytest.raises(ValueError, match="magnitude scale"):
             get_spectrogram_from_audio(sine_wave, mag_scale=mag_scale)
 
+    @pytest.mark.parametrize("compression", ["sqrt", "log"])
+    def test_compression_lifts_quiet_values(self, sine_wave, sample_rate, fft_length, compression):
+        """Compression spends more of the [0, 1] range on low magnitudes."""
+        audio = sine_wave + 0.01 * np.random.default_rng(0).standard_normal(sine_wave.shape).astype(np.float32)
+        plain = get_spectrogram_from_audio(audio, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=64)
+        squeezed = get_spectrogram_from_audio(
+            audio, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=64, compression=compression
+        )
+        assert squeezed.shape == plain.shape
+        assert squeezed.min() >= 0.0 and squeezed.max() <= 1.0 + 1e-6
+        assert np.median(squeezed) > np.median(plain)
+
+    def test_log_floor_bounds_dynamic_range(self, sine_wave, sample_rate, fft_length):
+        """Everything more than LOG_FLOOR_DB below the peak maps to exactly 0."""
+        spec = get_spectrogram_from_audio(
+            sine_wave, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=64, compression="log"
+        )
+        assert np.isclose(spec.min(), 0.0) and np.isclose(spec.max(), 1.0)
+
+    def test_log_compression_of_silence_is_finite(self, silence, sample_rate, fft_length):
+        spec = get_spectrogram_from_audio(
+            silence, sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=64, compression="log"
+        )
+        assert np.all(np.isfinite(spec))
+
+    def test_unknown_compression_fails(self, sine_wave):
+        with pytest.raises(ValueError, match="input compression"):
+            get_spectrogram_from_audio(sine_wave, compression="db")
+
 
 class TestNormalize:
     """Tests for the normalize function."""
@@ -62,3 +91,18 @@ class TestNormalize:
         data = np.ones((64, 128), dtype=np.float32) * 5.0
         normed = normalize(data)
         assert np.allclose(normed, 0.0, atol=1e-6)
+
+
+def test_with_uncompressed_pairs_match_single_calls(sine_wave, sample_rate, fft_length):
+    compressed, plain = get_spectrogram_from_audio(
+        sine_wave, sample_rate, n_fft=fft_length, mel_bins=32, spec_width=64, compression="log", with_uncompressed=True
+    )
+    assert np.array_equal(
+        compressed,
+        get_spectrogram_from_audio(
+            sine_wave, sample_rate, n_fft=fft_length, mel_bins=32, spec_width=64, compression="log"
+        ),
+    )
+    assert np.array_equal(
+        plain, get_spectrogram_from_audio(sine_wave, sample_rate, n_fft=fft_length, mel_bins=32, spec_width=64)
+    )

@@ -170,6 +170,15 @@ _LOADER_TUNE_ADJUST_EVERY = 200
 _LOADER_TARGET_FREE_GB = 8.0
 
 
+# Schedule defaults per step: the recipes behind the released and best measured
+# models (docs/dev/int8-parity-plan.md).
+TRAIN_EPOCHS = 50
+TRAIN_LEARNING_RATE = 5e-4
+QAT_EPOCHS = 8
+QAT_LEARNING_RATE = 2e-5
+PROBE_LEARNING_RATE = 1e-3
+
+
 def get_args() -> argparse.Namespace:
     """Parse command-line arguments for training.
 
@@ -213,7 +222,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--num_mels", type=int, default=64, help="Number of mel bins")
     parser.add_argument("--spec_width", type=int, default=256, help="Spectrogram width (frames)")
     parser.add_argument("--fft_length", type=int, default=512, help="FFT length")
-    parser.add_argument("--chunk_duration", type=float, default=3, help="Audio chunk duration (seconds)")
+    parser.add_argument("--chunk_duration", type=float, default=2.5, help="Audio chunk duration (seconds)")
     parser.add_argument(
         "--max_duration",
         type=int,
@@ -226,20 +235,27 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         "--audio_frontend",
         type=str,
-        default="hybrid",
-        choices=["hybrid", "raw", "librosa"],
+        default="raw",
+        choices=["raw", "hybrid", "librosa"],
         help="Audio frontend mode",
     )
     parser.add_argument(
         "--mag_scale",
         type=str,
         default="pwl",
-        choices=["pwl", "cpwl", "none"],
-        help="Magnitude scaling: learned hinge sum (pwl), the same held compressive (cpwl), or none",
+        choices=["pwl", "none"],
+        help="Magnitude scaling: learned hinge sum (pwl) or none",
+    )
+    parser.add_argument(
+        "--input_compression",
+        type=str,
+        default="none",
+        choices=["none", "sqrt", "log"],
+        help="Compress a librosa/hybrid spectrogram input before it is quantized (computed on host/M55)",
     )
 
     # -- Model architecture ---------------------------------------------------
-    parser.add_argument("--embeddings_size", type=int, default=256, help="Embeddings layer size")
+    parser.add_argument("--embeddings_size", type=int, default=512, help="Embeddings layer size")
     parser.add_argument("--alpha", type=float, default=1.0, help="Width multiplier")
     parser.add_argument("--depth_multiplier", type=int, default=1, help="Depth multiplier")
     parser.add_argument("--frontend_trainable", action="store_true", default=False)
@@ -257,7 +273,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         "--max_chunks_per_file",
         type=int,
-        default=3,
+        default=1,
         help="Max salient chunks to extract per file open (reduces redundant I/O for long recordings)",
     )
     parser.add_argument(
@@ -266,8 +282,21 @@ def get_args() -> argparse.Namespace:
         default=2,
         help="Loader prefetch queue depth in batches (higher = faster, but more RAM)",
     )
-    parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
-    parser.add_argument("--learning_rate", type=float, default=0.001, help="Initial learning rate")
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=None,
+        help=f"Number of epochs (default: {TRAIN_EPOCHS}; {QAT_EPOCHS} with --qat)",
+    )
+    parser.add_argument(
+        "--learning_rate",
+        type=float,
+        default=None,
+        help=(
+            f"Initial learning rate (default: {TRAIN_LEARNING_RATE:g}; {QAT_LEARNING_RATE:g} with --qat, "
+            f"{PROBE_LEARNING_RATE:g} with --linear_probe)"
+        ),
+    )
     parser.add_argument("--dropout", type=float, default=0.5, help="Dropout rate before classifier head")
     parser.add_argument("--optimizer", type=str, default="adam", choices=["adam", "sgd", "adamw"], help="Optimizer")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay (adamw only)")
@@ -321,12 +350,6 @@ def get_args() -> argparse.Namespace:
         help="Exact stratified samples used for QAT ranges and final INT8 calibration",
     )
     parser.add_argument(
-        "--qat_calibration_percentile",
-        type=float,
-        default=100.0,
-        help="Percentile in (50, 100] for persistent internal frontend bounds; 100 leaves it unbounded.",
-    )
-    parser.add_argument(
         "--qat_distillation_weight",
         type=float,
         default=1.0,
@@ -350,6 +373,12 @@ def get_args() -> argparse.Namespace:
         default=0.10,
         help="Fraction of each QAT batch included in the worst-sample loss",
     )
+    parser.add_argument(
+        "--qat_range_refresh",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Recalibrate QAT activation ranges on the current weights after every epoch",
+    )
     # -- Linear probing -------------------------------------------------------
     parser.add_argument(
         "--linear_probe",
@@ -372,6 +401,15 @@ def get_args() -> argparse.Namespace:
     exclusive = [name for name in ("qat", "linear_probe") if getattr(args, name)]
     if len(exclusive) > 1:
         raise SystemExit(f"Options are mutually exclusive, run them as separate steps: {exclusive}")
+
+    # Each step has its own best schedule: fine-tuning at the training rate
+    # destroys a converged model (measured for QAT at 2e-4).
+    if args.epochs is None:
+        args.epochs = QAT_EPOCHS if args.qat else TRAIN_EPOCHS
+    if args.learning_rate is None:
+        args.learning_rate = (
+            QAT_LEARNING_RATE if args.qat else PROBE_LEARNING_RATE if args.linear_probe else TRAIN_LEARNING_RATE
+        )
 
     return args
 
@@ -467,6 +505,7 @@ def main():
         mel_bins=args.num_mels,
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
+        input_compression=args.input_compression,
         prefetch_batches=args.prefetch_batches,
     )
 
@@ -561,6 +600,7 @@ def main():
         hop_length=hop_length,
         audio_frontend=args.audio_frontend,
         mag_scale=args.mag_scale,
+        input_compression=args.input_compression,
         embeddings_size=args.embeddings_size,
         alpha=args.alpha,
         depth_multiplier=args.depth_multiplier,

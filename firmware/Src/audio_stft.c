@@ -12,6 +12,11 @@
  * natively and checks it against the host.
  */
 
+/* Hot path on the Cortex-M55; see fft.c. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC optimize("O3")
+#endif
+
 #include "audio_stft.h"
 #include "fft.h"
 #include <string.h>
@@ -77,6 +82,21 @@ void stft_magnitude(const float *audio, uint32_t chunk_samples,
             float im = fft_buf[2 * f + 1];
             out[f * spec_width + t] = sqrtf(re * re + im * im);
         }
+    }
+}
+
+void spec_compress(float *spec, uint32_t count, int mode)
+{
+    if (mode == SPEC_COMPRESS_SQRT) {
+        for (uint32_t i = 0; i < count; i++)
+            spec[i] = sqrtf(spec[i]);
+    } else if (mode == SPEC_COMPRESS_LOG) {
+        float peak = 0.0f;
+        for (uint32_t i = 0; i < count; i++)
+            if (spec[i] > peak) peak = spec[i];
+        float floor_value = (peak > 1e-10f ? peak : 1e-10f) * powf(10.0f, -SPEC_LOG_FLOOR_DB / 20.0f);
+        for (uint32_t i = 0; i < count; i++)
+            spec[i] = logf(spec[i] > floor_value ? spec[i] : floor_value);
     }
 }
 

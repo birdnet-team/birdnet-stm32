@@ -9,6 +9,12 @@
  * Twiddle factors are precomputed at init time (once).
  */
 
+/* This file and audio_stft.c are the hybrid frontend's hot path: 256 FFTs per
+ * inference on the Cortex-M55. Build them for speed whatever the project OPT. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC optimize("O3")
+#endif
+
 #include "fft.h"
 #include <math.h>
 #include <string.h>
@@ -26,6 +32,12 @@
  * Only need N/2 = 128 values (for butterfly stages). */
 static float tw_re[NCPLX / 2];
 static float tw_im[NCPLX / 2];
+/* Unpack twiddles W(k, NREAL) = exp(-j*2*PI*k/NREAL) for k < NCPLX/2. Computed
+ * once with the same expressions the unpack loop used to evaluate per frame
+ * (256 cosf/sinf pairs per FFT, 256 FFTs per inference), so results are
+ * bit-identical. */
+static float un_re[NCPLX / 2];
+static float un_im[NCPLX / 2];
 static int   tw_initialized = 0;
 
 /* Bit-reversal permutation table for N = 256 */
@@ -40,6 +52,11 @@ static void init_twiddles(void)
         float angle = 2.0f * M_PI * (float)k / (float)NCPLX;
         tw_re[k] =  cosf(angle);
         tw_im[k] = -sinf(angle);
+    }
+    for (int k = 1; k < NCPLX / 2; k++) {
+        float angle = 2.0f * M_PI * (float)k / (float)NREAL;
+        un_re[k] = cosf(angle);
+        un_im[k] = -sinf(angle);
     }
 
     /* Bit-reversal table for NCPLX = 256 = 2^8 */
@@ -148,9 +165,8 @@ void fft_512_real(float *buf)
         float xkci = buf[2 * kc + 1];
 
         /* Twiddle factor W(k, NREAL) = exp(-j * 2*PI*k / 512) */
-        float angle = 2.0f * M_PI * (float)k / (float)NREAL;
-        float wr = cosf(angle);
-        float wi = -sinf(angle);
+        float wr = un_re[k];
+        float wi = un_im[k];
 
         /* Even part: Ae = 0.5 * (X[k] + X*[NCPLX-k]) */
         float ae_r = 0.5f * (xkr + xkcr);

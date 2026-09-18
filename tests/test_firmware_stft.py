@@ -25,6 +25,7 @@ HARNESS = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include "audio_stft.h"
+#include "audio_mel.h"
 int main(int argc, char **argv) {
     uint32_t n = atoi(argv[3]), fft = atoi(argv[4]), hop = atoi(argv[5]), w = atoi(argv[6]);
     float *a = malloc(n * sizeof(float)), *o = calloc((fft / 2) * w, sizeof(float));
@@ -32,9 +33,21 @@ int main(int argc, char **argv) {
     if (fread(a, sizeof(float), n, f) != n) return 2;
     fclose(f);
     stft_magnitude(a, n, fft, hop, w, o);
-    spec_minmax_normalize(o, (fft / 2) * w);
+    int mode = argc > 7 ? atoi(argv[7]) : SPEC_COMPRESS_NONE;
+    uint32_t mels = argc > 8 ? atoi(argv[8]) : 0, rows = fft / 2;
+    if (mels > 0) {
+        /* The precomputed path, as main.c: mel_init(bins, mels, sr, 150, sr / 2). */
+        uint32_t sr = atoi(argv[9]);
+        float *m = calloc(mels * w, sizeof(float));
+        mel_init(fft / 2, mels, sr, 150.0f, (float)sr / 2.0f);
+        mel_filterbank(o, fft / 2, w, mels, m);
+        o = m;
+        rows = mels;
+    }
+    spec_compress(o, rows * w, mode);
+    spec_minmax_normalize(o, rows * w);
     f = fopen(argv[2], "wb");
-    fwrite(o, sizeof(float), (fft / 2) * w, f);
+    fwrite(o, sizeof(float), rows * w, f);
     fclose(f);
     return 0;
 }
@@ -58,6 +71,7 @@ def harness(tmp_path_factory):
             str(work / "harness.c"),
             str(FIRMWARE / "Src" / "audio_stft.c"),
             str(FIRMWARE / "Src" / "fft.c"),
+            str(FIRMWARE / "Src" / "audio_mel.c"),
             f"-I{FIRMWARE / 'Inc'}",
             "-lm",
         ],
@@ -66,7 +80,7 @@ def harness(tmp_path_factory):
     return exe, work
 
 
-def _firmware_spectrogram(harness, audio, fft_length, hop, spec_width):
+def _firmware_spectrogram(harness, audio, fft_length, hop, spec_width, compression=0, mels=0, sample_rate=24000):
     exe, work = harness
     audio.astype(np.float32).tofile(work / "in.bin")
     subprocess.run(
@@ -78,10 +92,13 @@ def _firmware_spectrogram(harness, audio, fft_length, hop, spec_width):
             str(fft_length),
             str(hop),
             str(spec_width),
+            str(compression),
+            str(mels),
+            str(sample_rate),
         ],
         check=True,
     )
-    return np.fromfile(work / "out.bin", np.float32).reshape(fft_length // 2, spec_width)
+    return np.fromfile(work / "out.bin", np.float32).reshape(mels or fft_length // 2, spec_width)
 
 
 def _bird_like(seed, samples=60000, sample_rate=24000, gain=0.3):
@@ -120,3 +137,52 @@ def test_normalization_makes_the_input_independent_of_level(harness):
     loud = _firmware_spectrogram(harness, audio, 512, 234, 256)
     quiet = _firmware_spectrogram(harness, audio * 0.05, 512, 234, 256)
     assert np.abs(loud - quiet).max() < 1e-4
+
+
+@pytest.mark.parametrize(("compression", "mode"), [("sqrt", 1), ("log", 2)])
+@pytest.mark.parametrize("seed", [0, 1])
+def test_firmware_input_compression_matches_the_host(harness, compression, mode, seed):
+    sample_rate, fft_length, spec_width = 24000, 512, 256
+    audio = _bird_like(seed)
+    hop = len(audio) // spec_width
+    host = get_spectrogram_from_audio(
+        audio, sample_rate=sample_rate, n_fft=fft_length, mel_bins=-1, spec_width=spec_width, compression=compression
+    )
+    device = _firmware_spectrogram(harness, audio, fft_length, hop, spec_width, compression=mode)
+    # Compression lifts quiet bins, so round-off there is no longer negligible;
+    # still hold the whole input well under one INT8 step (1/255).
+    assert np.abs(host - device).max() < 1e-3
+
+
+def test_generated_app_config_carries_input_compression():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("gen_app_config", FIRMWARE / "gen_app_config.py")
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    cfg = {
+        "sample_rate": 24000,
+        "chunk_duration": 2.5,
+        "fft_length": 512,
+        "spec_width": 256,
+        "audio_frontend": "hybrid",
+    }
+    assert "#define APP_INPUT_COMPRESSION     SPEC_COMPRESS_NONE" in gen.generate_app_config_h(cfg, 100)
+    text = gen.generate_app_config_h({**cfg, "input_compression": "sqrt"}, 100)
+    assert "#define APP_INPUT_COMPRESSION     SPEC_COMPRESS_SQRT" in text
+    with pytest.raises(ValueError, match="input_compression"):
+        gen.generate_app_config_h({**cfg, "input_compression": "db"}, 100)
+
+
+@pytest.mark.parametrize(("compression", "mode"), [("none", 0), ("log", 2)])
+def test_firmware_precomputed_mel_matches_the_host(harness, compression, mode):
+    """The precomputed (log-)mel input: firmware audio_mel.c against the host reference."""
+    sample_rate, fft_length, spec_width, mels = 24000, 512, 256, 64
+    audio = _bird_like(4)
+    hop = len(audio) // spec_width
+    host = get_spectrogram_from_audio(
+        audio, sample_rate=sample_rate, n_fft=fft_length, mel_bins=mels, spec_width=spec_width, compression=compression
+    )
+    device = _firmware_spectrogram(harness, audio, fft_length, hop, spec_width, compression=mode, mels=mels)
+    assert device.shape == host.shape
+    assert np.abs(host - device).max() < 1e-3

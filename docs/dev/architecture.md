@@ -66,8 +66,10 @@ flowchart LR
 - **PWL magnitude scaling**: quantizes cleanly — no log ops, no running
   statistics. PCEN and dB were removed in 1.2.0; dB's log op produces exactly
   the wide dynamic range INT8 cannot hold.
-- **Hybrid as default frontend**: Keeps the STFT outside the model graph while
-  learning the mel projection in-graph. Training/evaluation compute STFT on
-  the host; standalone firmware computes it on the Cortex-M55.
+- **Raw as default frontend**: The whole pipeline, filterbank included, is one
+  model on the NPU, so there is no pre-processing to reproduce on the device.
+  `hybrid` keeps the STFT outside the graph (host, or the Cortex-M55) and
+  quantizes better with `--input_compression sqrt`, at 117 ms per file against
+  71 ms; see [INT8 quality](int8-parity-plan.md).
 - **Channel alignment to 8**: The N6 NPU vectorizes in groups of 8. Misaligned
   channels waste compute cycles or fail compilation.

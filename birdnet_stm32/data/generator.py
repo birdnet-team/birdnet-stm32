@@ -45,6 +45,13 @@ def _init_worker(cfg: dict) -> None:
     if threading.current_thread() is threading.main_thread():
         with contextlib.suppress(ValueError):
             signal.signal(signal.SIGINT, signal.SIG_IGN)
+    # One BLAS thread per worker: the pool provides the parallelism. Left at the
+    # default, every worker starts a full OpenBLAS pool for the mel matrix
+    # product, and 8 workers x 16 threads thrash a 16-core host.
+    with contextlib.suppress(ImportError):
+        from threadpoolctl import threadpool_limits
+
+        threadpool_limits(1)
     global _worker_cfg  # noqa: PLW0603
     _worker_cfg = cfg
 
@@ -79,6 +86,7 @@ def _process_file(path: str):
     mel_bins = cfg["mel_bins"]
     spec_width = cfg["spec_width"]
     mag_scale = cfg["mag_scale"]
+    compression = cfg.get("input_compression", "none")
     load_duration = cfg.get("load_duration", cfg.get("max_duration"))
     snr_threshold = cfg["snr_threshold"]
     random_offset = cfg["random_offset"]
@@ -113,8 +121,11 @@ def _process_file(path: str):
         return None
 
     # --- Compute spectrograms / raw features for all chunks ---
+    # Chunks are ranked on the uncompressed spectrogram whatever the model input
+    # is, so input compression changes the representation and not which chunks
+    # a file contributes.
     if audio_frontend == "librosa":
-        features = [
+        pairs = [
             get_spectrogram_from_audio(
                 chunk,
                 sr,
@@ -122,23 +133,36 @@ def _process_file(path: str):
                 mel_bins=mel_bins,
                 spec_width=spec_width,
                 mag_scale=mag_scale,
+                compression=compression,
+                with_uncompressed=True,
             )
             for chunk in audio_chunks
         ]
     elif audio_frontend == "hybrid":
-        features = [
-            get_spectrogram_from_audio(chunk, sr, n_fft=fft_length, mel_bins=-1, spec_width=spec_width)
+        pairs = [
+            get_spectrogram_from_audio(
+                chunk,
+                sr,
+                n_fft=fft_length,
+                mel_bins=-1,
+                spec_width=spec_width,
+                compression=compression,
+                with_uncompressed=True,
+            )
             for chunk in audio_chunks
         ]
     elif audio_frontend == "raw":
-        features = audio_chunks
+        pairs = [(chunk, chunk) for chunk in audio_chunks]
     else:
         raise ValueError(f"Invalid audio frontend: {audio_frontend}")
+    features = [ranked for _, ranked in pairs]
+    model_input = {id(ranked): item for item, ranked in pairs}
 
     # Activity-sort: most salient first
     pool = sort_by_activity(features, threshold=snr_threshold) or features
     if not pool:
         return None
+    pool = [model_input[id(ranked)] for ranked in pool]
 
     # Take up to max_chunks salient items
     selected = pool[:max_chunks]
@@ -264,6 +288,7 @@ def load_dataset(
     fft_length = kwargs.get("fft_length", 512)
     chunk_len = int(sr * cd)
     mag_scale = kwargs.get("mag_scale", "pwl")
+    input_compression = kwargs.get("input_compression", "none")
     max_duration = kwargs.get("max_duration", 60)
     snr_threshold = kwargs.get("snr_threshold", 0.5)
     random_offset = kwargs.get("random_offset", False)
@@ -310,6 +335,7 @@ def load_dataset(
         "mel_bins": mel_bins,
         "spec_width": spec_width,
         "mag_scale": mag_scale,
+        "input_compression": input_compression,
         "max_duration": max_duration,
         "snr_threshold": snr_threshold,
         "random_offset": random_offset,

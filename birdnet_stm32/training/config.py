@@ -23,7 +23,9 @@ class ModelConfig:
         chunk_duration: Audio chunk duration in seconds.
         hop_length: STFT hop length in samples.
         audio_frontend: Frontend mode ('librosa', 'hybrid', 'raw').
-        mag_scale: Magnitude scaling ('pwl', 'cpwl', 'none').
+        mag_scale: Magnitude scaling ('pwl', 'none').
+        input_compression: Compression of a precomputed spectrogram input
+            before quantization ('none', 'sqrt', 'log'); librosa/hybrid only.
         embeddings_size: Dense embedding dimension before classifier.
         alpha: Width multiplier for channel counts.
         depth_multiplier: Block repeat count per stage.
@@ -42,6 +44,7 @@ class ModelConfig:
     hop_length: int = 281
     audio_frontend: str = "hybrid"
     mag_scale: str = "pwl"
+    input_compression: str = "none"
 
     # Model architecture
     embeddings_size: int = 256
@@ -57,7 +60,8 @@ class ModelConfig:
     # -- Validation ----------------------------------------------------------
 
     _VALID_FRONTENDS = frozenset({"librosa", "hybrid", "raw"})
-    _VALID_MAG_SCALES = frozenset({"pwl", "cpwl", "none"})
+    _VALID_MAG_SCALES = frozenset({"pwl", "none"})
+    _VALID_INPUT_COMPRESSIONS = frozenset({"none", "sqrt", "log"})
 
     def __post_init__(self) -> None:
         """Validate field values after initialization."""
@@ -75,6 +79,12 @@ class ModelConfig:
             raise ValueError(f"audio_frontend '{self.audio_frontend}' not in {sorted(self._VALID_FRONTENDS)}")
         if self.mag_scale not in self._VALID_MAG_SCALES:
             raise ValueError(f"mag_scale '{self.mag_scale}' not in {sorted(self._VALID_MAG_SCALES)}")
+        if self.input_compression not in self._VALID_INPUT_COMPRESSIONS:
+            raise ValueError(
+                f"input_compression '{self.input_compression}' not in {sorted(self._VALID_INPUT_COMPRESSIONS)}"
+            )
+        if self.input_compression != "none" and self.audio_frontend == "raw":
+            raise ValueError("input_compression applies to spectrogram inputs, not the raw frontend")
         if self.alpha <= 0:
             raise ValueError(f"alpha must be positive, got {self.alpha}")
         if self.depth_multiplier < 1:

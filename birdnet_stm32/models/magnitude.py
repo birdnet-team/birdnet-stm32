@@ -6,26 +6,26 @@ Supports two modes:
 
 PCEN and dB were removed. dB's log op produces a dynamic range INT8 cannot
 hold, which is the failure this frontend exists to avoid, and PCEN was never
-used by any release.
+used by any release. A compressive PWL variant (cpwl) was removed in 1.3: best
+float, worst INT8.
 """
 
 import tensorflow as tf
 from tensorflow.keras import layers
 
-from birdnet_stm32.models.quantization import clip_activation, validate_bounds
-
-VALID_MAG_SCALES = ("none", "pwl", "cpwl")
+VALID_MAG_SCALES = ("none", "pwl")
 
 
-@tf.keras.utils.register_keras_serializable(package="birdnet_stm32")
-class NonPositive(tf.keras.constraints.Constraint):
-    """Constrain weights to be <= 0 (the compressive PWL's hinge slopes)."""
+def reject_activation_bounds(bounds) -> None:
+    """Accept the empty ``activation_bounds`` saved by pre-1.3 checkpoints.
 
-    def __call__(self, w):
-        return -tf.nn.relu(-w)
-
-    def get_config(self):
-        return {}
+    Persistent percentile bounds were removed in 1.3 (they scored below the
+    full range); a model that actually carries them cannot be rebuilt.
+    """
+    if bounds:
+        raise ValueError(
+            "Models with persistent activation bounds (--qat_calibration_percentile < 100) are no longer supported"
+        )
 
 
 class MagnitudeScalingLayer(layers.Layer):
@@ -57,29 +57,18 @@ class MagnitudeScalingLayer(layers.Layer):
         self.method = method
         self.channels = int(channels)
         self.is_trainable = bool(is_trainable)
-        self.activation_bounds = validate_bounds(activation_bounds)
+        reject_activation_bounds(activation_bounds)
         self._quantization_hook = None
 
-        # PWL sublayers. "pwl" is the learned hinge sum with unconstrained slopes;
-        # it initializes expansive (cumulative slope 0.40 -> 0.88) and stays so
-        # after training, which gives its output a heavy upper tail: on the V12
-        # raw model 50/90/99% of values used 1/3/14 of the 255 INT8 codes, the
-        # rare peaks setting the range. "cpwl" is the same hinge sum held
-        # compressive -- k0 >= 0, hinge input weights >= 0, hinge slopes <= 0 --
-        # and initialized log-like (slopes 1.0 -> 0.55 -> 0.25 -> 0.10), so the
-        # tail is squeezed and typical values keep their INT8 resolution. Same
-        # ops, same names; only the constraints and the init differ.
-        if self.method in ("pwl", "cpwl"):
-            compressive = self.method == "cpwl"
-            k0_init = 1.0 if compressive else 0.40
-            k_inits = (-0.45, -0.30, -0.15) if compressive else (0.25, 0.15, 0.08)
-            non_neg = tf.keras.constraints.NonNeg() if compressive else None
-            non_pos = NonPositive() if compressive else None
+        # PWL sublayers: a learned hinge sum with unconstrained slopes, initialized
+        # expansive (cumulative slope 0.40 -> 0.88). A variant held compressive
+        # (concave, monotone) was measured and removed: best float of any raw
+        # model, worst INT8 (see docs/dev/int8-parity-plan.md).
+        if self.method == "pwl":
             self._pwl_k0_dw = layers.DepthwiseConv2D(
                 (1, 1),
                 use_bias=False,
-                depthwise_initializer=tf.keras.initializers.Constant(k0_init),
-                depthwise_constraint=non_neg,
+                depthwise_initializer=tf.keras.initializers.Constant(0.40),
                 padding="same",
                 name=f"{name}_pwl_k0_dw",
                 trainable=self.is_trainable,
@@ -89,7 +78,6 @@ class MagnitudeScalingLayer(layers.Layer):
                     (1, 1),
                     use_bias=True,
                     depthwise_initializer=tf.keras.initializers.Ones(),
-                    depthwise_constraint=tf.keras.constraints.NonNeg() if compressive else None,
                     bias_initializer=tf.keras.initializers.Constant(-t),
                     padding="same",
                     name=f"{name}_pwl_shift{i + 1}_dw",
@@ -102,12 +90,11 @@ class MagnitudeScalingLayer(layers.Layer):
                     (1, 1),
                     use_bias=False,
                     depthwise_initializer=tf.keras.initializers.Constant(k),
-                    depthwise_constraint=non_pos,
                     padding="same",
                     name=f"{name}_pwl_k{i + 1}_dw",
                     trainable=self.is_trainable,
                 )
-                for i, k in enumerate(k_inits)
+                for i, k in enumerate((0.25, 0.15, 0.08))
             ]
         else:
             self._pwl_k0_dw = None
@@ -116,7 +103,7 @@ class MagnitudeScalingLayer(layers.Layer):
 
     def build(self, input_shape):
         """Build magnitude scaling sub-layers for the given input shape."""
-        if self.method in ("pwl", "cpwl"):
+        if self.method == "pwl":
             if self._pwl_k0_dw is not None and not self._pwl_k0_dw.built:
                 self._pwl_k0_dw.build(input_shape)
             for s in self._pwl_shift_dws:
@@ -129,7 +116,7 @@ class MagnitudeScalingLayer(layers.Layer):
 
     def call(self, x, training=None):
         """Apply magnitude scaling to a 4-D tensor [B, H, W, C]."""
-        if self.method in ("pwl", "cpwl"):
+        if self.method == "pwl":
             return self._apply_pwl(x)
         return x
 
@@ -145,13 +132,12 @@ class MagnitudeScalingLayer(layers.Layer):
 
     def _quantized_activation(self, name: str, inputs):
         """Mark an internal tensor as an INT8 activation boundary for QAT."""
-        inputs = clip_activation(inputs, self.activation_bounds, name)
         if self._quantization_hook is None:
             return inputs
         return self._quantization_hook.activation(name, inputs)
 
     def _apply_pwl(self, x):
-        """Learned hinge sum; slopes are not constrained to be compressive."""
+        """Learned hinge sum."""
         branches = []
         if self._pwl_k0_dw is not None:
             branch = self._quantized_call(self._pwl_k0_dw, x)
@@ -192,7 +178,6 @@ class MagnitudeScalingLayer(layers.Layer):
                 "method": self.method,
                 "channels": self.channels,
                 "is_trainable": self.is_trainable,
-                "activation_bounds": self.activation_bounds,
             }
         )
         return cfg

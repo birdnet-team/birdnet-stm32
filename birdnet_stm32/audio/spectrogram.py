@@ -1,12 +1,21 @@
-"""Spectrogram computation, magnitude scaling, and normalization.
+"""Spectrogram model inputs for the hybrid and precomputed-mel frontends.
 
-Supports mel spectrograms and linear STFT with optional piecewise-linear
-magnitude compression. All scaling is designed to be quantization-friendly
-for INT8 deployment on the STM32N6 NPU.
+The arithmetic is defined in :mod:`birdnet_stm32.audio.stft`, which the firmware
+reproduces and ``docs/dev/spectrogram-input.md`` specifies. This module adds the
+host-only options (the host-side PWL curves and paired uncompressed output).
 """
 
-import librosa
 import numpy as np
+
+from birdnet_stm32.audio.stft import (
+    LOG_FLOOR_DB,  # noqa: F401 - re-exported
+    MEL_FMIN_HZ,
+    VALID_INPUT_COMPRESSIONS,
+    compress,
+    mel_filterbank,
+    minmax_normalize,
+    stft_magnitude,
+)
 
 
 def normalize(S: np.ndarray) -> np.ndarray:
@@ -18,7 +27,7 @@ def normalize(S: np.ndarray) -> np.ndarray:
     Returns:
         Normalized spectrogram, same shape as input.
     """
-    return np.asarray((S - S.min()) / (S.max() - S.min() + 1e-10))
+    return minmax_normalize(S)
 
 
 def get_spectrogram_from_audio(
@@ -29,7 +38,9 @@ def get_spectrogram_from_audio(
     spec_width: int = 256,
     mag_scale: str = "none",
     mode: str = "mel",
-) -> np.ndarray:
+    compression: str = "none",
+    with_uncompressed: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Compute a magnitude spectrogram with optional scaling and normalization.
 
     Modes:
@@ -47,55 +58,49 @@ def get_spectrogram_from_audio(
         spec_width: Target number of time frames (columns).
         mag_scale: 'none' | 'pwl'.
         mode: 'mel' | 'linear'.
+        compression: Fixed compression applied to the magnitude before
+            ``mag_scale`` and normalization: 'none', 'sqrt', or 'log' (natural
+            log with a floor ``LOG_FLOOR_DB`` below the chunk's peak). It runs
+            where the spectrogram is computed -- the host, or the Cortex-M55 on
+            device -- so the model's first INT8 tensor already holds compressed
+            values. Compressing inside the graph cannot do that: the linear
+            magnitude is rounded onto the INT8 grid first.
+        with_uncompressed: Also return the same spectrogram computed with
+            ``compression='none'``, so callers that rank chunks by content
+            (activity-based selection) rank on the representation they always
+            ranked on, and the compression changes only the model input.
 
     Returns:
-        Spectrogram array (mel_bins or fft_bins, spec_width), values in [0, 1].
+        Spectrogram array (mel_bins or fft_bins, spec_width), values in [0, 1];
+        a ``(compressed, uncompressed)`` pair when ``with_uncompressed``.
     """
     if mode not in ("mel", "linear"):
         raise ValueError(f"Invalid spectrogram mode: '{mode}'. Valid options: ('mel', 'linear')")
-    if mag_scale not in ("none", "pwl", "cpwl"):
-        raise ValueError(f"Invalid magnitude scale: '{mag_scale}'. Valid options: ('none', 'pwl', 'cpwl')")
+    if mag_scale not in ("none", "pwl"):
+        raise ValueError(f"Invalid magnitude scale: '{mag_scale}'. Valid options: ('none', 'pwl')")
+    if compression not in VALID_INPUT_COMPRESSIONS:
+        raise ValueError(f"Invalid input compression: '{compression}'. Valid options: {VALID_INPUT_COMPRESSIONS}")
 
-    hop_length = (len(audio) // spec_width) if spec_width > 0 else n_fft // 2
+    rows = n_fft // 2 if (mel_bins <= 0 or mode == "linear") else mel_bins
+    S = stft_magnitude(audio, n_fft, spec_width)
+    if rows != n_fft // 2:
+        S = mel_filterbank(int(sample_rate), int(n_fft), int(mel_bins), MEL_FMIN_HZ, sample_rate / 2.0) @ S
 
-    if mel_bins <= 0 or mode == "linear":
-        S = np.abs(
-            librosa.stft(
-                y=audio,
-                n_fft=n_fft,
-                hop_length=hop_length,
-                win_length=n_fft,
-                window="hann",
-            )
-        )
-        # Drop the Nyquist bin so the row count is n_fft // 2 — a multiple of 8,
-        # which the hybrid mel mixer consumes without a runtime channel pad.
-        S = S[: n_fft // 2, :]
-    else:
-        S = librosa.feature.melspectrogram(
-            y=audio,
-            sr=sample_rate,
-            n_fft=n_fft,
-            hop_length=hop_length,
-            win_length=n_fft,
-            window="hann",
-            n_mels=mel_bins,
-            power=1.0,
-            fmin=150,
-            fmax=sample_rate // 2,
-            htk=False,
-            norm="slaney",
-        )
+    if with_uncompressed:
+        return _scale(S, mag_scale, compression), _scale(S, mag_scale, "none")
+    return _scale(S, mag_scale, compression)
 
-    # Ensure fixed width
-    S = S[:, :spec_width]
 
-    if mag_scale in ("pwl", "cpwl"):
+def _scale(S: np.ndarray, mag_scale: str, compression: str) -> np.ndarray:
+    """Apply input compression, the host-side magnitude curve, and normalization."""
+    S = compress(S, compression)
+
+    if mag_scale == "pwl":
         Smin, Smax = S.min(), S.max()
         Snorm = (S - Smin) / (Smax - Smin + 1e-10)
         t1, t2, t3 = 0.10, 0.35, 0.65
-        # The in-graph layer's initial curve: expansive for pwl, compressive for cpwl.
-        k0, k1, k2, k3 = (1.0, -0.45, -0.30, -0.15) if mag_scale == "cpwl" else (0.40, 0.25, 0.15, 0.08)
+        # The in-graph layer's initial curve.
+        k0, k1, k2, k3 = 0.40, 0.25, 0.15, 0.08
         relu = lambda z: np.maximum(z, 0.0)  # noqa: E731
         S = k0 * Snorm + k1 * relu(Snorm - t1) + k2 * relu(Snorm - t2) + k3 * relu(Snorm - t3)
 

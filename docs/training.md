@@ -5,10 +5,11 @@
 ```bash
 python -m birdnet_stm32 train \
   --data_path_train data/train \
-  --audio_frontend hybrid \
-  --mag_scale pwl \
   --checkpoint_path checkpoints/my_model.keras
 ```
+
+The defaults are the release recipe: `raw` frontend, `pwl` magnitude scaling,
+24 kHz, 2.5 s chunks, 512-d embedding, 50 epochs at learning rate 5e-4.
 
 For a leakage-safe precomputed validation split and stable output order, pass a
 separate validation root and a one-label-per-line classes file:
@@ -37,9 +38,12 @@ The script saves these files alongside the checkpoint:
 
 | Frontend | Input to model | Description |
 |---|---|---|
-| `hybrid` (default) | Linear magnitude STFT | Model applies a learned mel mixer and magnitude scaling. Best for deployment. |
-| `librosa` | Mel spectrogram | Spectrogram computed offline with librosa. Simplest, but frontend is not in the graph. |
-| `raw` | Peak-normalized waveform | Model applies a mel-seeded, trainable Gabor quadrature filterbank. Most flexible, highest input memory. |
+| `raw` (default) | Peak-normalized waveform | Model applies a mel-seeded, trainable Gabor quadrature filterbank. The release frontend: the whole pipeline runs on the NPU. |
+| `hybrid` | Linear magnitude STFT | Model applies a learned mel mixer and magnitude scaling. The STFT runs outside the model (host, or the Cortex-M55). With `--input_compression sqrt` the best INT8 accuracy measured, at 117 ms per file against 71 ms for raw. |
+| `librosa` | Mel spectrogram | Mel spectrogram computed outside the model. Smallest quantization loss, weakest float model. |
+
+`hybrid` and `librosa` inputs are defined by `birdnet_stm32.audio.stft` and
+specified in [Spectrogram Input](dev/spectrogram-input.md).
 
 These three are the only frontends. `mfcc` and `log_mel` were removed in 1.2.0:
 both were host-precomputed variants of the same `librosa` path, and no release
@@ -54,12 +58,12 @@ ever used them.
 | Mode | Description | Quantization friendliness |
 |---|---|---|
 | `pwl` (default) | Piecewise-linear learned compression | Excellent — recommended for deployment |
-| `cpwl` | The same, held compressive (concave, monotone) | Experimental — squeezes the output tail into fewer INT8 codes |
 | `none` | No compression | Baseline only, for ablations |
 
 `pcen` and `db` were removed in 1.2.0. dB's log op produces exactly the wide
 dynamic range INT8 cannot hold — the failure this frontend exists to avoid —
-and PCEN was never used by a release.
+and PCEN was never used by a release. `cpwl`, a compressive variant of `pwl`,
+was removed in 1.3.0: best float of any raw model, worst INT8.
 
 ## Model architecture
 
@@ -172,27 +176,46 @@ the tail loss to the worst 10% of each batch with 0.75 weight; both values are
 configurable. This constrains background and low-confidence probabilities
 while directly optimizing the lower tail that the release parity gate measures.
 
+With `--qat`, the defaults switch to the fine-tuning schedule: 8 epochs at
+learning rate 2e-5, with activation ranges recalibrated on the current weights
+after every epoch (`--qat_range_refresh`, on by default). The simulation
+quantizes every tensor the converter quantizes, including each partial
+filterbank convolution, so its validation cMAP (`val_sim_int8_cmap`) tracks
+the converted model's (`val_int8_cmap`) to within a few thousandths.
+
+The full raw pipeline:
+
 ```bash
 # Step 1: Normal training
 python -m birdnet_stm32 train --data_path_train data/train \
-  --epochs 50 --checkpoint_path checkpoints/model.keras
+  --data_path_val data/validation --classes_file data/labels.txt \
+  --checkpoint_path checkpoints/model.keras
 
-# Step 2: QAT fine-tuning (lower LR, fewer epochs)
+# Step 2: Equalize the frontend's per-band ranges (raw only; exact in float)
+python -m birdnet_stm32 equalize --checkpoint_path checkpoints/model.keras \
+  --data_path_train data/train --output_path checkpoints/model_eq.keras
+
+# Step 3: QAT fine-tuning
 python -m birdnet_stm32 train --data_path_train data/train \
   --data_path_val data/validation --classes_file data/labels.txt --qat \
-  --checkpoint_path checkpoints/model.keras \
-  --qat_calibration_samples 1024 \
-  --qat_cosine_tail_fraction 0.10 --qat_cosine_tail_weight 0.75 \
-  --epochs 6 --learning_rate 0.00002
+  --checkpoint_path checkpoints/model_eq.keras
 
-# Step 3: Convert the QAT model
+# Step 4: Convert the QAT model
 python -m birdnet_stm32 convert \
-  --checkpoint_path checkpoints/model_qat.keras \
-  --model_config checkpoints/model_model_config.json \
+  --checkpoint_path checkpoints/model_eq_qat.keras \
+  --model_config checkpoints/model_eq_model_config.json \
   --data_path_train data/train
 ```
 
 The QAT model is saved as `{name}_qat.keras` alongside the original.
+`equalize` rescales each band of the raw filterbank and PWL so that every band
+gets the same share of the tensors' INT8 grids, and refuses to save if the
+float output changes. See [INT8 quality](dev/int8-parity-plan.md) for the
+measurements.
+
+For `hybrid` and `librosa` with `--input_compression`, skip QAT: it scored
+below plain post-training quantization at every epoch. Convert the trained
+checkpoint directly.
 
 ### Linear probing
 
@@ -257,11 +280,12 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--num_mels` | 64 | Number of mel frequency bins |
 | `--spec_width` | 256 | Spectrogram width (frames) |
 | `--fft_length` | 512 | FFT window length |
-| `--chunk_duration` | 3 | Chunk duration (seconds) |
+| `--chunk_duration` | 2.5 | Chunk duration (seconds) |
 | `--max_duration` | 60 | Max seconds to load per file |
-| `--audio_frontend` | hybrid | `librosa`, `hybrid`, or `raw` — raw models trained before the [NPU fixes](dev/audio-frontends.md#raw-waveform) must be retrained |
-| `--mag_scale` | pwl | `pwl`, `cpwl` or `none` |
-| `--embeddings_size` | 256 | Embedding channels before head |
+| `--audio_frontend` | raw | `raw`, `hybrid`, or `librosa` — raw models trained before the [NPU fixes](dev/audio-frontends.md#raw-waveform) must be retrained |
+| `--mag_scale` | pwl | `pwl` or `none` |
+| `--input_compression` | none | `none`, `sqrt` or `log`: compress a `librosa`/`hybrid` spectrogram before its first INT8 quantization; the firmware applies the same compression |
+| `--embeddings_size` | 512 | Embedding channels before head |
 | `--alpha` | 1.0 | Model width scaling |
 | `--depth_multiplier` | 1 | Block repeats per stage |
 | `--frontend_trainable` | False | Make frontend weights trainable |
@@ -279,10 +303,10 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--seed` | 42 | Random seed |
 | `--batch_size` | 32 | Batch size |
 | `--num_workers` | 8 | Parallel data loading workers (0 = sequential) |
-| `--max_chunks_per_file` | 3 | Max salient chunks per file open (reduces redundant I/O) |
+| `--max_chunks_per_file` | 1 | Max salient chunks per file open (reduces redundant I/O) |
 | `--prefetch_batches` | 2 | Loader prefetch depth in batches |
-| `--epochs` | 50 | Number of epochs |
-| `--learning_rate` | 0.001 | Initial learning rate |
+| `--epochs` | 50 (8 with `--qat`) | Number of epochs |
+| `--learning_rate` | 5e-4 (2e-5 with `--qat`, 1e-3 with `--linear_probe`) | Initial learning rate |
 | `--val_split` | 0.2 | Validation split fraction when `--data_path_val` is not supplied |
 | `--checkpoint_path` | checkpoints/best_model.keras | Output path (.keras) |
 | `--qat` | False | Quantization-aware fine-tuning |
@@ -291,9 +315,9 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--qat_cosine_weight` | 0.10 | Mean teacher/student cosine-loss weight |
 | `--qat_cosine_tail_weight` | 0.75 | Worst-sample cosine-loss weight |
 | `--qat_cosine_tail_fraction` | 0.10 | Fraction of each batch included in the worst-sample loss |
+| `--qat_range_refresh` | on | Recalibrate activation ranges on the current weights after every epoch, so QAT trains against the grid conversion will use; `--no-qat_range_refresh` disables it |
 | `--linear_probe` | False | Freeze backbone and train only classifier head |
 | `--model_config` | *(inferred)* | Architecture config for `--qat`, `--linear_probe`; required when the checkpoint has no sibling config |
-| `--qat_calibration_percentile` | 100 | Persistent internal frontend bounds; accepts (50, 100] |
 | `--validation_overlap` | half the chunk duration | File validation overlap in seconds |
 | `--validation_pooling` | max | File validation pooling |
 | `--validation_subset` | 0 | Score checkpoint selection (training and QAT) on a fixed class-balanced draw of N validation files, seed 1234 (0 = all). Biased upward; not comparable to full-manifest cMAP |

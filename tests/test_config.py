@@ -206,3 +206,14 @@ class TestRetiredConfigKeys:
         assert cfg.audio_frontend == "raw"
         assert not hasattr(cfg, "use_attention_pooling")
         assert not hasattr(cfg, "n_mfcc")
+
+
+def test_input_compression_defaults_and_validates():
+    from birdnet_stm32.training.config import ModelConfig
+
+    assert ModelConfig().input_compression == "none"
+    assert ModelConfig(audio_frontend="librosa", input_compression="log").input_compression == "log"
+    with pytest.raises(ValueError, match="input_compression"):
+        ModelConfig(input_compression="db")
+    with pytest.raises(ValueError, match="raw frontend"):
+        ModelConfig(audio_frontend="raw", input_compression="sqrt")

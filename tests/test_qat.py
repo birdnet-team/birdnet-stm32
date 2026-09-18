@@ -11,7 +11,6 @@ from birdnet_stm32.training.qat import (
     _DistilledQATModel,
     _is_activation_boundary,
     _is_quantizable,
-    bound_frontend,
     build_qat_model,
     calibrate_activation_ranges,
     fake_quantize_weights,
@@ -254,50 +253,6 @@ class TestActivationQAT:
         scores = np.asarray(build_qat_model(model, ranges)(samples))
         np.testing.assert_allclose(scores * 256, np.round(scores * 256), atol=1e-5)
 
-    def test_persistent_internal_bounds_survive_save_and_tflite(self, tmp_path):
-        from birdnet_stm32.conversion.quantize import convert_to_tflite
-        from birdnet_stm32.models.frontend import AudioFrontendLayer
-        from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
-        from birdnet_stm32.models.runners import TFLiteRunner
-
-        inputs = tf.keras.Input((2000, 1))
-        frontend = AudioFrontendLayer(
-            mode="raw",
-            mel_bins=8,
-            spec_width=8,
-            sample_rate=8000,
-            chunk_duration=0.25,
-            mag_scale="pwl",
-            name="audio_frontend",
-        )
-        model = tf.keras.Model(inputs, frontend(inputs))
-        samples = np.random.default_rng(8).uniform(-1, 1, (4, 2000, 1)).astype(np.float32)
-        bound = 0.01
-        bounded = bound_frontend(model, {"audio_frontend_mag_pwl_add_3": (0, bound)})
-        path = tmp_path / "bounded.keras"
-        bounded.save(path)
-        loaded = tf.keras.models.load_model(
-            path,
-            compile=False,
-            custom_objects={
-                "AudioFrontendLayer": AudioFrontendLayer,
-                "MagnitudeScalingLayer": MagnitudeScalingLayer,
-            },
-        )
-        assert np.asarray(loaded(samples)).max() <= bound + 1e-6
-        assert np.asarray(model(samples)).max() > bound * 2
-        tflite_path = tmp_path / "bounded.tflite"
-        convert_to_tflite(loaded, lambda: ([sample[None]] for sample in samples), str(tflite_path))
-        runner = TFLiteRunner(str(tflite_path))
-        assert runner.predict(samples).max() <= bound + 1e-4
-        details = runner.interpreter.get_tensor_details()
-        assert any(0 < float(d["quantization"][0]) <= bound / 250 for d in details)
-
-    @pytest.mark.parametrize("percentile", [0, 50, 101, float("nan")])
-    def test_invalid_percentile_is_rejected(self, percentile):
-        with pytest.raises(ValueError, match="percentile"):
-            calibrate_activation_ranges(None, [], percentile=percentile)
-
     def test_distillation_loss_is_finite_and_reported(self):
         """The QAT objective must constrain probabilities beyond hard labels."""
         inputs = tf.keras.Input(shape=(4,), name="input")
@@ -393,3 +348,29 @@ class TestQuantizationGridMatchesTFLite:
         w[:, :, 1, :] = 0.001
         fq = fake_quantize_weights(w, per_channel=True, channel_axis=-2)
         assert fq[:, :, 1, :].item() == pytest.approx(0.001, rel=1e-3)
+
+
+def test_range_refresh_moves_every_quantizer_without_rebuilding():
+    from birdnet_stm32.training.qat import _fake_quantizers, refresh_activation_ranges
+
+    inputs = tf.keras.Input(shape=(4, 4, 1), name="input")
+    x = tf.keras.layers.Conv2D(4, 3, padding="same", use_bias=False, name="conv")(inputs)
+    x = tf.keras.layers.BatchNormalization(name="bn")(x)
+    x = tf.keras.layers.ReLU(max_value=6, name="relu")(x)
+    x = tf.keras.layers.GlobalAveragePooling2D(name="gap")(x)
+    outputs = tf.keras.layers.Dense(2, activation="sigmoid", name="pred")(x)
+    deployment = tf.keras.Model(inputs, outputs)
+    samples = np.random.default_rng(0).normal(size=(4, 4, 4, 1)).astype(np.float32)
+    ranges = calibrate_activation_ranges(deployment, [(s[None],) for s in samples], max_samples=4)
+    qat = build_qat_model(deployment, ranges)
+    qat(samples)
+
+    quantizers = _fake_quantizers(qat)
+    assert {"__input__", "relu", "gap", "pred", "pred__logits"} <= quantizers.keys()
+    before = qat(samples).numpy()
+    wide = {key: (lo * 4.0, hi * 4.0) for key, (lo, hi) in ranges.items()}
+    assert refresh_activation_ranges(qat, wide) == len(quantizers)
+    assert quantizers["relu"].maximum == pytest.approx(ranges["relu"][1] * 4.0)
+    assert not np.allclose(qat(samples).numpy(), before)
+    refresh_activation_ranges(qat, ranges)
+    np.testing.assert_allclose(qat(samples).numpy(), before, atol=1e-6)

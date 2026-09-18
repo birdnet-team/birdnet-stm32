@@ -53,29 +53,29 @@ These artifacts are for development. Publication still requires configured
 parity checks, advertised runtimes, ONNX validation when included, STM32N6
 compilation and board validation. QAT does not itself establish those checks.
 
-### Simulation and persistent clipping
+### Simulation
 
 BatchNorm statistics and affine parameters are frozen in both the clean and
 cloned QAT frontends. Kernels use symmetric per-channel fake quantization;
 activations use per-tensor grids. The sigmoid head simulates both the logit
 boundary and TFLite's fixed 1/256 probability grid.
 
-`--qat_calibration_percentile 99.9` derives bounds for internal frontend
-activations only. It does not percentile-clip the waveform input or classifier
-output. Bounds become serialized operators inside `AudioFrontendLayer` and
-`MagnitudeScalingLayer`, before the corresponding fake quantizer. Calibration
-then re-observes this bounded graph. At 100, no additional bounds are inserted.
-The implementation uses affine transforms and ReLU6; actual compiler fusion,
-operator placement and accuracy must be measured, not inferred from the op name.
+Every tensor the converter quantizes is a boundary in the simulation,
+including each partial filterbank convolution output inside the raw frontend.
+Activation ranges are absolute min/max, as the converter measures them, and
+are recalibrated on the current weights after every epoch
+(`--qat_range_refresh`, on by default). With both, simulated and converted
+validation cMAP agree to within a few thousandths; both are logged
+(`val_sim_int8_cmap`, `val_int8_cmap`). Percentile-clipped ranges were removed
+in 1.3.0 after p99.9 and p99.99 both scored below the full range.
 
-The simulation remains an approximation: it uses fixed activation ranges while
-conversion recalibrates the current weights, and converter fusion/rounding can
-differ. Real INT8 evaluation is therefore the selection authority.
+Converter fusion and rounding can still differ, so real INT8 evaluation remains
+the selection authority.
 
 The PWL frontend is a learned hinge sum, not a guaranteed log approximation.
 Its original positive hinge coefficients initialize increasing slopes; training
 does not constrain it to be monotone or concave. A constrained compressive
-replacement is an architecture experiment, not a checkpoint migration.
+variant was measured and removed (best float, worst INT8).
 
 ### Losses
 

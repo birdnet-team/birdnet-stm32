@@ -86,21 +86,44 @@ class FakeQuantActivation(layers.Layer):
 
     def __init__(self, minimum: float, maximum: float, num_bits: int = 8, **kwargs):
         super().__init__(trainable=False, **kwargs)
+        self.minimum, self.maximum = self._normalize(minimum, maximum)
+        self.num_bits = int(num_bits)
+        # The range lives in variables so it can be refreshed between epochs
+        # without retracing the training step (see refresh_activation_ranges).
+        self._range = None
+
+    @staticmethod
+    def _normalize(minimum: float, maximum: float) -> tuple[float, float]:
         minimum = min(float(minimum), 0.0)
         maximum = max(float(maximum), 0.0)
         if maximum - minimum < 1e-6:
             maximum = minimum + 1e-6
-        self.minimum = minimum
-        self.maximum = maximum
-        self.num_bits = int(num_bits)
+        return minimum, maximum
+
+    def build(self, input_shape):
+        self._range = self.add_weight(
+            name="range",
+            shape=(2,),
+            initializer=tf.keras.initializers.Constant([self.minimum, self.maximum]),
+            trainable=False,
+        )
+        super().build(input_shape)
+
+    def set_range(self, minimum: float, maximum: float) -> None:
+        """Move the grid, e.g. to the converter's range for the current weights."""
+        self.minimum, self.maximum = self._normalize(minimum, maximum)
+        if self._range is not None:
+            self._range.assign([self.minimum, self.maximum])
 
     def call(self, inputs):
         """Apply the same scalar affine grid used for TFLite activations."""
         qmin = -(1 << (self.num_bits - 1))
         qmax = (1 << (self.num_bits - 1)) - 1
-        scale = tf.cast((self.maximum - self.minimum) / (qmax - qmin), inputs.dtype)
+        minimum = tf.cast(self._range[0], inputs.dtype)
+        maximum = tf.cast(self._range[1], inputs.dtype)
+        scale = (maximum - minimum) / tf.cast(qmax - qmin, inputs.dtype)
         zero_point = tf.clip_by_value(
-            tf.round(tf.cast(qmin, inputs.dtype) - tf.cast(self.minimum, inputs.dtype) / scale),
+            tf.round(tf.cast(qmin, inputs.dtype) - minimum / scale),
             tf.cast(qmin, inputs.dtype),
             tf.cast(qmax, inputs.dtype),
         )
@@ -166,37 +189,11 @@ class _QuantizedKernelCall(layers.Layer):
         return output if linear else self.target.activation(output)
 
 
-# Sample values for percentile bounds. Bounds must also exist in the saved
-# deployment frontend; fake quantization alone never survives clean export.
-_RESERVOIR_PER_SAMPLE = 4096
-
-
-def _reservoir_add(store: dict[str, list], name: str, array: np.ndarray, rng: np.random.Generator) -> None:
-    """Keep a bounded random subsample of one tensor's values."""
-    flat = np.asarray(array).reshape(-1)
-    if flat.size > _RESERVOIR_PER_SAMPLE:
-        flat = flat[rng.integers(0, flat.size, _RESERVOIR_PER_SAMPLE)]
-    store.setdefault(name, []).append(flat.astype(np.float32, copy=False))
-
-
-def _reservoir_range(store: dict[str, list], name: str, percentile: float) -> tuple[float, float] | None:
-    """Return the percentile range for one tensor, or None if unseen."""
-    chunks = store.get(name)
-    if not chunks:
-        return None
-    pooled = np.concatenate(chunks)
-    lo = float(np.percentile(pooled, 100.0 - percentile))
-    hi = float(np.percentile(pooled, percentile))
-    return (min(lo, 0.0), max(hi, 0.0))
-
-
 class _ActivationRangeCollector:
     """Observe internal custom-layer tensors without changing their values."""
 
-    def __init__(self, reservoir: dict[str, list] | None = None, rng: np.random.Generator | None = None):
+    def __init__(self):
         self.ranges: dict[str, list[float]] = {}
-        self.reservoir = reservoir
-        self.rng = rng
 
     def activation(self, name: str, inputs):
         """Record one tensor's scalar range and return it unchanged."""
@@ -204,8 +201,6 @@ class _ActivationRangeCollector:
         values = self.ranges.setdefault(name, [float("inf"), -float("inf")])
         values[0] = min(values[0], float(np.min(array)), 0.0)
         values[1] = max(values[1], float(np.max(array)), 0.0)
-        if self.reservoir is not None and self.rng is not None:
-            _reservoir_add(self.reservoir, name, array, self.rng)
         return inputs
 
     def kernel(self, layer, inputs):
@@ -252,21 +247,17 @@ def calibrate_activation_ranges(
     model: tf.keras.Model,
     dataset: Iterable,
     max_samples: int = 64,
-    percentile: float = 100.0,
 ) -> dict[str, tuple[float, float]]:
-    """Measure scalar activation ranges on real inputs for QAT initialization.
+    """Measure absolute min/max activation ranges on real inputs, as the converter does.
+
+    Percentile-clipped ranges were measured and removed: p99.9 and p99.99 both
+    scored below the full range (see docs/dev/int8-parity-plan.md).
 
     Args:
         model: Deployment model to probe.
         dataset: Calibration data.
         max_samples: Number of samples to observe.
-        percentile: Upper percentile defining each range; 100 is absolute
-            min/max, the previous behaviour. Below 100 the range is taken from a
-            bounded reservoir of observed values, clipping outliers that would
-            otherwise stretch the INT8 grid.
     """
-    if not 50.0 < percentile <= 100.0:
-        raise ValueError("Calibration percentile must be in (50, 100]")
     if max_samples <= 0:
         raise ValueError("Calibration sample count must be positive")
     boundaries = [layer for layer in model.layers if _is_activation_boundary(layer)]
@@ -279,10 +270,7 @@ def calibrate_activation_ranges(
     ranges = {layer.name: [float("inf"), -float("inf")] for layer in boundaries}
     ranges["__input__"] = [float("inf"), -float("inf")]
     frontends = [layer for layer in all_layers(model) if layer.__class__.__name__ == "AudioFrontendLayer"]
-    use_percentile = percentile < 100.0
-    reservoir: dict[str, list] = {}
-    rng = np.random.default_rng(0)
-    collector = _ActivationRangeCollector(reservoir if use_percentile else None, rng)
+    collector = _ActivationRangeCollector()
     for frontend in frontends:
         frontend.set_quantization_hook(collector)
 
@@ -319,28 +307,7 @@ def calibrate_activation_ranges(
 
     ranges.update(collector.ranges)
     result = {name: (values[0], values[1]) for name, values in ranges.items()}
-    if use_percentile:
-        clipped = 0
-        internal_names = set(collector.ranges) - {f"{layer.name}__logits" for layer in sigmoid_heads}
-        for name in internal_names:
-            narrowed = _reservoir_range(reservoir, name, percentile)
-            if narrowed is None:
-                continue
-            lo, hi = narrowed
-            wide_lo, wide_hi = result[name]
-            # Never widen a range: the percentile is a clip, not a re-estimate.
-            lo, hi = max(lo, wide_lo), min(hi, wide_hi)
-            if hi <= lo:
-                continue
-            if (hi - lo) < (wide_hi - wide_lo):
-                clipped += 1
-            result[name] = (lo, hi)
-        print(
-            f"[QAT] Calibrated {len(result)} activation tensors on {seen} samples "
-            f"at the {percentile:g}th percentile ({clipped} ranges narrowed)"
-        )
-    else:
-        print(f"[QAT] Calibrated {len(result)} activation tensors on {seen} samples")
+    print(f"[QAT] Calibrated {len(result)} activation tensors on {seen} samples")
     for layer in sigmoid_heads:
         # TFLite LOGISTIC has fixed scale 1/256 and zero point -128.
         result[layer.name] = (0.0, 255.0 / 256.0)
@@ -349,29 +316,6 @@ def calibrate_activation_ranges(
 
 def _is_sigmoid_dense(layer):
     return isinstance(layer, layers.Dense) and layer.activation == tf.keras.activations.sigmoid
-
-
-def bound_frontend(model, activation_ranges):
-    """Clone custom frontends with persistent internal activation bounds."""
-
-    def clone(layer):
-        if layer.__class__.__name__ != "AudioFrontendLayer":
-            return layer.__class__.from_config(layer.get_config())
-        config = layer.get_config()
-        config["activation_bounds"] = {
-            name: values
-            for name, values in activation_ranges.items()
-            if name.startswith(f"{layer.name}_") and values[1] > values[0]
-        }
-        bounded = layer.__class__.from_config(config)
-        bounded.build(tuple(layer.input.shape))
-        bounded.set_weights(layer.get_weights())
-        freeze_batch_norm(bounded)
-        return bounded
-
-    bounded_model = tf.keras.models.clone_model(model, clone_function=clone)
-    bounded_model.set_weights(model.get_weights())
-    return bounded_model
 
 
 def build_qat_model(
@@ -424,6 +368,54 @@ def build_qat_model(
     minimum, maximum = activation_ranges["__input__"]
     quantized_inputs = FakeQuantActivation(minimum, maximum, name="input_fake_quant")(raw_inputs)
     return tf.keras.Model(raw_inputs, inner_model(quantized_inputs), name=f"{deployment_model.name}_qat")
+
+
+def _fake_quantizers(qat_student: tf.keras.Model) -> dict[str, FakeQuantActivation]:
+    """Map every fake quantizer in a QAT graph to its activation-range key."""
+    found: dict[str, FakeQuantActivation] = {}
+    for layer in all_layers(qat_student):
+        if isinstance(layer, FakeQuantActivation):
+            name = layer.name
+            if name == "input_fake_quant":
+                found["__input__"] = layer
+            elif name.endswith("_logits_fake_quant"):
+                found[name[: -len("_logits_fake_quant")] + "__logits"] = layer
+            elif name.endswith("_fake_quant"):
+                found[name[: -len("_fake_quant")]] = layer
+        hook = getattr(layer, "_quantization_hook", None)
+        if isinstance(hook, _FrontendQuantizationHook):
+            found.update(hook._activations)  # noqa: SLF001
+    return found
+
+
+def refresh_activation_ranges(qat_student: tf.keras.Model, ranges: dict[str, tuple[float, float]]) -> int:
+    """Move every fake quantizer to a new range; returns how many moved."""
+    moved = 0
+    for key, quantizer in _fake_quantizers(qat_student).items():
+        if key in ranges:
+            quantizer.set_range(*ranges[key])
+            moved += 1
+    return moved
+
+
+class RangeRefresh(tf.keras.callbacks.Callback):
+    """Recalibrate QAT activation ranges on the current weights after each epoch.
+
+    QAT otherwise trains against ranges measured once on the starting weights,
+    while conversion recalibrates the weights it is given. The longer and the
+    faster fine-tuning moves the weights, the further the two grids drift.
+    """
+
+    def __init__(self, qat_student, deployment, calibration, sync, samples: int):
+        super().__init__()
+        self.qat_student, self.deployment = qat_student, deployment
+        self.calibration, self.sync, self.samples = calibration, sync, samples
+
+    def on_epoch_end(self, epoch, logs=None):
+        self.sync()
+        ranges = calibrate_activation_ranges(self.deployment, self.calibration, max_samples=self.samples)
+        moved = refresh_activation_ranges(self.qat_student, ranges)
+        print(f"[QAT] Refreshed {moved} activation ranges on epoch {epoch + 1} weights")
 
 
 def sync_frontend_weights(qat_model: tf.keras.Model, deployment_model: tf.keras.Model) -> None:
@@ -537,6 +529,7 @@ def run_qat(args: argparse.Namespace) -> None:
         mel_bins=cfg.num_mels,
         fft_length=cfg.fft_length,
         mag_scale=cfg.mag_scale,
+        input_compression=cfg.input_compression,
         num_workers=args.num_workers,
         max_chunks_per_file=args.max_chunks_per_file,
         prefetch_batches=args.prefetch_batches,
@@ -588,16 +581,7 @@ def run_qat(args: argparse.Namespace) -> None:
         deployment_model,
         calibration_data,
         max_samples=calibration_count,
-        percentile=float(getattr(args, "qat_calibration_percentile", 100.0)),
     )
-    if args.qat_calibration_percentile < 100.0:
-        deployment_model = bound_frontend(deployment_model, activation_ranges)
-        # Re-observe the bounded graph: these are the values conversion sees.
-        activation_ranges = calibrate_activation_ranges(
-            deployment_model,
-            calibration_data,
-            max_samples=calibration_count,
-        )
     print(f"[QAT] Activation ranges use the converter's exact stratified {calibration_count}-sample manifest (seed=42)")
     extra_callbacks: list[tf.keras.callbacks.Callback] = []
 
@@ -639,12 +623,24 @@ def run_qat(args: argparse.Namespace) -> None:
         )
     elif subset:
         print(f"[QAT] Requested subset {subset} >= {len(val_paths)} validation files; using all")
+    if getattr(args, "qat_range_refresh", False):
+        # Before the selector, so the simulated score it logs uses the new grid.
+        extra_callbacks.append(
+            RangeRefresh(
+                qat_student,
+                deployment_model,
+                calibration_data,
+                sync=lambda: sync_frontend_weights(qat_model, deployment_model),
+                samples=calibration_count,
+            )
+        )
     selector = Int8Selection(
         deployment_model,
         teacher_model,
         calibration_data,
         qat_path,
         sync=lambda: sync_frontend_weights(qat_model, deployment_model),
+        simulated=qat_student,
         files=selection_paths,
         classes=classes,
         cfg=cfg.to_dict(),
