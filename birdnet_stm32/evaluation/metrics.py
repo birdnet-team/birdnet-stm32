@@ -76,6 +76,7 @@ def make_chunks_for_file(
     cd = float(cfg["chunk_duration"])
     num_mels = int(cfg["num_mels"])
     spec_width = int(cfg["spec_width"])
+    compression = cfg.get("input_compression", "none")
 
     chunks = load_audio_file(
         path, sample_rate=sr, max_duration=60, chunk_duration=cd, random_offset=False, chunk_overlap=chunk_overlap
@@ -85,13 +86,21 @@ def make_chunks_for_file(
     if frontend == "librosa":
         for ch in chunks:
             S = get_spectrogram_from_audio(
-                ch, sample_rate=sr, n_fft=n_fft, mel_bins=num_mels, spec_width=spec_width, mag_scale=mag_scale
+                ch,
+                sample_rate=sr,
+                n_fft=n_fft,
+                mel_bins=num_mels,
+                spec_width=spec_width,
+                mag_scale=mag_scale,
+                compression=compression,
             )
             out.append(S[:, :, None].astype(np.float32))
     elif frontend == "hybrid":
         fft_bins = hybrid_fft_bins(n_fft)
         for ch in chunks:
-            S = get_spectrogram_from_audio(ch, sample_rate=sr, n_fft=n_fft, mel_bins=-1, spec_width=spec_width)
+            S = get_spectrogram_from_audio(
+                ch, sample_rate=sr, n_fft=n_fft, mel_bins=-1, spec_width=spec_width, compression=compression
+            )
             if S.shape[0] != fft_bins:
                 S = S[:fft_bins, :spec_width]
             out.append(S[:, :, None].astype(np.float32))

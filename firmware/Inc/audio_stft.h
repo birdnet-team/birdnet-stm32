@@ -42,4 +42,24 @@ void stft_magnitude(const float *audio, uint32_t chunk_samples,
  */
 void spec_minmax_normalize(float *spec, uint32_t count);
 
+/* Input compression modes, as input_compression in the model config. */
+#define SPEC_COMPRESS_NONE 0
+#define SPEC_COMPRESS_SQRT 1
+#define SPEC_COMPRESS_LOG  2
+/* Dynamic range kept by SPEC_COMPRESS_LOG below each chunk's peak (LOG_FLOOR_DB on the host). */
+#define SPEC_LOG_FLOOR_DB  80.0f
+
+/**
+ * Compress a magnitude spectrogram in place before spec_minmax_normalize().
+ *
+ * Must match compress() in birdnet_stm32/audio/stft.py: sqrt, or the natural
+ * log with a floor SPEC_LOG_FLOOR_DB below the peak. It runs in float on the M55,
+ * so the model's first INT8 tensor already holds compressed values.
+ *
+ * @param spec   Spectrogram buffer.
+ * @param count  Number of values (rows x columns).
+ * @param mode   SPEC_COMPRESS_NONE, SPEC_COMPRESS_SQRT or SPEC_COMPRESS_LOG.
+ */
+void spec_compress(float *spec, uint32_t count, int mode);
+
 #endif /* AUDIO_STFT_H */

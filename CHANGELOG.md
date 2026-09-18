@@ -5,6 +5,93 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - Unreleased
+
+INT8 quality. With the device proven to reproduce the host in 1.2.0, the
+remaining float-to-INT8 loss was measured, attributed and cut: for `raw` from
+−0.070 to −0.043 catalog cMAP (INT8 0.5895 → 0.6161), for `hybrid` from −0.042
+to −0.013 with a compressed input (INT8 0.6496, the best measured). `raw` stays
+the release frontend. Options that measurement disproved are removed, and the
+CLI defaults are now the best measured recipe. Full results and the negative
+findings: [INT8 quality](docs/dev/int8-parity-plan.md).
+
+### Added
+
+- **`birdnet_stm32 equalize`** (`birdnet_stm32/conversion/equalize.py`):
+  function-preserving per-band rescaling of a trained raw frontend, so that
+  every band gets the same share of the filterbank, BatchNorm and PWL INT8
+  grids instead of one loud band setting each range. Exact in float (the
+  command refuses to save if the output moves by more than 1e-3), run between
+  training and QAT. On the v1.2 raw model: +0.028 validation cMAP after
+  post-training quantization, +0.017 catalog cMAP after QAT, with more
+  detections *and* fewer false alarms at every operating threshold.
+- **`--input_compression {none,sqrt,log}`** for the `hybrid` and `librosa`
+  frontends: compresses the spectrogram where it is computed (host, or the
+  Cortex-M55 via the new firmware `spec_compress()`), before the model's first
+  INT8 tensor. `hybrid` + `sqrt`: float 0.6624, INT8 0.6496, board parity 25/25
+  with the tightest residual of any model (0.032). Stored in the model config,
+  so evaluation, calibration, `board-test` and `gen_app_config.py` follow it.
+  Training still ranks chunks by activity on the uncompressed spectrogram.
+- **Reference spectrogram implementation** `birdnet_stm32.audio.stft`: the
+  `hybrid` and `librosa` inputs in float32 numpy (centered zero-padded frames,
+  periodic Hann, `|rfft|` without Nyquist, Slaney mel, compression, min-max),
+  specified step by step for re-implementers in
+  [Spectrogram Input](docs/dev/spectrogram-input.md). Tests hold it to librosa
+  (≤ 2.4e-7) and the compiled firmware to it (< 1e-3), including the
+  precomputed log-mel path.
+- **`--qat_range_refresh`** recalibrates QAT activation ranges on the current
+  weights after every epoch, so QAT trains against the grid conversion will use.
+- QAT selection logs the fake-quant graph's cMAP next to the converted model's
+  (`val_sim_int8_cmap`, `simulated_int8_cmap`), so a simulation that drifts
+  from what ships is visible.
+
+### Changed
+
+- **Breaking: CLI defaults are the release recipe.** `train` now defaults to
+  `--audio_frontend raw` (was `hybrid`), `--chunk_duration 2.5` (was 3),
+  `--embeddings_size 512` (was 256), `--max_chunks_per_file 1` (was 3) and
+  `--learning_rate 5e-4` (was 1e-3). With `--qat`, `--epochs` and
+  `--learning_rate` default to 8 and 2e-5, and `--qat_range_refresh` is on
+  (`--no-qat_range_refresh` disables it); `--linear_probe` keeps 1e-3. Explicit
+  values still win. Scripts relying on the old defaults must pass them.
+- **The QAT simulation quantizes what the converter quantizes.** Each partial
+  filterbank convolution output is now a fake-quant boundary; without it QAT
+  scored 0.021 above the converted model. Training-only; the deployment graph
+  is unchanged.
+- **The raw magnitude is computed without `MINIMUM`/`MAXIMUM`**, as the exact
+  identity `b + 0.4a + 0.6 relu(a − b)`. TFLite's INT8 `MINIMUM` ties its
+  inputs to its output's scale, which saturated the loudest filterbank
+  magnitudes at conversion. Same weights and same float function, so existing
+  raw checkpoints load unchanged, but their converted graph differs and must
+  pass the on-target check again (the equalized QAT model with it did:
+  cos 0.999806).
+- The host no longer uses librosa to compute model inputs; the mel mixer and
+  Gabor filterbank are seeded from the reference implementation. The package
+  no longer imports librosa; it stays a dependency as the tests' reference.
+- Firmware STFT: unpack twiddles precomputed once instead of 256 `cosf`/`sinf`
+  pairs per FFT, and `-O3` for `fft.c`/`audio_stft.c`. Bit-identical output;
+  STFT 90 → 42 ms per file on the STM32N6570-DK.
+- Loading a training file is up to twice as fast: vectorized activity ranking
+  and a faster reference STFT, and one BLAS thread per loader worker instead of
+  a full OpenBLAS pool each.
+
+### Removed
+
+- **`--mag_scale cpwl`** (added in 1.2.0). Best float of any raw model, worst
+  INT8 (post-training 0.4878, QAT 0.5798). Compress the input with
+  `--input_compression` instead, which acts before the first INT8 tensor.
+- **`--qat_calibration_percentile`** and the persistent activation bounds it
+  wrote into the frontend. p99.9 and p99.99 both scored below the full range.
+  Checkpoints saved without bounds (every p100 run, including all releases)
+  load as before; a checkpoint that carries bounds is rejected.
+
+### Fixed
+
+- `python -m birdnet_stm32 train` could deadlock in file-level validation: the
+  main process ran a multithreaded OpenBLAS product after forking the loader
+  pool. Training now pins OpenBLAS/OpenMP to one thread (TensorFlow uses
+  neither).
+
 ## [1.2.0] - 2026-09-16
 
 The `raw` frontend computes correctly on the STM32N6 NPU for the first time,

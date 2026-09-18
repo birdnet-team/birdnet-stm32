@@ -101,6 +101,7 @@ nav:
   - Development:
       - Architecture: dev/architecture.md
       - Audio Frontends: dev/audio-frontends.md
+      - Spectrogram Input: dev/spectrogram-input.md
       - Model: dev/model.md
       - Quantization: dev/quantization.md
       - INT8 Quality Plan: dev/int8-parity-plan.md

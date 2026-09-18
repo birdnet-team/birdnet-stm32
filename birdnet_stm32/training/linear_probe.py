@@ -120,6 +120,7 @@ def run_linear_probe(args: argparse.Namespace) -> None:
         mel_bins=old_cfg.num_mels,
         fft_length=old_cfg.fft_length,
         mag_scale=old_cfg.mag_scale,
+        input_compression=old_cfg.input_compression,
     )
     train_dataset = load_dataset(
         train_paths,
@@ -161,6 +162,7 @@ def run_linear_probe(args: argparse.Namespace) -> None:
         hop_length=hop_length,
         audio_frontend=audio_frontend,
         mag_scale=old_cfg.mag_scale,
+        input_compression=old_cfg.input_compression,
         embeddings_size=old_cfg.embeddings_size,
         alpha=old_cfg.alpha,
         depth_multiplier=old_cfg.depth_multiplier,

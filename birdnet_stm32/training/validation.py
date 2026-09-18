@@ -114,9 +114,12 @@ class Int8Selection(FileCmap):
     The report is written last and records hashes of both selected files.
     """
 
-    def __init__(self, deployment, teacher, calibration, checkpoint_path, sync, **kwargs):
+    def __init__(self, deployment, teacher, calibration, checkpoint_path, sync, simulated=None, **kwargs):
         super().__init__(**kwargs)
         self.deployment, self.teacher = deployment, teacher
+        # The QAT fake-quant graph, scored alongside for diagnosis only: when its
+        # cMAP tracks the converted model, QAT optimizes what ships.
+        self.simulated = simulated
         self.calibration = calibration
         self.checkpoint_path = Path(checkpoint_path)
         self.int8_path = self.checkpoint_path.with_name(self.checkpoint_path.stem + "_INT8.tflite")
@@ -160,6 +163,9 @@ class Int8Selection(FileCmap):
                 "deployment_float_cmap": float_cmap,
                 "drop_from_original_float": self.float_reference - int8_cmap,
             }
+            if self.simulated is not None:
+                record["simulated_int8_cmap"] = self.score(KerasRunner(self.simulated))
+                logs.update(val_sim_int8_cmap=record["simulated_int8_cmap"])
             self.records.append(record)
             if int8_cmap > self.best:
                 temporary_checkpoint = Path(directory) / "candidate.keras"

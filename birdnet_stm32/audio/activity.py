@@ -21,13 +21,12 @@ def _short_time_energy(audio: np.ndarray, frame_length: int = 1024, hop_length: 
         1D array of per-frame energy values.
     """
     n = audio.shape[0]
-    n_frames = max(1, 1 + (n - frame_length) // hop_length)
-    energy = np.empty(n_frames, dtype=np.float32)
-    for i in range(n_frames):
-        start = i * hop_length
-        frame = audio[start : start + frame_length]
-        energy[i] = np.mean(frame**2)
-    return energy
+    if n < frame_length:
+        # One partial frame, as the loop form produced.
+        return np.array([np.mean(np.asarray(audio, dtype=np.float32) ** 2)], dtype=np.float32)
+    squared = np.asarray(audio, dtype=np.float64) ** 2
+    windows = np.lib.stride_tricks.sliding_window_view(squared, frame_length)[::hop_length]
+    return windows.mean(axis=1).astype(np.float32)
 
 
 def smart_crop(

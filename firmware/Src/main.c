@@ -478,6 +478,7 @@ int main(void)
                        APP_SPEC_WIDTH, spec_buf);
         mel_filterbank(spec_buf, APP_FFT_BINS, APP_SPEC_WIDTH,
                        APP_NUM_MELS, mel_buf);
+        spec_compress(mel_buf, APP_NUM_MELS * APP_SPEC_WIDTH, APP_INPUT_COMPRESSION);
         spec_minmax_normalize(mel_buf, APP_NUM_MELS * APP_SPEC_WIDTH);
         stft_ms = HAL_GetTick() - t0;
         npu_input = mel_buf;
@@ -487,6 +488,7 @@ int main(void)
         stft_magnitude(audio_buf, APP_CHUNK_SAMPLES,
                        APP_FFT_LENGTH, APP_HOP_LENGTH,
                        APP_SPEC_WIDTH, spec_buf);
+        spec_compress(spec_buf, APP_FFT_BINS * APP_SPEC_WIDTH, APP_INPUT_COMPRESSION);
         /* The host min-max normalizes the spectrogram; without this the model
          * sees raw magnitudes (up to ~70) instead of [0, 1]. */
         spec_minmax_normalize(spec_buf, APP_FFT_BINS * APP_SPEC_WIDTH);

@@ -139,8 +139,6 @@ def test_qat_cli_saves_a_real_selected_int8_pair(tmp_path, monkeypatch):
             str(tmp_path / "validation"),
             "--qat_calibration_samples",
             "2",
-            "--qat_calibration_percentile",
-            "99.9",
             "--epochs",
             "1",
             "--batch_size",
@@ -159,7 +157,7 @@ def test_qat_cli_saves_a_real_selected_int8_pair(tmp_path, monkeypatch):
     assert len(report["epochs"]) == 2
     assert report["selected"]["int8_cmap"] == max(row["int8_cmap"] for row in report["epochs"])
     kept_path = tmp_path / "model_qat.keras"
-    kept = tf.keras.models.load_model(
+    tf.keras.models.load_model(  # the selected checkpoint must load
         kept_path,
         compile=False,
         custom_objects={
@@ -167,7 +165,6 @@ def test_qat_cli_saves_a_real_selected_int8_pair(tmp_path, monkeypatch):
             "MagnitudeScalingLayer": MagnitudeScalingLayer,
         },
     )
-    assert kept.get_layer("audio_frontend").activation_bounds
     assert hashlib.sha256(kept_path.read_bytes()).hexdigest() == report["selected"]["keras_sha256"]
     assert (
         hashlib.sha256((tmp_path / "model_qat_INT8.tflite").read_bytes()).hexdigest()

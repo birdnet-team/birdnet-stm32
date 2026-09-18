@@ -83,6 +83,7 @@ def representative_data_gen(
     n_fft = int(cfg["fft_length"])
     frontend = normalize_frontend_name(cfg["audio_frontend"])
     mag_scale = cfg.get("mag_scale", "none")
+    compression = cfg.get("input_compression", "none")
     T = int(sr * cd)
 
     if len(file_paths) == 0:
@@ -106,14 +107,22 @@ def representative_data_gen(
         if frontend == "librosa":
             specs = [
                 get_spectrogram_from_audio(
-                    ch, sample_rate=sr, n_fft=n_fft, mel_bins=num_mels, spec_width=spec_width, mag_scale=mag_scale
+                    ch,
+                    sample_rate=sr,
+                    n_fft=n_fft,
+                    mel_bins=num_mels,
+                    spec_width=spec_width,
+                    mag_scale=mag_scale,
+                    compression=compression,
                 )
                 for ch in audio_chunks
             ]
             pool = [s for s in specs if s is not None and np.size(s) > 0]
         elif frontend == "hybrid":
             specs = [
-                get_spectrogram_from_audio(ch, sample_rate=sr, n_fft=n_fft, mel_bins=-1, spec_width=spec_width)
+                get_spectrogram_from_audio(
+                    ch, sample_rate=sr, n_fft=n_fft, mel_bins=-1, spec_width=spec_width, compression=compression
+                )
                 for ch in audio_chunks
             ]
             pool = [s for s in specs if s is not None and np.size(s) > 0]

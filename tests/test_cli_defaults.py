@@ -53,7 +53,7 @@ class TestCompressionStepDefaults:
         """QAT and conversion must observe the same activation statistics."""
         args = _train("--qat")
         assert args.qat_calibration_samples == 1024
-        assert args.qat_calibration_percentile == 100.0
+        assert not hasattr(args, "qat_calibration_percentile")
 
     def test_validation_subset_applies_to_all_training_and_is_nonnegative(self):
         assert _train("--validation_subset", "2513").validation_subset == 2513
@@ -76,6 +76,42 @@ class TestCompressionStepDefaults:
             _train("--prune")
         with pytest.raises(SystemExit):
             _train("--tune")
+
+
+class TestBestPathDefaults:
+    """A plain run reproduces the release recipe (docs/dev/int8-parity-plan.md)."""
+
+    def test_training_defaults_are_the_release_recipe(self):
+        args = _train()
+        assert args.audio_frontend == "raw"
+        assert args.mag_scale == "pwl"
+        assert args.input_compression == "none"
+        assert args.sample_rate == 24000
+        assert args.chunk_duration == pytest.approx(2.5)
+        assert args.embeddings_size == 512
+        assert args.max_chunks_per_file == 1
+        assert args.epochs == 50
+        assert args.learning_rate == pytest.approx(5e-4)
+
+    def test_qat_gets_its_own_schedule_and_range_refresh(self):
+        args = _train("--qat")
+        assert args.epochs == 8
+        assert args.learning_rate == pytest.approx(2e-5)
+        assert args.qat_range_refresh is True
+        assert _train("--qat", "--no-qat_range_refresh").qat_range_refresh is False
+
+    def test_linear_probe_keeps_its_rate(self):
+        assert _train("--linear_probe").learning_rate == pytest.approx(1e-3)
+
+    def test_explicit_schedule_wins(self):
+        args = _train("--qat", "--epochs", "3", "--learning_rate", "1e-4")
+        assert (args.epochs, args.learning_rate) == (3, pytest.approx(1e-4))
+
+    def test_disproven_options_are_gone(self):
+        with pytest.raises(SystemExit):
+            _train("--mag_scale", "cpwl")
+        with pytest.raises(SystemExit):
+            _train("--qat", "--qat_calibration_percentile", "99.9")
 
 
 class TestConversionDefaults:

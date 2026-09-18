@@ -35,10 +35,11 @@ fixed learned gains valid in place of a per-sample normalization.
 
 from typing import NamedTuple
 
-import librosa
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import constraints, layers
+
+from birdnet_stm32.audio.stft import mel_filterbank, mel_frequencies
 
 VALID_FRONTENDS = ("librosa", "hybrid", "raw")
 
@@ -213,7 +214,7 @@ def gabor_filterbank(
         Tuple of ``(real, imag)`` arrays, each ``[mel_bins, kernel]`` float32,
         normalized to unit energy per band.
     """
-    edges = librosa.mel_frequencies(n_mels=int(mel_bins) + 2, fmin=float(fmin), fmax=float(fmax), htk=False)
+    edges = mel_frequencies(int(mel_bins) + 2, float(fmin), float(fmax))
     centers = edges[1:-1].astype(np.float64)
     # Half the distance between neighbouring centres is the target bandwidth.
     bandwidths = np.maximum((edges[2:] - edges[:-2]) / 2.0, 1.0).astype(np.float64)
@@ -234,8 +235,11 @@ def gabor_filterbank(
     return (real / norm).astype(np.float32), (imag / norm).astype(np.float32)
 
 
-from birdnet_stm32.models.magnitude import VALID_MAG_SCALES, MagnitudeScalingLayer  # noqa: E402
-from birdnet_stm32.models.quantization import clip_activation, validate_bounds  # noqa: E402
+from birdnet_stm32.models.magnitude import (  # noqa: E402
+    VALID_MAG_SCALES,
+    MagnitudeScalingLayer,
+    reject_activation_bounds,  # noqa: E402
+)
 
 
 class AudioFrontendLayer(layers.Layer):
@@ -292,7 +296,7 @@ class AudioFrontendLayer(layers.Layer):
         self.mel_norm = mel_norm
         self.mag_scale = mag_scale
         self.is_trainable = bool(is_trainable)
-        self.activation_bounds = validate_bounds(activation_bounds)
+        reject_activation_bounds(activation_bounds)
         # Training may install a duck-typed quantization hook that simulates
         # the INT8 boundaries hidden inside this custom layer. It is never
         # serialized, so deployment models retain the ordinary clean graph.
@@ -350,7 +354,6 @@ class AudioFrontendLayer(layers.Layer):
             method=self.mag_scale,
             channels=self.mel_bins,
             is_trainable=True,
-            activation_bounds=self.activation_bounds,
             name=f"{name}_mag",
         )
 
@@ -433,17 +436,11 @@ class AudioFrontendLayer(layers.Layer):
     def _build_and_set_mel_mixer(self, n_fft: int, cin: int):
         """Initialize mel_mixer from a Slaney mel basis."""
         upper = int(self.mel_fmax) if self.mel_fmax is not None else (self.sample_rate // 2)
-        mel_mat = librosa.filters.mel(
-            sr=int(self.sample_rate),
-            n_fft=int(n_fft),
-            n_mels=int(self.mel_bins),
-            fmin=float(self.mel_fmin),
-            fmax=float(upper),
-            htk=False,
-            norm="slaney",
-        ).T.astype(np.float32)
-        # Drop the Nyquist row to match hybrid_fft_bins(); no runtime pad needed.
-        mel_mat = mel_mat[:cin, :]
+        # [cin, mel]: the reference filterbank already excludes the Nyquist bin,
+        # which matches hybrid_fft_bins(); no runtime pad needed.
+        mel_mat = np.ascontiguousarray(
+            mel_filterbank(int(self.sample_rate), int(n_fft), int(self.mel_bins), float(self.mel_fmin), float(upper)).T
+        )[:cin, :]
         if not self.mel_mixer.built:
             self.mel_mixer.build(tf.TensorShape([None, 1, None, cin]))
         self.mel_mixer.set_weights([mel_mat[None, None, :, :]])
@@ -471,7 +468,6 @@ class AudioFrontendLayer(layers.Layer):
 
     def _quantized_activation(self, name: str, inputs):
         """Mark an internal tensor as an INT8 activation boundary for QAT."""
-        inputs = clip_activation(inputs, self.activation_bounds, name)
         if self._quantization_hook is None:
             return inputs
         return self._quantization_hook.activation(name, inputs)
@@ -536,8 +532,17 @@ class AudioFrontendLayer(layers.Layer):
         # `window / split` taps, which is what the NPU computes correctly.
         def _bank(convs, tag):
             group = g.fold // self.split
+            # Each partial convolution output is its own INT8 tensor in the
+            # converted graph, so it is a quantization boundary here too. QAT
+            # without these simulated a nearly lossless filterbank: measured on
+            # the v1.2 raw model, its fake-quant graph scored 0.6435 validation
+            # cMAP against 0.6229 converted, and 0.6432 with the filterbank kept
+            # in float.
             parts = [
-                self._quantized_call(conv, y[:, :, :, i * group : (i + 1) * group]) for i, conv in enumerate(convs)
+                self._quantized_activation(
+                    f"{tag}_part_{i}", self._quantized_call(conv, y[:, :, :, i * group : (i + 1) * group])
+                )
+                for i, conv in enumerate(convs)
             ]
             total = parts[0]
             for j, part in enumerate(parts[1:], start=1):
@@ -561,10 +566,23 @@ class AudioFrontendLayer(layers.Layer):
         # zero-point, so ABS is never safe here.
         a = self._abs(re, f"{self.name}_abs_re")
         b = self._abs(im, f"{self.name}_abs_im")
-        maximum = self._quantized_activation(f"{self.name}_maximum", tf.maximum(a, b))
-        minimum = self._quantized_activation(f"{self.name}_minimum", tf.minimum(a, b))
-        scaled_minimum = self._quantized_activation(f"{self.name}_minimum_scale", 0.4 * minimum)
-        mag = self._quantized_activation(f"{self.name}_magnitude", maximum + scaled_minimum)
+        # Written without MAXIMUM/MINIMUM, using the exact identity
+        #     max(a, b) + 0.4 * min(a, b) = b + 0.4 * a + 0.6 * relu(a - b).
+        # TFLite's INT8 MINIMUM forces its inputs onto its output's scale, so the
+        # converter quantized |re| and |im| to min's range (0..4.31 on the v1.2
+        # raw model, against a real 0..7.08) and saturated the loudest bins
+        # before MAXIMUM saw them. SUB, RELU, MUL and ADD tie no ranges.
+        excess = self._quantized_activation(
+            f"{self.name}_abs_excess",
+            tf.nn.relu(self._quantized_activation(f"{self.name}_abs_delta", a - b)),
+        )
+        blend = self._quantized_activation(
+            f"{self.name}_abs_blend", b + self._quantized_activation(f"{self.name}_abs_re_scale", 0.4 * a)
+        )
+        mag = self._quantized_activation(
+            f"{self.name}_magnitude",
+            blend + self._quantized_activation(f"{self.name}_abs_excess_scale", 0.6 * excess),
+        )
 
         mag = self._calibrate(mag, training, smooth=True)
         mag = mag[:, :, : self.spec_width, :]
@@ -599,7 +617,6 @@ class AudioFrontendLayer(layers.Layer):
             "mel_fmax": self.mel_fmax,
             "mel_norm": self.mel_norm,
             "mag_scale": self.mag_scale,
-            "activation_bounds": self.activation_bounds,
             "name": self.name,
             "is_trainable": self.is_trainable,
         }

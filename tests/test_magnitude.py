@@ -45,7 +45,7 @@ class TestMagnitudeScalingLayer:
         range INT8 cannot hold, which is the failure this frontend exists to
         avoid. Both were removed rather than kept as untested options.
         """
-        assert set(VALID_MAG_SCALES) == {"none", "pwl", "cpwl"}
+        assert set(VALID_MAG_SCALES) == {"none", "pwl"}
 
     def test_pwl_finite_output(self):
         """PWL output should be finite for arbitrary input."""
@@ -53,48 +53,3 @@ class TestMagnitudeScalingLayer:
         x = tf.random.uniform((2, 8, 16, 1), minval=-1.0, maxval=1.0)
         y = layer(x)
         assert np.all(np.isfinite(y.numpy()))
-
-
-class TestCompressivePwl:
-    """cpwl: the same hinge sum as pwl, held concave and monotone."""
-
-    @staticmethod
-    def _curve(method, xs):
-        import numpy as np
-        import tensorflow as tf
-
-        layer = MagnitudeScalingLayer(method=method, channels=1, is_trainable=True)
-        x = tf.constant(np.asarray(xs, np.float32).reshape(1, 1, -1, 1))
-        layer.build(x.shape)
-        return np.asarray(layer(x)).ravel()
-
-    def test_initial_curve_is_monotone_and_concave(self):
-        import numpy as np
-
-        # Coarse grid: float32 rounding over a fine one swamps the slope diffs.
-        xs = np.linspace(0.0, 10.0, 201)
-        slope = np.diff(self._curve("cpwl", xs)) / np.diff(xs)
-        assert (slope >= -1e-3).all()
-        assert (np.diff(slope) <= 1e-3).all()
-        assert slope[0] > 5 * slope[-1]
-
-    def test_squeezes_the_tail_that_pwl_stretches(self):
-        cp, p = self._curve("cpwl", [10.0])[0], self._curve("pwl", [10.0])[0]
-        assert cp < p / 5
-
-    def test_constraints_restore_the_compressive_signs(self):
-        import numpy as np
-        import tensorflow as tf
-
-        layer = MagnitudeScalingLayer(method="cpwl", channels=4, is_trainable=True)
-        layer.build(tf.TensorShape([None, 1, 8, 4]))
-        for sub_layer, bad in [(layer._pwl_k0_dw, -1.0), (layer._pwl_shift_dws[0], -1.0), (layer._pwl_k_dws[0], 1.0)]:
-            kernel = sub_layer.weights[0]
-            kernel.assign(tf.fill(kernel.shape, bad))
-            kernel.assign(sub_layer.depthwise_constraint(kernel))
-            assert np.all(np.asarray(kernel) == 0.0)
-
-    def test_pwl_stays_unconstrained(self):
-        layer = MagnitudeScalingLayer(method="pwl", channels=4, is_trainable=True)
-        assert layer._pwl_k0_dw.depthwise_constraint is None
-        assert all(k.depthwise_constraint is None for k in layer._pwl_k_dws)
