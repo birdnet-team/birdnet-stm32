@@ -22,6 +22,8 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers
 
+from birdnet_stm32.models.runners import allocated_interpreter
+
 # Layers that collapse the feature map into the embedding vector. Names are
 # matched too, so a checkpoint whose pooling layer is not a Keras builtin (such
 # as the attention pooling retired in 1.2.0) still splits.
@@ -217,8 +219,7 @@ def weight_sparsity(model_path: str, min_tensor_size: int = 256) -> dict[str, fl
     Returns:
         Dict with the counted weights, the zeros among them, and their ratio.
     """
-    interpreter = tf.lite.Interpreter(model_path=model_path)
-    interpreter.allocate_tensors()
+    interpreter = allocated_interpreter(model_path=model_path)
     total = 0
     zeros = 0
     for detail in interpreter.get_tensor_details():
