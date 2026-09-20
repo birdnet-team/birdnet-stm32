@@ -246,3 +246,37 @@ class TestStratifiedValidationSubset:
 
         with pytest.raises(ValueError):
             stratified_validation_subset(self._paths({"a": 5, "b": 5, "c": 5}), 2)
+
+
+def test_file_cmap_traces_one_runner_per_model(tmp_path, monkeypatch):
+    """A fresh KerasRunner per epoch leaks traced graphs: a 100-epoch run OOMed at epoch 65."""
+    from birdnet_stm32.models.runners import KerasRunner
+    from birdnet_stm32.training import validation
+
+    built = []
+
+    class CountingRunner(KerasRunner):
+        def __init__(self, model):
+            built.append(model)
+            super().__init__(model)
+
+    monkeypatch.setattr(validation, "KerasRunner", CountingRunner)
+    monkeypatch.setattr(validation.FileCmap, "score", lambda self, runner: 0.5)
+
+    callback = validation.FileCmap(
+        files=[str(tmp_path / "a.wav")],
+        classes=["a"],
+        cfg={"chunk_duration": 3.0, "sample_rate": 22050},
+    )
+    callback.set_model(tf.keras.Sequential([tf.keras.Input((2,)), tf.keras.layers.Dense(1)]))
+
+    logs = {}
+    for epoch in range(5):
+        callback.on_epoch_end(epoch, logs)
+
+    assert logs["val_cmap"] == 0.5
+    assert len(built) == 1, "one traced runner for the trained model, reused across epochs"
+
+    other = tf.keras.Sequential([tf.keras.Input((2,)), tf.keras.layers.Dense(1)])
+    assert callback.keras_runner(other) is callback.keras_runner(other)
+    assert len(built) == 2, "a different model gets its own runner"

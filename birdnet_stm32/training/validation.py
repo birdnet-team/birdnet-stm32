@@ -83,10 +83,22 @@ class FileCmap(tf.keras.callbacks.Callback):
         self.cfg = cfg
         self.overlap = cfg["chunk_duration"] / 2 if overlap is None else overlap
         self.pooling, self.batch_size = pooling, batch_size
+        # One KerasRunner per model, reused across epochs. Each runner traces a
+        # tf.function, and a fresh one per epoch leaks graphs onto the GPU: a
+        # 100-epoch run died of OOM at epoch 65 on a 1.5 MB tensor. The traced
+        # graph reads the model's variables, so it keeps seeing current weights.
+        self._runners: dict[int, KerasRunner] = {}
         if not self.files:
             raise ValueError("File validation requires a nonempty manifest")
         if not 0 <= self.overlap < cfg["chunk_duration"]:
             raise ValueError("Validation overlap must be >= 0 and less than chunk duration")
+
+    def keras_runner(self, model) -> KerasRunner:
+        """Return this model's cached runner, tracing it once."""
+        key = id(model)
+        if key not in self._runners:
+            self._runners[key] = KerasRunner(model)
+        return self._runners[key]
 
     def score(self, runner):
         metrics, records, labels, scores = evaluate(
@@ -103,7 +115,7 @@ class FileCmap(tf.keras.callbacks.Callback):
         return macro_cmap(labels, scores)
 
     def on_epoch_end(self, epoch, logs=None):
-        logs["val_cmap"] = self.score(KerasRunner(self.model))
+        logs["val_cmap"] = self.score(self.keras_runner(self.model))
 
 
 class Int8Selection(FileCmap):
@@ -136,7 +148,7 @@ class Int8Selection(FileCmap):
         self.calibration_hash = calibration_hash.hexdigest()
 
     def on_train_begin(self, logs=None):
-        self.float_reference = self.score(KerasRunner(self.teacher))
+        self.float_reference = self.score(self.keras_runner(self.teacher))
         self._evaluate(0, {})
 
     def on_epoch_end(self, epoch, logs=None):
@@ -153,7 +165,7 @@ class Int8Selection(FileCmap):
                 str(candidate),
             )
             int8_cmap = self.score(TFLiteRunner(str(candidate)))
-            float_cmap = self.score(KerasRunner(self.deployment))
+            float_cmap = self.score(self.keras_runner(self.deployment))
             if not np.isfinite(int8_cmap) or not np.isfinite(float_cmap):
                 raise RuntimeError("Non-finite validation cMAP")
             logs.update(val_int8_cmap=int8_cmap, val_deployment_cmap=float_cmap)
@@ -164,7 +176,7 @@ class Int8Selection(FileCmap):
                 "drop_from_original_float": self.float_reference - int8_cmap,
             }
             if self.simulated is not None:
-                record["simulated_int8_cmap"] = self.score(KerasRunner(self.simulated))
+                record["simulated_int8_cmap"] = self.score(self.keras_runner(self.simulated))
                 logs.update(val_sim_int8_cmap=record["simulated_int8_cmap"])
             self.records.append(record)
             if int8_cmap > self.best:

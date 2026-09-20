@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Per-epoch file validation leaked a traced graph every epoch.** `FileCmap`
+  built a new `KerasRunner` (and so a new `tf.function`) on every
+  `on_epoch_end`, and `Int8Selection` did the same for its deployment,
+  teacher and simulated models. The graphs accumulated on the GPU: a
+  100-epoch run died with an out-of-memory error at epoch 65 while allocating
+  1.5 MB. Runners are now traced once per model and reused; the traced graph
+  reads the model's variables, so it still sees the current weights.
+
 ### Added
 
 - **Two experimental backbone options**, `--head_pooling` and
