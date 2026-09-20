@@ -95,3 +95,43 @@ class TestLoadModelRunner:
         tiny_keras_model.save(path)
         runner = load_model_runner(path)
         assert isinstance(runner, KerasRunner)
+
+
+class TestXnnpackFallback:
+    """A graph XNNPACK refuses runs on the reference kernels instead of failing."""
+
+    def test_falls_back_when_xnnpack_refuses(self, tiny_tflite_path, monkeypatch):
+        from birdnet_stm32.models import runners
+
+        real = tf.lite.Interpreter
+        default_resolver = []
+
+        class RefusingXnnpack(real):
+            def allocate_tensors(self):
+                if self._uses_default_delegates:
+                    raise RuntimeError("failed to create XNNPACK runtimeNode number 51 (TfLiteXNNPackDelegate)")
+                return super().allocate_tensors()
+
+            def __init__(self, *args, **kwargs):
+                resolver = kwargs.get("experimental_op_resolver_type")
+                self._uses_default_delegates = resolver in (None, tf.lite.experimental.OpResolverType.AUTO)
+                default_resolver.append(self._uses_default_delegates)
+                super().__init__(*args, **kwargs)
+
+        monkeypatch.setattr(runners.tf.lite, "Interpreter", RefusingXnnpack)
+        with pytest.warns(RuntimeWarning, match="reference kernels"):
+            runner = TFLiteRunner(tiny_tflite_path)
+        assert default_resolver == [True, False]
+        out = runner.predict(np.random.default_rng(0).random((2, 8, 8, 1), dtype=np.float32))
+        assert out.shape == (2, 4)
+
+    def test_other_allocation_errors_propagate(self, tiny_tflite_path, monkeypatch):
+        from birdnet_stm32.models import runners
+
+        class Broken(tf.lite.Interpreter):
+            def allocate_tensors(self):
+                raise RuntimeError("tensor arena too small")
+
+        monkeypatch.setattr(runners.tf.lite, "Interpreter", Broken)
+        with pytest.raises(RuntimeError, match="arena"):
+            runners.allocated_interpreter(model_path=tiny_tflite_path)

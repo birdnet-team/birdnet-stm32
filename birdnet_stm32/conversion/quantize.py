@@ -16,6 +16,7 @@ from tqdm import tqdm
 from birdnet_stm32.audio.io import load_audio_file
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
 from birdnet_stm32.models.frontend import normalize_frontend_name
+from birdnet_stm32.models.runners import allocated_interpreter
 
 
 def stratified_sample_paths(
@@ -206,8 +207,7 @@ def convert_to_tflite(
     tflite_model = bytes(converter.convert())
 
     # Verify the public float32 I/O contract; audio is still quantized internally.
-    interpreter = tf.lite.Interpreter(model_content=tflite_model)
-    interpreter.allocate_tensors()
+    interpreter = allocated_interpreter(model_content=tflite_model)
     in_dtype = interpreter.get_input_details()[0]["dtype"]
     out_dtype = interpreter.get_output_details()[0]["dtype"]
     if in_dtype != np.float32 or out_dtype != np.float32:

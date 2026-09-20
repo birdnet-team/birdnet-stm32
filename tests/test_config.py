@@ -132,6 +132,23 @@ class TestModelConfig:
         cfg = ModelConfig.load(path)
         assert cfg.sample_rate == 22050
         assert cfg.num_classes == 10
+        assert cfg.head_pooling == "gap"
+        assert cfg.dw_kernel_size == 3
+        assert cfg.stage_widths == [32, 64, 128, 256]
+
+    def test_backbone_options_round_trip_and_validate(self, tmp_path):
+        cfg = ModelConfig(head_pooling="freq_mean_time_maxmean", dw_kernel_size=5)
+        path = tmp_path / "cfg.json"
+        cfg.save(path)
+        loaded = ModelConfig.load(path)
+        assert (loaded.head_pooling, loaded.dw_kernel_size) == ("freq_mean_time_maxmean", 5)
+        with pytest.raises(ValueError, match="head_pooling"):
+            ModelConfig(head_pooling="attn")
+        with pytest.raises(ValueError, match="dw_kernel_size"):
+            ModelConfig(dw_kernel_size=7)
+        with pytest.raises(ValueError, match="stage_widths"):
+            ModelConfig(stage_widths=[32, 64])
+        assert ModelConfig.load(path).stage_widths == [32, 64, 128, 256]
 
 
 def test_config_ignores_removed_architecture_keys(tmp_path):

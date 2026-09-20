@@ -5,6 +5,7 @@ enabling the evaluation pipeline to be agnostic to the model type.
 """
 
 import os
+import warnings
 
 import numpy as np
 import tensorflow as tf
@@ -25,6 +26,47 @@ def load_keras_model(model_path: str) -> tf.keras.Model:
         compile=False,
         custom_objects=_KERAS_CUSTOM_OBJECTS,
     )
+
+
+def allocated_interpreter(
+    model_path: str | None = None, model_content: bytes | None = None, num_threads: int | None = None
+) -> tf.lite.Interpreter:
+    """Return a TFLite interpreter with its tensors allocated.
+
+    TFLite applies the XNNPACK delegate by default. XNNPACK refuses some valid
+    INT8 graphs outright, for example a requantization scale of 256 or more,
+    which PTQ produces when a branch calibrates to an almost empty range (a PWL
+    hinge that never fires). The builtin reference kernels run those graphs, so
+    the interpreter falls back to them with a warning instead of failing.
+    Graphs XNNPACK accepts keep running on it, so their outputs are unchanged.
+
+    Args:
+        model_path: Path to a .tflite file.
+        model_content: Serialized model, instead of a path.
+        num_threads: Interpreter threads.
+
+    Returns:
+        Interpreter with tensors allocated.
+    """
+    kwargs = {"model_path": model_path, "model_content": model_content, "num_threads": num_threads}
+    interpreter = tf.lite.Interpreter(**kwargs, experimental_delegates=[])
+    try:
+        interpreter.allocate_tensors()
+        return interpreter
+    except RuntimeError as exc:
+        if "XNNPACK" not in str(exc):
+            raise
+        warnings.warn(
+            f"XNNPACK cannot run {model_path or 'this model'} ({exc}); using the builtin reference kernels.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    interpreter = tf.lite.Interpreter(
+        **kwargs,
+        experimental_op_resolver_type=tf.lite.experimental.OpResolverType.BUILTIN_WITHOUT_DEFAULT_DELEGATES,
+    )
+    interpreter.allocate_tensors()
+    return interpreter
 
 
 class KerasRunner:
@@ -56,18 +98,17 @@ class KerasRunner:
 
 
 class TFLiteRunner:
-    """TFLite model runner using the builtin interpreter (no delegates)."""
+    """TFLite model runner (XNNPACK, or the reference kernels where XNNPACK refuses the graph)."""
 
     def __init__(self, model_path: str, num_threads: int | None = None):
         """Initialize with a TFLite model file.
 
         Args:
             model_path: Path to a .tflite model file.
-            num_threads: Interpreter threads (default: up to 8). Only the
-                builtin kernels run, so outputs do not depend on this.
+            num_threads: Interpreter threads (default: up to 8).
         """
         threads = num_threads if num_threads is not None else min(8, os.cpu_count() or 1)
-        self.interpreter = tf.lite.Interpreter(model_path=model_path, experimental_delegates=[], num_threads=threads)
+        self.interpreter = allocated_interpreter(model_path=model_path, num_threads=threads)
         self.input_index = None
         self.output_index = None
         self._allocate()

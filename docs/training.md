@@ -39,7 +39,7 @@ The script saves these files alongside the checkpoint:
 | Frontend | Input to model | Description |
 |---|---|---|
 | `raw` (default) | Peak-normalized waveform | Model applies a mel-seeded, trainable Gabor quadrature filterbank. The release frontend: the whole pipeline runs on the NPU. |
-| `hybrid` | Linear magnitude STFT | Model applies a learned mel mixer and magnitude scaling. The STFT runs outside the model (host, or the Cortex-M55). With `--input_compression sqrt` the best INT8 accuracy measured, at 117 ms per file against 71 ms for raw. |
+| `hybrid` | Linear magnitude STFT | Model applies a learned mel mixer and magnitude scaling. The STFT runs outside the model (host, or the Cortex-M55). With `--input_compression sqrt` the best INT8 accuracy measured, at 148 ms per file against 75 ms for raw (1.4 models). |
 | `librosa` | Mel spectrogram | Mel spectrogram computed outside the model. Smallest quantization loss, weakest float model. |
 
 `hybrid` and `librosa` inputs are defined by `birdnet_stm32.audio.stft` and
@@ -73,6 +73,21 @@ The DS-CNN is scaled with two knobs:
   Default 1.0. Values like 0.5 or 0.75 produce smaller models.
 - **`--depth_multiplier`**: repeats each depthwise-separable block. Default 1.
   Increase to 2 for deeper models.
+
+Two experimental options change the backbone shape. Both default to the release
+architecture, and neither has been validated on INT8 or on the board yet:
+
+- **`--head_pooling`**: `gap` (default) averages the final feature map over
+  frequency and time. `freq_mean_time_maxmean` averages over frequency, then
+  adds the max and the mean over time, so a short call is not averaged away.
+  It adds no weights.
+- **`--dw_kernel_size`**: depthwise kernel size in stages 2–4, `3` (default) or
+  `5`. Stage 1 stays 3 × 3.
+- **`--stage_widths`**: base output channels of the four stages before
+  `--alpha`, default `32 64 128 256`. Use it to widen only the late stages,
+  where the feature map is small and extra channels are cheap in activation
+  memory. When the last stage is as wide as `--embeddings_size`, the separate
+  1 × 1 embedding convolution is left out.
 
 !!! tip "Channel alignment"
     Keep channel counts as multiples of 8 for optimal NPU vectorization. The
@@ -288,6 +303,9 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--embeddings_size` | 512 | Embedding channels before head |
 | `--alpha` | 1.0 | Model width scaling |
 | `--depth_multiplier` | 1 | Block repeats per stage |
+| `--head_pooling` | gap | `gap` or `freq_mean_time_maxmean` (experimental) |
+| `--dw_kernel_size` | 3 | Depthwise kernel in stages 2–4: `3` or `5` (experimental) |
+| `--stage_widths` | 32 64 128 256 | Base channels of the four stages, before `--alpha` (experimental) |
 | `--frontend_trainable` | False | Make frontend weights trainable |
 | `--mixup_alpha` | 0.2 | Mixup alpha (0 disables) |
 | `--mixup_probability` | 0.25 | Fraction of batch to mix |
