@@ -152,6 +152,9 @@ def load_dataset(
     spec_augment = kwargs.get("spec_augment", False)
     freq_mask_max = kwargs.get("freq_mask_max", 8)
     time_mask_max = kwargs.get("time_mask_max", 25)
+    crop_policy = kwargs.get("crop_policy", "energy")
+    raw_time_masks = int(kwargs.get("raw_time_masks", 0))
+    raw_time_mask_ms = float(kwargs.get("raw_time_mask_ms", 30.0))
     mixup_alpha = kwargs.get("mixup_alpha", 0.2)
     mixup_probability = kwargs.get("mixup_probability", 0.25)
     # Keep prefetch bounded to avoid RAM spikes with large raw batches.
@@ -205,6 +208,9 @@ def load_dataset(
         "max_chunks_per_file": max_chunks_per_file,
         "candidate_chunks_per_file": candidate_chunks_per_file,
         "load_duration": load_duration,
+        "crop_policy": crop_policy,
+        "raw_time_masks": raw_time_masks,
+        "raw_time_mask_ms": raw_time_mask_ms,
     }
 
     use_mp = num_workers > 0

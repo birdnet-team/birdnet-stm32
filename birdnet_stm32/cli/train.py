@@ -286,6 +286,27 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--no_spec_augment", action="store_true", default=False, help="Disable SpecAugment")
     parser.add_argument("--freq_mask_max", type=int, default=8, help="Max frequency mask width (bins)")
     parser.add_argument("--time_mask_max", type=int, default=25, help="Max time mask width (frames)")
+    parser.add_argument(
+        "--crop_policy",
+        type=str,
+        default="energy",
+        choices=["energy", "uniform"],
+        help=(
+            "How training chunks are chosen from a recording. 'energy' (default) ranks "
+            "candidates by short-time energy and keeps the loudest; 'uniform' draws start "
+            "offsets at random, which avoids biasing the sampler toward rain, wind and "
+            "insect choruses at the cost of some silent chunks. Evaluation is unaffected: "
+            "it always scores whole files with overlapping windows."
+        ),
+    )
+    parser.add_argument(
+        "--raw_time_masks",
+        type=int,
+        default=0,
+        help="Number of waveform time masks for the raw frontend (0 = off). SpecAugment's "
+        "time axis, applied in the sample domain, which raw can use and SpecAugment cannot.",
+    )
+    parser.add_argument("--raw_time_mask_ms", type=float, default=30.0, help="Max width of each raw time mask (ms)")
     parser.add_argument("--mixup_alpha", type=float, default=0.2, help="Mixup alpha")
     parser.add_argument("--mixup_probability", type=float, default=0.25, help="Mixup batch fraction")
 
@@ -568,6 +589,9 @@ def main():
         spec_augment=args.spec_augment,
         freq_mask_max=args.freq_mask_max,
         time_mask_max=args.time_mask_max,
+        crop_policy=args.crop_policy,
+        raw_time_masks=args.raw_time_masks,
+        raw_time_mask_ms=args.raw_time_mask_ms,
         **train_kwargs,
     )
     from birdnet_stm32.training.validation import VALIDATION_SUBSET_SEED, FileCmap, stratified_validation_subset

@@ -105,9 +105,22 @@ architecture, and neither has been validated on INT8 or on the board yet:
   masking to spectrograms during training. Disable with `--no_spec_augment`.
   Control mask widths with `--freq_mask_max` (default 8 bins) and
   `--time_mask_max` (default 25 frames).
+- **Raw time masking**: the `raw` frontend never sees a spectrogram in the
+  loader, so it cannot use SpecAugment. `--raw_time_masks` (default 0, off)
+  zeroes that many spans of the waveform, each up to `--raw_time_mask_ms`
+  (default 30 ms) wide, after peak normalization. The learned filterbank turns
+  a zeroed span into zeroed time columns, so this is SpecAugment's time axis
+  applied in the sample domain. There is no waveform equivalent of frequency
+  masking, which needs a filter rather than a mask.
 - **Smart crop**: long recordings (> 2 chunks) are automatically cropped to
   salient regions using short-time energy (STE) analysis, reducing label
-  noise from silent or irrelevant segments.
+  noise from silent or irrelevant segments. `--crop_policy uniform` turns this
+  off and draws start offsets at random instead. Energy ranking selects the
+  loudest part of a recording, which in field audio is as often rain, wind or
+  an insect chorus as the target bird, and it skips faint distant calls;
+  uniform sampling has no such bias but returns more silent chunks. Evaluation
+  is unaffected either way: it always scores whole files with overlapping
+  windows.
 - **Multi-chunk I/O reuse**: long files (e.g. 60 s recordings) yield up to
   `--max_chunks_per_file` (default 3) salient chunks per file open, stored
   in a memory-bounded shuffled reservoir. This avoids redundant FLAC decode +
@@ -312,6 +325,9 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--no_spec_augment` | False | Disable SpecAugment masking (on by default) |
 | `--freq_mask_max` | 8 | Max frequency mask width (bins) |
 | `--time_mask_max` | 25 | Max time mask width (frames) |
+| `--crop_policy` | energy | How training chunks are chosen: `energy` or `uniform` (experimental) |
+| `--raw_time_masks` | 0 | Waveform time masks for the `raw` frontend (0 = off, experimental) |
+| `--raw_time_mask_ms` | 30.0 | Max width of each raw time mask (ms) |
 | `--dropout` | 0.5 | Dropout rate before classifier head |
 | `--optimizer` | adam | `adam`, `sgd`, or `adamw` |
 | `--weight_decay` | 0.0 | Weight decay (adamw only) |

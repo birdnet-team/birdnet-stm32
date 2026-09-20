@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`--crop_policy`** selects how training chunks are drawn from a recording.
+  The default `energy` keeps the existing short-time-energy ranking; `uniform`
+  draws start offsets at random and skips the activity ranking. Energy ranking
+  favours the loudest part of a recording, which in field audio is as often
+  rain, wind or an insect chorus as the target species. Evaluation is
+  unaffected: it always scores whole files with overlapping windows.
+- **`--raw_time_masks` and `--raw_time_mask_ms`** apply SpecAugment-style time
+  masking to the waveform for the `raw` frontend, which never sees a
+  spectrogram in the loader and so could not use `--time_mask_max`. Off by
+  default.
+
 ## [1.4.0] - 2026-09-20
 
 Accuracy. A staged ablation over the backbone, scaling and spectrogram

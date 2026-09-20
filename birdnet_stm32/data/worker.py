@@ -10,8 +10,8 @@ import signal
 
 import numpy as np
 
-from birdnet_stm32.audio.activity import smart_crop, sort_by_activity
-from birdnet_stm32.audio.augmentation import apply_spec_augment
+from birdnet_stm32.audio.activity import smart_crop, sort_by_activity, uniform_crop
+from birdnet_stm32.audio.augmentation import apply_spec_augment, apply_time_mask
 from birdnet_stm32.audio.io import estimate_num_chunks, load_audio_window, split_audio_into_chunks
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
 
@@ -81,6 +81,8 @@ def _process_file(path: str):
     snr_threshold = cfg["snr_threshold"]
     random_offset = cfg["random_offset"]
     spec_augment = cfg["spec_augment"]
+    raw_time_masks = int(cfg.get("raw_time_masks", 0))
+    raw_time_mask_ms = float(cfg.get("raw_time_mask_ms", 30.0))
     freq_mask_max = cfg["freq_mask_max"]
     time_mask_max = cfg["time_mask_max"]
     audio_frontend = cfg["audio_frontend"]
@@ -101,8 +103,11 @@ def _process_file(path: str):
     if audio.size == 0:
         return None
 
+    crop_policy = cfg.get("crop_policy", "energy")
     available_chunks = estimate_num_chunks(audio.shape[0], sr, cd)
-    if available_chunks > candidate_chunks:
+    if crop_policy == "uniform":
+        audio_chunks = list(uniform_crop(audio, sr, cd, max_chunks=candidate_chunks))
+    elif available_chunks > candidate_chunks:
         audio_chunks = list(smart_crop(audio, sr, cd, max_chunks=candidate_chunks))
     else:
         audio_chunks = list(split_audio_into_chunks(audio, sample_rate=sr, chunk_duration=cd))
@@ -148,8 +153,14 @@ def _process_file(path: str):
     features = [ranked for _, ranked in pairs]
     model_input = {id(ranked): item for item, ranked in pairs}
 
-    # Activity-sort: most salient first
-    pool = sort_by_activity(features, threshold=snr_threshold) or features
+    # Activity-sort: most salient first. Under the uniform policy the ranking is
+    # skipped too, since re-ranking uniformly drawn chunks by energy would put
+    # the very bias back that the policy exists to remove.
+    if crop_policy == "uniform":
+        pool = list(features)
+        np.random.shuffle(pool)
+    else:
+        pool = sort_by_activity(features, threshold=snr_threshold) or features
     if not pool:
         return None
     pool = [model_input[id(ranked)] for ranked in pool]
@@ -164,6 +175,9 @@ def _process_file(path: str):
             if x.shape[0] < T:
                 x = np.pad(x, (0, T - x.shape[0]))
             sample = x / (np.max(np.abs(x)) + 1e-6)
+            # After normalization, so a mask cannot change the scaling peak.
+            if raw_time_masks > 0:
+                sample = apply_time_mask(sample, sr, num_masks=raw_time_masks, max_width_ms=raw_time_mask_ms)
         else:
             sample = item
 
