@@ -5,33 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.0] - 2026-09-20
+
+Accuracy. A staged ablation over the backbone, scaling and spectrogram
+resolution, followed by longer finalist runs, produced a clearly better model
+family on both frontends. The architecture changes are 5 x 5 depthwise kernels
+in stages 2-4, a 1024-d embedding and a wider backbone (`alpha` 1.5); `hybrid`
+additionally moves from 256 to 384 STFT frames.
+
+### Models
+
+1.4 ships two bundles of the same 100-output USNE family (90 birds, 10 nuisance
+sounds, dataset v0.2.0), as 1.3 did: `BirdNET_Tiny_N6_USNE_90_V1.4_Raw` takes
+2.5 s of audio and runs entirely on the NPU, and
+`BirdNET_Tiny_N6_USNE_90_V1.4_Hybrid` takes a sqrt-compressed STFT computed on
+the Cortex-M55 and is the more accurate of the two. Each carries its own
+backbone/classifier pair. Release gates were anchored to the matching 1.3
+bundle before either candidate was measured, and both bundles passed the
+catalog, on-target and board checks before publication.
+
+### Added
+
+- **`--head_pooling`, `--dw_kernel_size` and `--stage_widths`** (also
+  `ModelConfig` fields) make the pooling head, the depthwise kernel size in
+  stages 2-4, and the per-stage channel counts configurable. All default to the
+  release architecture, so existing checkpoints and configs are unchanged.
+  `freq_mean_time_maxmean` builds its frequency mean as a frozen depthwise
+  convolution, because an `AveragePool` or `MEAN` over frequency alone falls
+  back to the Cortex-M55.
 
 ### Fixed
 
 - **Per-epoch file validation leaked a traced graph every epoch.** `FileCmap`
   built a new `KerasRunner` (and so a new `tf.function`) on every
-  `on_epoch_end`, and `Int8Selection` did the same for its deployment,
-  teacher and simulated models. The graphs accumulated on the GPU: a
-  100-epoch run died with an out-of-memory error at epoch 65 while allocating
-  1.5 MB. Runners are now traced once per model and reused; the traced graph
-  reads the model's variables, so it still sees the current weights.
-
-### Added
-
-- **Two experimental backbone options**, `--head_pooling` and
-  `--dw_kernel_size` (also `ModelConfig` fields). Both default to the release
-  architecture, so existing checkpoints and configs are unchanged.
-  `freq_mean_time_maxmean` averages over frequency, then adds the max and the
-  mean over time, instead of global average pooling. `--dw_kernel_size 5`
-  widens the depthwise kernels in stages 2–4. `stedgeai analyze` keeps both on
-  the NPU, with the same software epochs and activation arena as the release
-  model. The frequency mean is a frozen depthwise convolution: an
-  `AveragePool` or `MEAN` over frequency alone falls back to the Cortex-M55.
-  Neither option has been validated on INT8 or on the board.
-- **`--stage_widths`** (also a `ModelConfig` field) sets the base channels of
-  the four stages before `--alpha`, so the late stages can be widened alone.
-  The default is the release architecture.
+  `on_epoch_end`, and `Int8Selection` did the same for its deployment, teacher
+  and simulated models. The graphs accumulated on the GPU until a long run ran
+  out of memory. Runners are now traced once per model and reused; the traced
+  graph reads the model's variables, so it still sees the current weights.
+- **Conversion and evaluation fall back to TFLite's reference kernels when
+  XNNPACK refuses a graph.** XNNPACK rejects some valid INT8 graphs outright,
+  for example when a PWL hinge calibrates to an almost empty range and its
+  requantization scale exceeds the delegate's limit. Graphs XNNPACK accepts
+  still run on it, unchanged.
 
 ## [1.3.1] - 2026-09-18
 

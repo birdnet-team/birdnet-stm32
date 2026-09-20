@@ -39,7 +39,7 @@ The script saves these files alongside the checkpoint:
 | Frontend | Input to model | Description |
 |---|---|---|
 | `raw` (default) | Peak-normalized waveform | Model applies a mel-seeded, trainable Gabor quadrature filterbank. The release frontend: the whole pipeline runs on the NPU. |
-| `hybrid` | Linear magnitude STFT | Model applies a learned mel mixer and magnitude scaling. The STFT runs outside the model (host, or the Cortex-M55). With `--input_compression sqrt` the best INT8 accuracy measured, at 117 ms per file against 71 ms for raw. |
+| `hybrid` | Linear magnitude STFT | Model applies a learned mel mixer and magnitude scaling. The STFT runs outside the model (host, or the Cortex-M55). With `--input_compression sqrt` the best INT8 accuracy measured, at 148 ms per file against 75 ms for raw (1.4 models). |
 | `librosa` | Mel spectrogram | Mel spectrogram computed outside the model. Smallest quantization loss, weakest float model. |
 
 `hybrid` and `librosa` inputs are defined by `birdnet_stm32.audio.stft` and

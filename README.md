@@ -94,10 +94,10 @@ Every file shares one basename, `BirdNET_Tiny_N6_<REGION>_<SPECIES>_V<VERSION>`,
 with a `_Raw` or `_Hybrid` suffix from 1.3 on, when a release ships both
 frontends:
 
-- **`_Raw`** takes 2.5 s of audio; the whole pipeline runs on the NPU (71 ms per
+- **`_Raw`** takes 2.5 s of audio; the whole pipeline runs on the NPU (75 ms per
   file on the board). This is the reference release model.
 - **`_Hybrid`** takes a spectrogram the firmware computes on the Cortex-M55; it
-  has the better INT8 accuracy, at 117 ms per file. On any other device, compute
+  has the better INT8 accuracy, at 148 ms per file. On any other device, compute
   its input exactly as specified in
   [Spectrogram Input](https://birdnet-team.github.io/birdnet-stm32/dev/spectrogram-input/).
 
