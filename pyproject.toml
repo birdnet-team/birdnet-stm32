@@ -22,8 +22,8 @@ classifiers = [
 ]
 dependencies = [
     "librosa>=0.11.0",
-    "tensorflow[and-cuda]>=2.16.0,<3.0.0",
-    "numpy>=1.26.0,<2.0.0",
+    "tensorflow[and-cuda]>=2.21.0,<3.0.0",
+    "numpy>=2.0.0,<3.0.0",
     "matplotlib>=3.9.0",
     "scikit-learn>=1.5.0",
     "tqdm>=4.66.0",

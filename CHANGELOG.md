@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **TensorFlow 2.21 and NumPy 2 are now the supported baseline** (previously
+  TensorFlow 2.16+ and NumPy 1.x). No source change was needed; the floors in
+  `pyproject.toml`, `requirements.txt`, the CI workflows and the documented
+  requirements moved together.
+
+  The upgrade was verified against the published 1.4 artifacts rather than
+  assumed. Re-converting both 1.4 release checkpoints under 2.21, with the
+  release pipeline's own invocation, reproduces the shipped INT8 models: the
+  same catalog cMAP to four decimals, the same TFLite operator and tensor
+  inventory, the same compiler report from `stedgeai` (MACC, weights, arena
+  placement and epoch counts), the same on-target cosine and mean absolute
+  error, and the same host-versus-board agreement and per-file timing. The
+  ONNX export path and the full test suite pass unchanged.
+
 ### Added
 
 - **`--crop_policy`** selects how training chunks are drawn from a recording.
