@@ -66,7 +66,8 @@ def load_audio_window(
     max_duration: float | None = 30,
     chunk_duration: float = 3.0,
     random_offset: bool = False,
-) -> np.ndarray:
+    return_offset: bool = False,
+) -> np.ndarray | tuple[np.ndarray, float]:
     """Load one contiguous mono waveform window from disk.
 
     The window is read directly from the source file, resampled, and peak
@@ -82,16 +83,21 @@ def load_audio_window(
             a random start offset.
         random_offset: Whether to read from a random offset instead of the
             beginning of the file.
+        return_offset: Also return where in the file the window starts, in
+            seconds. Callers that attach per-window targets (teacher scores)
+            need it to place a chunk on the file's own timeline.
 
     Returns:
-        Mono float32 waveform. Returns an empty array on error.
+        Mono float32 waveform, or ``(waveform, offset_seconds)`` with
+        ``return_offset``. Returns an empty array (offset 0.0) on error.
     """
+    empty = np.empty((0,), dtype=np.float32)
     try:
         info = sf.info(path)
         sr0 = int(info.samplerate)
         total_frames = int(info.frames)
         if total_frames <= 0 or sr0 <= 0:
-            return np.empty((0,), dtype=np.float32)
+            return (empty, 0.0) if return_offset else empty
 
         total_duration = total_frames / float(sr0)
         if max_duration and max_duration > 0:
@@ -109,13 +115,13 @@ def load_audio_window(
         frames_left = max(0, total_frames - start_frame)
         frames_to_read = int(min(frames_left, read_duration * sr0))
         if frames_to_read <= 0:
-            return np.empty((0,), dtype=np.float32)
+            return (empty, 0.0) if return_offset else empty
 
         with sf.SoundFile(path, mode="r") as f:
             f.seek(start_frame)
             y = f.read(frames_to_read, dtype="float32", always_2d=True)
         if y.size == 0:
-            return np.empty((0,), dtype=np.float32)
+            return (empty, 0.0) if return_offset else empty
 
         y = y.mean(axis=1).astype(np.float32, copy=False)
         if sr0 != sample_rate:
@@ -125,9 +131,45 @@ def load_audio_window(
         if peak > 0.0:
             y = y / peak
 
-        return np.asarray(y, dtype=np.float32)
+        y = np.asarray(y, dtype=np.float32)
+        # The position actually read, not the float draw it was rounded from.
+        return (y, start_frame / float(sr0)) if return_offset else y
     except Exception:
-        return np.empty((0,), dtype=np.float32)
+        return (empty, 0.0) if return_offset else empty
+
+
+def chunk_start_samples(
+    num_samples: int,
+    sample_rate: int,
+    chunk_duration: float,
+    chunk_overlap: float = 0.0,
+) -> np.ndarray:
+    """Start sample of every chunk :func:`split_audio_into_chunks` emits.
+
+    Chunks step by ``chunk_duration - chunk_overlap``, and a final chunk is
+    right-aligned to the end of the waveform when the steps do not land on it
+    exactly. A waveform no longer than one chunk yields one chunk at 0.
+
+    Args:
+        num_samples: Length of the waveform in samples.
+        sample_rate: Sampling rate in Hz.
+        chunk_duration: Duration of each chunk in seconds.
+        chunk_overlap: Overlap between chunks in seconds.
+
+    Returns:
+        int64 array of chunk start positions, in samples.
+    """
+    chunk_size = int(sample_rate * chunk_duration)
+    if num_samples <= 0 or chunk_size <= 0:
+        return np.empty((0,), dtype=np.int64)
+    if num_samples <= chunk_size:
+        return np.zeros((1,), dtype=np.int64)
+    max_overlap = max(0.0, min(chunk_overlap, chunk_duration - 0.1))
+    step_size = max(1, int(sample_rate * (chunk_duration - max_overlap)))
+    starts = np.arange(0, num_samples - chunk_size + 1, step_size, dtype=np.int64)
+    if starts.size == 0 or (starts[-1] + chunk_size < num_samples):
+        starts = np.append(starts, num_samples - chunk_size)
+    return starts
 
 
 def split_audio_into_chunks(
@@ -161,13 +203,7 @@ def split_audio_into_chunks(
         padded = np.pad(y, (0, chunk_size - y.shape[0]), mode="constant")
         return padded[np.newaxis, :].astype(np.float32, copy=False)
 
-    max_overlap = max(0.0, min(chunk_overlap, chunk_duration - 0.1))
-    step_size = max(1, int(sample_rate * (chunk_duration - max_overlap)))
-
-    starts = np.arange(0, y.shape[0] - chunk_size + 1, step_size, dtype=np.int64)
-    if starts.size == 0 or (starts[-1] + chunk_size < y.shape[0]):
-        starts = np.append(starts, y.shape[0] - chunk_size)
-
+    starts = chunk_start_samples(y.shape[0], sample_rate, chunk_duration, chunk_overlap)
     chunks = np.empty((starts.size, chunk_size), dtype=np.float32)
     for i, start in enumerate(starts):
         chunks[i] = y[start : start + chunk_size]

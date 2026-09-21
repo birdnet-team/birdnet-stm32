@@ -153,6 +153,8 @@ def load_dataset(
     freq_mask_max = kwargs.get("freq_mask_max", 8)
     time_mask_max = kwargs.get("time_mask_max", 25)
     crop_policy = kwargs.get("crop_policy", "energy")
+    teacher_cache = kwargs.get("teacher_cache")
+    teacher_weight = float(kwargs.get("teacher_weight", 0.0))
     raw_time_masks = int(kwargs.get("raw_time_masks", 0))
     raw_time_mask_ms = float(kwargs.get("raw_time_mask_ms", 30.0))
     mixup_alpha = kwargs.get("mixup_alpha", 0.2)
@@ -209,6 +211,9 @@ def load_dataset(
         "candidate_chunks_per_file": candidate_chunks_per_file,
         "load_duration": load_duration,
         "crop_policy": crop_policy,
+        "classes": list(classes),
+        "teacher_cache": str(teacher_cache) if teacher_cache else None,
+        "teacher_weight": teacher_weight,
         "raw_time_masks": raw_time_masks,
         "raw_time_mask_ms": raw_time_mask_ms,
     }

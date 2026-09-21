@@ -35,7 +35,8 @@ def smart_crop(
     chunk_duration: float,
     max_chunks: int = 5,
     energy_percentile: float = 75.0,
-) -> list[np.ndarray]:
+    return_starts: bool = False,
+) -> list[np.ndarray] | tuple[list[np.ndarray], list[int]]:
     """Extract the most salient chunks from a long audio recording.
 
     Uses short-time energy (STE) to identify regions with the highest
@@ -57,18 +58,24 @@ def smart_crop(
         max_chunks: Maximum number of chunks to return.
         energy_percentile: Percentile of STE used as activity threshold
             (higher = stricter, keeps only the loudest regions).
+        return_starts: Also return each chunk's start sample.
 
     Returns:
-        List of 1D float32 audio chunks, sorted by descending energy.
-        Falls back to a single center crop if no salient region is found.
+        List of 1D float32 audio chunks, sorted by descending energy, or
+        ``(chunks, starts)`` with ``return_starts``. Falls back to a single
+        center crop if no salient region is found.
     """
+
+    def result(chunks: list[np.ndarray], starts: list[int]):
+        return (chunks, starts) if return_starts else chunks
+
     chunk_size = int(sample_rate * chunk_duration)
     n = audio.shape[0]
 
     if n <= chunk_size:
         # File shorter than one chunk — pad and return
         padded = np.pad(audio, (0, max(0, chunk_size - n)))
-        return [padded[:chunk_size].astype(np.float32)]
+        return result([padded[:chunk_size].astype(np.float32)], [0])
 
     # Compute STE
     frame_len = min(1024, chunk_size // 4)
@@ -79,7 +86,7 @@ def smart_crop(
         # Silent recording — return center crop
         mid = n // 2
         start = max(0, mid - chunk_size // 2)
-        return [audio[start : start + chunk_size].astype(np.float32)]
+        return result([audio[start : start + chunk_size].astype(np.float32)], [start])
 
     threshold = np.percentile(ste, energy_percentile)
     above = ste >= threshold
@@ -102,7 +109,7 @@ def smart_crop(
         # Fallback: center crop
         mid = n // 2
         start = max(0, mid - chunk_size // 2)
-        return [audio[start : start + chunk_size].astype(np.float32)]
+        return result([audio[start : start + chunk_size].astype(np.float32)], [start])
 
     # For each region, find the peak energy frame and center a chunk there
     candidates: list[tuple[float, int]] = []
@@ -124,8 +131,9 @@ def smart_crop(
         if len(selected_starts) >= max_chunks:
             break
 
-    chunks = [audio[s : s + chunk_size].astype(np.float32) for s in selected_starts]
-    return chunks if chunks else [audio[:chunk_size].astype(np.float32)]
+    if not selected_starts:
+        return result([audio[:chunk_size].astype(np.float32)], [0])
+    return result([audio[s : s + chunk_size].astype(np.float32) for s in selected_starts], selected_starts)
 
 
 def uniform_crop(
@@ -134,7 +142,8 @@ def uniform_crop(
     chunk_duration: float,
     max_chunks: int = 5,
     rng: np.random.Generator | None = None,
-) -> list[np.ndarray]:
+    return_starts: bool = False,
+) -> list[np.ndarray] | tuple[list[np.ndarray], list[int]]:
     """Draw chunks from uniformly random start offsets, ignoring energy.
 
     The counterpart to :func:`smart_crop`. Energy-ranked cropping selects the
@@ -149,10 +158,12 @@ def uniform_crop(
         chunk_duration: Desired chunk length (seconds).
         max_chunks: Maximum number of chunks to return.
         rng: Optional generator, for tests that need a fixed draw.
+        return_starts: Also return each chunk's start sample.
 
     Returns:
-        List of 1D float32 chunks. A file shorter than one chunk is
-        zero-padded and returned once, as ``smart_crop`` does.
+        List of 1D float32 chunks, or ``(chunks, starts)`` with
+        ``return_starts``. A file shorter than one chunk is zero-padded and
+        returned once, as ``smart_crop`` does.
     """
     rng = rng if rng is not None else np.random.default_rng()
     chunk_size = int(sample_rate * chunk_duration)
@@ -160,11 +171,13 @@ def uniform_crop(
 
     if n <= chunk_size:
         padded = np.pad(audio, (0, max(0, chunk_size - n)))
-        return [padded[:chunk_size].astype(np.float32)]
+        chunks, starts = [padded[:chunk_size].astype(np.float32)], [0]
+        return (chunks, starts) if return_starts else chunks
 
     n_chunks = max(1, min(max_chunks, n // chunk_size))
-    starts = rng.integers(0, n - chunk_size + 1, size=n_chunks)
-    return [audio[s : s + chunk_size].astype(np.float32) for s in starts]
+    starts = [int(v) for v in rng.integers(0, n - chunk_size + 1, size=n_chunks)]
+    chunks = [audio[s : s + chunk_size].astype(np.float32) for s in starts]
+    return (chunks, starts) if return_starts else chunks
 
 
 def get_activity_ratio(x: np.ndarray, k: float = 2.0, max_active: float = 0.8, subsample: int = 512) -> float:

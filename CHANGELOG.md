@@ -31,6 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   favours the loudest part of a recording, which in field audio is as often
   rain, wind or an insect chorus as the target species. Evaluation is
   unaffected: it always scores whole files with overlapping windows.
+- **`--teacher_cache` and `--teacher_weight`** train on soft targets from a
+  larger teacher model. Its per-window scores are computed once, offline, over
+  every training recording and cached; training blends the teacher window that
+  best matches each chunk into the chunk's label, on the classes the teacher
+  covers. A recording carries one species label, so every chunk drawn from it
+  has trained as that species alone, whether it held the call, silence or a
+  different bird. The teacher never runs during training, and validation and
+  checkpoint selection keep hard labels. Off by default. The loader now tracks
+  where each chunk starts in its recording (`load_audio_window(...,
+  return_offset=True)`, `chunk_start_samples`, and `return_starts` on both crop
+  functions); without it the lookup would be misaligned.
 - **`--raw_time_masks` and `--raw_time_mask_ms`** apply SpecAugment-style time
   masking to the waveform for the `raw` frontend, which never sees a
   spectrogram in the loader and so could not use `--time_mask_max`. Off by

@@ -158,10 +158,11 @@ class TestProcessFile:
         paths, classes = _make_long_dataset(tmp_path, file_duration=30)
         observed: dict[str, float | bool] = {}
 
-        def fake_load_audio_window(path, sample_rate, max_duration, chunk_duration, random_offset):
+        def fake_load_audio_window(path, sample_rate, max_duration, chunk_duration, random_offset, return_offset=False):
             observed["max_duration"] = max_duration
             observed["random_offset"] = random_offset
-            return np.ones(int(sample_rate * chunk_duration * 4), dtype=np.float32)
+            audio = np.ones(int(sample_rate * chunk_duration * 4), dtype=np.float32)
+            return (audio, 0.0) if return_offset else audio
 
         monkeypatch.setattr("birdnet_stm32.data.worker.load_audio_window", fake_load_audio_window)
 

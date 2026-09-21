@@ -112,6 +112,16 @@ architecture, and neither has been validated on INT8 or on the board yet:
   a zeroed span into zeroed time columns, so this is SpecAugment's time axis
   applied in the sample domain. There is no waveform equivalent of frequency
   masking, which needs a filter rather than a mask.
+- **Teacher targets**: `--teacher_cache` points at per-window scores from a
+  larger model, computed once offline over every training recording, and
+  `--teacher_weight` (default 0, off) blends them into each chunk's label as
+  `(1 - w) * label + w * teacher` on the classes the teacher covers. Training
+  labels are weak: a recording carries one species label, so every chunk drawn
+  from it trains as that species, whether it holds the call, silence, or a
+  different bird. The teacher says which. Classes the teacher has no output
+  for, and recordings missing from the cache, keep their hard label.
+  Validation and checkpoint selection always use hard labels. The cache format
+  is documented in `birdnet_stm32/data/teacher.py`.
 - **Smart crop**: long recordings (> 2 chunks) are automatically cropped to
   salient regions using short-time energy (STE) analysis, reducing label
   noise from silent or irrelevant segments. `--crop_policy uniform` turns this
@@ -325,6 +335,8 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--no_spec_augment` | False | Disable SpecAugment masking (on by default) |
 | `--freq_mask_max` | 8 | Max frequency mask width (bins) |
 | `--time_mask_max` | 25 | Max time mask width (frames) |
+| `--teacher_cache` | None | Directory of cached per-window teacher scores (experimental) |
+| `--teacher_weight` | 0.0 | Teacher share of the training target in [0, 1] (0 = hard labels only) |
 | `--crop_policy` | energy | How training chunks are chosen: `energy` or `uniform` (experimental) |
 | `--raw_time_masks` | 0 | Waveform time masks for the `raw` frontend (0 = off, experimental) |
 | `--raw_time_mask_ms` | 30.0 | Max width of each raw time mask (ms) |
