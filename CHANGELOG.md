@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   placement and epoch counts), the same on-target cosine and mean absolute
   error, and the same host-versus-board agreement and per-file timing. The
   ONNX export path and the full test suite pass unchanged.
+- **librosa and resampy are no longer runtime dependencies**, and numba and
+  llvmlite drop out with them. The package has computed its own spectrogram
+  input since 1.2 and never imports any of them; they had stayed declared.
+  librosa moves to the `dev` extra, where `tests/test_reference_stft.py` still
+  uses it as an independent reference for `birdnet_stm32.audio.stft`.
+  `requirements.txt` now pins `scipy` and `soundfile` explicitly: both are
+  imported directly, but had only ever arrived through librosa.
 
 ### Added
 
