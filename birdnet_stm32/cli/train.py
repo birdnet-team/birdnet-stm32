@@ -290,13 +290,15 @@ def get_args() -> argparse.Namespace:
         "--crop_policy",
         type=str,
         default="energy",
-        choices=["energy", "uniform"],
+        choices=["energy", "uniform", "teacher"],
         help=(
             "How training chunks are chosen from a recording. 'energy' (default) ranks "
             "candidates by short-time energy and keeps the loudest; 'uniform' draws start "
             "offsets at random, which avoids biasing the sampler toward rain, wind and "
-            "insect choruses at the cost of some silent chunks. Evaluation is unaffected: "
-            "it always scores whole files with overlapping windows."
+            "insect choruses at the cost of some silent chunks; 'teacher' (needs "
+            "--teacher_cache) keeps the chunk where the teacher hears the labelled species "
+            "most, and falls back to energy where it has no score. Evaluation is "
+            "unaffected: it always scores whole files with overlapping windows."
         ),
     )
     parser.add_argument(
@@ -454,6 +456,8 @@ def get_args() -> argparse.Namespace:
         parser.error(f"--teacher_weight must be in [0, 1], got {args.teacher_weight}")
     if args.teacher_weight > 0 and not args.teacher_cache:
         parser.error("--teacher_weight > 0 needs --teacher_cache")
+    if args.crop_policy == "teacher" and not args.teacher_cache:
+        parser.error("--crop_policy teacher needs --teacher_cache")
     args.deterministic = True  # always deterministic
 
     if args.validation_subset < 0:
@@ -595,7 +599,7 @@ def main():
         train_kwargs["loader_control"] = train_loader_control
 
     val_kwargs = dict(common_kwargs)
-    if args.teacher_cache and args.teacher_weight > 0:
+    if args.teacher_cache and (args.teacher_weight > 0 or args.crop_policy == "teacher"):
         # Fail here, in the main process, rather than inside every loader worker.
         from pathlib import Path
 
@@ -605,7 +609,8 @@ def main():
         covered = sum(Path(p).stem in teacher for p in train_paths)
         print(
             f"Teacher targets: {covered}/{len(train_paths)} training files covered, "
-            f"{int(teacher.mask.sum())}/{len(classes)} classes, weight {args.teacher_weight}"
+            f"{int(teacher.mask.sum())}/{len(classes)} classes, weight {args.teacher_weight}, "
+            f"crop policy {args.crop_policy}"
         )
     train_dataset = load_dataset(
         train_paths,

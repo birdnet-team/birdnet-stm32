@@ -54,7 +54,8 @@ def _init_worker(cfg: dict) -> None:
     _worker_cfg = cfg
     # Memory-mapped, so every worker shares one copy through the page cache.
     cache = cfg.get("teacher_cache")
-    _teacher = TeacherTargets(cache, cfg["classes"]) if cache and cfg.get("teacher_weight", 0.0) > 0 else None
+    needed = cfg.get("teacher_weight", 0.0) > 0 or cfg.get("crop_policy") == "teacher"
+    _teacher = TeacherTargets(cache, cfg["classes"]) if cache and needed else None
 
 
 def _process_file(path: str):
@@ -72,11 +73,13 @@ def _process_file(path: str):
     class_to_idx = cfg["class_to_idx"]
     num_classes = cfg["num_classes"]
 
+    labelled = None  # class index of the recording's label; None for noise
     if label_str.lower() in noise_labels:
         label = np.zeros(num_classes, dtype=np.float32)
     elif label_str in class_to_idx:
         label = np.zeros(num_classes, dtype=np.float32)
-        label[class_to_idx[label_str]] = 1.0
+        labelled = class_to_idx[label_str]
+        label[labelled] = 1.0
     else:
         return None  # unknown class
 
@@ -119,7 +122,12 @@ def _process_file(path: str):
     available_chunks = estimate_num_chunks(audio.shape[0], sr, cd)
     # Each chunk's start (samples into the loaded window) is carried along so a
     # teacher target can be looked up for the exact stretch of audio it holds.
-    if crop_policy == "uniform":
+    if crop_policy == "teacher":
+        # Every half-overlapping chunk of the loaded window is a candidate; the
+        # teacher, not energy, ranks them below.
+        audio_chunks = list(split_audio_into_chunks(audio, sample_rate=sr, chunk_duration=cd, chunk_overlap=cd / 2))
+        chunk_starts = [int(v) for v in chunk_start_samples(audio.shape[0], sr, cd, cd / 2)]
+    elif crop_policy == "uniform":
         audio_chunks, chunk_starts = uniform_crop(audio, sr, cd, max_chunks=candidate_chunks, return_starts=True)
     elif available_chunks > candidate_chunks:
         audio_chunks, chunk_starts = smart_crop(audio, sr, cd, max_chunks=candidate_chunks, return_starts=True)
@@ -172,10 +180,28 @@ def _process_file(path: str):
     # Activity-sort: most salient first. Under the uniform policy the ranking is
     # skipped too, since re-ranking uniformly drawn chunks by energy would put
     # the very bias back that the policy exists to remove.
-    if crop_policy == "uniform":
+    sample_id = Path(path).stem
+    teacher_rank = (
+        crop_policy == "teacher"
+        and _teacher is not None
+        and labelled is not None
+        and bool(_teacher.mask[labelled])
+        and sample_id in _teacher
+    )
+    if teacher_rank:
+        # Most likely to hold the labelled species first, by the teacher's
+        # score for it. A chunk without a usable teacher score ranks last.
+        def heard(ranked):
+            scores = _teacher.lookup(sample_id, window_offset_s + start_of[id(ranked)] / sr, cd)
+            return -1.0 if scores is None else float(scores[labelled])
+
+        pool = sorted(features, key=heard, reverse=True)
+    elif crop_policy == "uniform":
         pool = list(features)
         np.random.shuffle(pool)
     else:
+        # Energy, which is also the fallback for the teacher policy on noise
+        # recordings, teacher-less classes and recordings missing from the cache.
         pool = sort_by_activity(features, threshold=snr_threshold) or features
     if not pool:
         return None
@@ -183,11 +209,11 @@ def _process_file(path: str):
     # Take up to max_chunks salient items
     selected = [(model_input[id(ranked)], start_of[id(ranked)]) for ranked in pool[:max_chunks]]
 
-    sample_id = Path(path).stem
+    blend = _teacher is not None and cfg.get("teacher_weight", 0.0) > 0
     results = []
     for item, start in selected:
         target = label
-        if _teacher is not None:
+        if blend:
             teacher = _teacher.lookup(sample_id, window_offset_s + start / sr, cd)
             if teacher is not None:
                 target = blend_targets(label, teacher, _teacher.mask, cfg["teacher_weight"])

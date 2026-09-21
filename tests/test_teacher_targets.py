@@ -267,3 +267,87 @@ class TestNonFiniteTeacherScores:
         assert out[0] == pytest.approx(1.0)  # NaN -> hard label, not 0.5
         assert out[1] == pytest.approx(0.4)  # finite entries still blend
         assert out[2] == pytest.approx(0.0)
+
+
+class TestTeacherCropPolicy:
+    """--crop_policy teacher keeps the chunk where the teacher hears the label."""
+
+    def _cfg(self, cache, weight=0.0, policy="teacher"):
+        cfg = TestWorkerIntegration()._cfg(cache, weight)
+        cfg["crop_policy"] = policy
+        return cfg
+
+    def _write(self, tmp_path, label="a", seconds=10.0):
+        d = tmp_path / "audio" / label
+        d.mkdir(parents=True)
+        path = d / "rec1.wav"
+        rng = np.random.default_rng(0)
+        sf.write(path, (rng.standard_normal(int(SR * seconds)) * 0.1).astype(np.float32), SR)
+        return path
+
+    def _cache(self, tmp_path, loud_start):
+        """Teacher hears class "a" only in the 3.0 s window starting at loud_start."""
+        starts = [i * 1.25 for i in range(7)]  # 0.0 ... 7.5
+        scores = [[0.95 if s == loud_start else 0.02, 0.0, 0.0] for s in starts]
+        return write_cache(tmp_path / "cache", recordings={"rec1": (starts, scores)})
+
+    def test_picks_the_chunk_the_teacher_hears_the_label_in(self, tmp_path):
+        from birdnet_stm32.data import worker
+
+        path = self._write(tmp_path)
+        audio, _ = load_audio_window(str(path), SR, max_duration=60, chunk_duration=CD, return_offset=True)
+        worker._init_worker(self._cfg(self._cache(tmp_path, loud_start=5.0)))
+        try:
+            ((sample, target),) = worker._process_file(str(path))
+        finally:
+            worker._init_worker(TestWorkerIntegration()._cfg(None, 0.0))
+        # Teacher window 5.0-8.0 s is centred at 6.5 s; the half-overlapping
+        # candidate nearest it starts at 5.0 s (centre 6.25 s).
+        a = int(5.0 * SR)
+        expected = audio[a : a + int(SR * CD)]
+        expected = expected / (np.max(np.abs(expected)) + 1e-6)
+        np.testing.assert_allclose(sample[:, 0], expected, atol=1e-5)
+        # Weight 0: selection only, the target stays the hard label.
+        np.testing.assert_array_equal(target, [1.0, 0.0, 0.0])
+
+    def test_follows_the_teacher_rather_than_a_fixed_position(self, tmp_path):
+        from birdnet_stm32.data import worker
+
+        path = self._write(tmp_path)
+        chosen = []
+        for loud in (0.0, 2.5, 6.25):
+            cache_dir = tmp_path / f"c{loud}"
+            starts = [i * 1.25 for i in range(7)]
+            scores = [[0.95 if s == loud else 0.02, 0.0, 0.0] for s in starts]
+            write_cache(cache_dir, recordings={"rec1": (starts, scores)})
+            worker._init_worker(self._cfg(cache_dir))
+            ((sample, _),) = worker._process_file(str(path))
+            chosen.append(sample[:, 0].copy())
+        worker._init_worker(TestWorkerIntegration()._cfg(None, 0.0))
+        assert not np.allclose(chosen[0], chosen[1])
+        assert not np.allclose(chosen[1], chosen[2])
+
+    def test_noise_recordings_fall_back_to_energy(self, tmp_path):
+        """No labelled class, so there is nothing to ask the teacher about."""
+        from birdnet_stm32.data import worker
+
+        path = self._write(tmp_path, label="noise")
+        worker._init_worker(self._cfg(self._cache(tmp_path, loud_start=5.0)))
+        try:
+            result = worker._process_file(str(path))
+        finally:
+            worker._init_worker(TestWorkerIntegration()._cfg(None, 0.0))
+        ((_, target),) = result
+        np.testing.assert_array_equal(target, [0.0, 0.0, 0.0])
+
+    def test_can_combine_selection_with_blending(self, tmp_path):
+        from birdnet_stm32.data import worker
+
+        path = self._write(tmp_path)
+        worker._init_worker(self._cfg(self._cache(tmp_path, loud_start=5.0), weight=0.5))
+        try:
+            ((_, target),) = worker._process_file(str(path))
+        finally:
+            worker._init_worker(TestWorkerIntegration()._cfg(None, 0.0))
+        # Chosen where the teacher hears "a" at 0.95: 0.5 * 1 + 0.5 * 0.95.
+        assert target[0] == pytest.approx(0.975, abs=1e-3)

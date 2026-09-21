@@ -128,8 +128,14 @@ architecture, and neither has been validated on INT8 or on the board yet:
   off and draws start offsets at random instead. Energy ranking selects the
   loudest part of a recording, which in field audio is as often rain, wind or
   an insect chorus as the target bird, and it skips faint distant calls;
-  uniform sampling has no such bias but returns more silent chunks. Evaluation
-  is unaffected either way: it always scores whole files with overlapping
+  uniform sampling has no such bias but returns more silent chunks.
+  `--crop_policy teacher` (needs `--teacher_cache`) ranks half-overlapping
+  candidates by the teacher's score for the recording's labelled species and
+  keeps the best, so the chunk is chosen for holding the species rather than
+  for being loud. It falls back to energy for noise recordings, classes the
+  teacher has no output for, and recordings missing from the cache, and works
+  with `--teacher_weight 0` to change only which chunk is drawn. Evaluation is
+  unaffected by every policy: it always scores whole files with overlapping
   windows.
 - **Multi-chunk I/O reuse**: long files (e.g. 60 s recordings) yield up to
   `--max_chunks_per_file` (default 3) salient chunks per file open, stored
@@ -337,7 +343,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--time_mask_max` | 25 | Max time mask width (frames) |
 | `--teacher_cache` | None | Directory of cached per-window teacher scores (experimental) |
 | `--teacher_weight` | 0.0 | Teacher share of the training target in [0, 1] (0 = hard labels only) |
-| `--crop_policy` | energy | How training chunks are chosen: `energy` or `uniform` (experimental) |
+| `--crop_policy` | energy | How training chunks are chosen: `energy`, `uniform` or `teacher` (experimental) |
 | `--raw_time_masks` | 0 | Waveform time masks for the `raw` frontend (0 = off, experimental) |
 | `--raw_time_mask_ms` | 30.0 | Max width of each raw time mask (ms) |
 | `--dropout` | 0.5 | Dropout rate before classifier head |

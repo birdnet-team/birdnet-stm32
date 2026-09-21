@@ -34,7 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`--crop_policy`** selects how training chunks are drawn from a recording.
   The default `energy` keeps the existing short-time-energy ranking; `uniform`
-  draws start offsets at random and skips the activity ranking. Energy ranking
+  draws start offsets at random and skips the activity ranking; `teacher`
+  keeps the chunk where a cached teacher hears the recording's labelled species
+  most (see `--teacher_cache`), falling back to energy where it has no score. Energy ranking
   favours the loudest part of a recording, which in field audio is as often
   rain, wind or an insect chorus as the target species. Evaluation is
   unaffected: it always scores whole files with overlapping windows.
