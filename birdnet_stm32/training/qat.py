@@ -473,6 +473,22 @@ def run_qat(args: argparse.Namespace) -> None:
         raise ValueError("QAT requires float32 training for INT8 grid simulation")
     if not args.data_path_val:
         raise ValueError("QAT requires an explicit, disjoint --data_path_val")
+    # QAT builds its own training loader and does not apply these. Refuse them
+    # rather than accept and silently ignore them. The knowledge they add during
+    # float training still reaches QAT through its frozen teacher, which is the
+    # pre-QAT checkpoint itself.
+    ignored = [
+        flag
+        for flag, active in (
+            ("--teacher_cache", bool(getattr(args, "teacher_cache", None))),
+            ("--teacher_weight", getattr(args, "teacher_weight", 0.0) > 0),
+            ("--crop_policy", getattr(args, "crop_policy", "energy") != "energy"),
+            ("--raw_time_masks", getattr(args, "raw_time_masks", 0) > 0),
+        )
+        if active
+    ]
+    if ignored:
+        raise ValueError(f"QAT does not apply {', '.join(ignored)}; drop them from the --qat run")
     if not os.path.isfile(args.checkpoint_path):
         raise FileNotFoundError(f"QAT requires a pretrained model: {args.checkpoint_path}")
     print(f"[QAT] Loading pretrained model from {args.checkpoint_path}")

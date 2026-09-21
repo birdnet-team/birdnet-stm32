@@ -280,3 +280,37 @@ def test_file_cmap_traces_one_runner_per_model(tmp_path, monkeypatch):
     other = tf.keras.Sequential([tf.keras.Input((2,)), tf.keras.layers.Dense(1)])
     assert callback.keras_runner(other) is callback.keras_runner(other)
     assert len(built) == 2, "a different model gets its own runner"
+
+
+@pytest.mark.parametrize(
+    "flags, named",
+    [
+        (["--teacher_cache", "/c", "--teacher_weight", "0.5"], ["--teacher_cache", "--teacher_weight"]),
+        (["--teacher_cache", "/c", "--crop_policy", "teacher"], ["--teacher_cache", "--crop_policy"]),
+        (["--crop_policy", "uniform"], ["--crop_policy"]),
+        (["--raw_time_masks", "8"], ["--raw_time_masks"]),
+    ],
+)
+def test_qat_refuses_loader_options_it_would_silently_ignore(tmp_path, monkeypatch, flags, named):
+    """QAT builds its own loader; these float-training options must not pass as no-ops."""
+    import sys
+
+    from birdnet_stm32.cli.train import get_args
+    from birdnet_stm32.training.qat import run_qat
+
+    argv = [
+        "train",
+        "--qat",
+        "--data_path_train",
+        str(tmp_path),
+        "--data_path_val",
+        str(tmp_path),
+        "--checkpoint_path",
+        str(tmp_path / "missing.keras"),
+        *flags,
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(ValueError, match="QAT does not apply") as info:
+        run_qat(get_args())
+    for flag in named:
+        assert flag in str(info.value)
