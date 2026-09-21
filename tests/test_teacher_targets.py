@@ -237,3 +237,33 @@ class TestWorkerIntegration:
         finally:
             worker._init_worker(self._cfg(None, 0.0))
         np.testing.assert_array_equal(target, [1.0, 0.0, 0.0])
+
+
+class TestNonFiniteTeacherScores:
+    """The teacher returns NaN on digital silence; that must never reach a target.
+
+    A single NaN target made every weight non-finite within the first epoch of
+    the first real run.
+    """
+
+    def test_lookup_falls_back_when_the_window_is_not_finite(self, tmp_path):
+        cache = write_cache(
+            tmp_path / "c",
+            recordings={"rec1": ([0.0, 1.25], [[np.nan, np.nan, np.nan], [0.2, 0.3, 0.0]])},
+        )
+        t = TeacherTargets(cache, CLASSES)
+        assert t.lookup("rec1", 0.0, CD) is None
+        np.testing.assert_allclose(t.lookup("rec1", 1.5, CD), [0.2, 0.3, 0.0], atol=1e-3)
+
+    def test_lookup_falls_back_when_any_entry_is_not_finite(self, tmp_path):
+        cache = write_cache(tmp_path / "c", recordings={"rec1": ([0.0], [[0.5, np.inf, 0.1]])})
+        assert TeacherTargets(cache, CLASSES).lookup("rec1", 0.0, CD) is None
+
+    def test_blend_keeps_the_hard_label_where_the_teacher_is_not_finite(self):
+        hard = np.array([1.0, 0.0, 0.0], np.float32)
+        teacher = np.array([np.nan, 0.8, np.inf], np.float32)
+        out = blend_targets(hard, teacher, np.array([True, True, True]), 0.5)
+        assert np.isfinite(out).all()
+        assert out[0] == pytest.approx(1.0)  # NaN -> hard label, not 0.5
+        assert out[1] == pytest.approx(0.4)  # finite entries still blend
+        assert out[2] == pytest.approx(0.0)

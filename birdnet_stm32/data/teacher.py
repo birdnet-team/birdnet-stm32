@@ -79,8 +79,15 @@ class TeacherTargets:
 
         Returns:
             float32 ``[n_classes]`` teacher scores, or ``None`` when the
-            recording is not in the cache or no teacher window lies within one
-            window length of the chunk. Callers fall back to the hard label.
+            recording is not in the cache, no teacher window lies within one
+            window length of the chunk, or the teacher's scores for that window
+            are not finite. Callers fall back to the hard label.
+
+        A non-finite row means the teacher's output was undefined, not that it
+        heard nothing: BirdNET+ V3.0 returns NaN on digital silence (the muted
+        stretches of edited recordings), where its input normalization divides
+        by zero. Reading that as "no species present" would be wrong, and a
+        single NaN target is enough to turn every weight non-finite.
         """
         entry = self.index.get(sample_id)
         if entry is None:
@@ -94,15 +101,20 @@ class TeacherTargets:
         i = int(np.argmin(distance))
         if distance[i] > self.window_s:
             return None
-        return np.asarray(self.mapped[offset + i], dtype=np.float32)
+        scores = np.asarray(self.mapped[offset + i], dtype=np.float32)
+        if not np.isfinite(scores).all():
+            return None
+        return scores
 
 
 def blend_targets(hard: np.ndarray, teacher: np.ndarray, mask: np.ndarray, weight: float) -> np.ndarray:
     """Mix a hard label with teacher scores on the classes the teacher covers.
 
     ``(1 - weight) * hard + weight * teacher`` where ``mask`` is set, and the
-    hard label unchanged elsewhere. Every entry stays in ``[0, 1]``, so the
-    result is a valid soft target for binary cross-entropy.
+    hard label unchanged elsewhere. A non-finite teacher entry also keeps the
+    hard label (``np.clip`` passes NaN through, so clipping alone would not
+    catch it). Every entry stays in ``[0, 1]``, so the result is a valid soft
+    target for binary cross-entropy.
 
     With ``weight`` 0.5, a labelled class the teacher also hears stays near 1,
     a labelled class on a chunk where the teacher hears nothing drops to 0.5,
@@ -120,6 +132,8 @@ def blend_targets(hard: np.ndarray, teacher: np.ndarray, mask: np.ndarray, weigh
     if not 0.0 <= weight <= 1.0:
         raise ValueError(f"teacher weight must be in [0, 1], got {weight}")
     out = np.asarray(hard, dtype=np.float32).copy()
-    t = np.clip(np.asarray(teacher, dtype=np.float32), 0.0, 1.0)
-    out[mask] = (1.0 - weight) * out[mask] + weight * t[mask]
+    t = np.asarray(teacher, dtype=np.float32)
+    use = np.asarray(mask, dtype=bool) & np.isfinite(t)
+    t = np.clip(t, 0.0, 1.0)
+    out[use] = (1.0 - weight) * out[use] + weight * t[use]
     return out
