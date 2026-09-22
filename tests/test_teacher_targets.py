@@ -351,3 +351,29 @@ class TestTeacherCropPolicy:
             worker._init_worker(TestWorkerIntegration()._cfg(None, 0.0))
         # Chosen where the teacher hears "a" at 0.95: 0.5 * 1 + 0.5 * 0.95.
         assert target[0] == pytest.approx(0.975, abs=1e-3)
+
+
+def test_teacher_crop_computes_a_spectrogram_only_for_the_chosen_chunk(tmp_path, monkeypatch):
+    """Ranking needs chunk positions only; the hybrid STFT must run once, not per candidate."""
+    from birdnet_stm32.data import worker
+
+    policy = TestTeacherCropPolicy()
+    path = policy._write(tmp_path)
+    cfg = policy._cfg(policy._cache(tmp_path, loud_start=5.0))
+    cfg["audio_frontend"] = "hybrid"
+    calls = []
+    real = worker.get_spectrogram_from_audio
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(worker, "get_spectrogram_from_audio", counting)
+    worker._init_worker(cfg)
+    try:
+        result = worker._process_file(str(path))
+    finally:
+        worker._init_worker(TestWorkerIntegration()._cfg(None, 0.0))
+    assert result is not None and len(result) == 1
+    # A 10 s window holds 7 half-overlapping candidates; only the winner is transformed.
+    assert len(calls) == 1

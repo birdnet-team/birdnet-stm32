@@ -138,6 +138,28 @@ def _process_file(path: str):
     if len(audio_chunks) == 0:
         return None
 
+    sample_id = Path(path).stem
+    teacher_rank = (
+        crop_policy == "teacher"
+        and _teacher is not None
+        and labelled is not None
+        and bool(_teacher.mask[labelled])
+        and sample_id in _teacher
+    )
+    if teacher_rank:
+        # Rank candidates by the teacher's score for the labelled species *before*
+        # computing any features: ranking needs only each chunk's position, and a
+        # spectrogram for every half-overlapping candidate would multiply the
+        # hybrid loader's STFT work by the candidate count. A chunk without a
+        # usable teacher score ranks last.
+        def heard(i):
+            scores = _teacher.lookup(sample_id, window_offset_s + chunk_starts[i] / sr, cd)
+            return -1.0 if scores is None else float(scores[labelled])
+
+        keep = sorted(range(len(audio_chunks)), key=heard, reverse=True)[:max_chunks]
+        audio_chunks = [audio_chunks[i] for i in keep]
+        chunk_starts = [chunk_starts[i] for i in keep]
+
     # --- Compute spectrograms / raw features for all chunks ---
     # Chunks are ranked on the uncompressed spectrogram whatever the model input
     # is, so input compression changes the representation and not which chunks
@@ -180,22 +202,8 @@ def _process_file(path: str):
     # Activity-sort: most salient first. Under the uniform policy the ranking is
     # skipped too, since re-ranking uniformly drawn chunks by energy would put
     # the very bias back that the policy exists to remove.
-    sample_id = Path(path).stem
-    teacher_rank = (
-        crop_policy == "teacher"
-        and _teacher is not None
-        and labelled is not None
-        and bool(_teacher.mask[labelled])
-        and sample_id in _teacher
-    )
     if teacher_rank:
-        # Most likely to hold the labelled species first, by the teacher's
-        # score for it. A chunk without a usable teacher score ranks last.
-        def heard(ranked):
-            scores = _teacher.lookup(sample_id, window_offset_s + start_of[id(ranked)] / sr, cd)
-            return -1.0 if scores is None else float(scores[labelled])
-
-        pool = sorted(features, key=heard, reverse=True)
+        pool = list(features)  # already in teacher order, and cut to max_chunks
     elif crop_policy == "uniform":
         pool = list(features)
         np.random.shuffle(pool)
