@@ -579,13 +579,13 @@ def host_reference_scores(
         Board file name -> [num_classes] host scores.
     """
     from birdnet_stm32.evaluation.metrics import make_chunks_for_file
-    from birdnet_stm32.models.runners import TFLiteRunner
+    from birdnet_stm32.models.runners import TFLiteRunner, runner_for_config
 
     local = {path.name.upper(): path for path in Path(audio_dir).iterdir() if path.suffix.lower() == ".wav"}
     missing = [name for name in board_files if name.upper() not in local]
     if missing:
         raise FileNotFoundError(f"No local copy of board file(s) {missing} in {audio_dir}")
-    runner = TFLiteRunner(model_path)
+    runner = runner_for_config(TFLiteRunner(model_path), model_cfg)
     scores = {}
     for name in board_files:
         chunks = make_chunks_for_file(

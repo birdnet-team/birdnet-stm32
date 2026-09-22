@@ -26,6 +26,10 @@ class ModelConfig:
         mag_scale: Magnitude scaling ('pwl', 'none').
         input_compression: Compression of a precomputed spectrogram input
             before quantization ('none', 'sqrt', 'log'); librosa/hybrid only.
+        output_activation: What the converted model emits: 'sigmoid'
+            probabilities (default) or raw 'logit' scores. A logit model leaves
+            the sigmoid to the caller, which keeps the output off the INT8
+            1/256 probability grid; see docs/inference.md.
         embeddings_size: Dense embedding dimension before classifier.
         alpha: Width multiplier for channel counts.
         depth_multiplier: Block repeat count per stage.
@@ -48,6 +52,7 @@ class ModelConfig:
     audio_frontend: str = "hybrid"
     mag_scale: str = "pwl"
     input_compression: str = "none"
+    output_activation: str = "sigmoid"
 
     # Model architecture
     embeddings_size: int = 256
@@ -68,6 +73,7 @@ class ModelConfig:
     _VALID_FRONTENDS = frozenset({"librosa", "hybrid", "raw"})
     _VALID_MAG_SCALES = frozenset({"pwl", "none"})
     _VALID_INPUT_COMPRESSIONS = frozenset({"none", "sqrt", "log"})
+    _VALID_OUTPUT_ACTIVATIONS = frozenset({"sigmoid", "logit"})
     _VALID_HEAD_POOLINGS = frozenset({"gap", "freq_mean_time_maxmean"})
     _VALID_DW_KERNEL_SIZES = frozenset({3, 5})
 
@@ -90,6 +96,10 @@ class ModelConfig:
         if self.input_compression not in self._VALID_INPUT_COMPRESSIONS:
             raise ValueError(
                 f"input_compression '{self.input_compression}' not in {sorted(self._VALID_INPUT_COMPRESSIONS)}"
+            )
+        if self.output_activation not in self._VALID_OUTPUT_ACTIVATIONS:
+            raise ValueError(
+                f"output_activation '{self.output_activation}' not in {sorted(self._VALID_OUTPUT_ACTIVATIONS)}"
             )
         if self.input_compression != "none" and self.audio_frontend == "raw":
             raise ValueError("input_compression applies to spectrogram inputs, not the raw frontend")

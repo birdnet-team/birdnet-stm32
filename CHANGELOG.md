@@ -40,6 +40,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   favours the loudest part of a recording, which in field audio is as often
   rain, wind or an insect chorus as the target species. Evaluation is
   unaffected: it always scores whole files with overlapping windows.
+- **`convert --output_activation logit`** removes the final sigmoid before
+  conversion, so the model emits logits instead of probabilities. Quantizing
+  probabilities puts every score on the INT8 1/256 grid, which floors everything
+  below about 0.002 and ties the rest; logits keep their resolution where scores
+  are small. Measured over the full catalog: +0.021 cMAP on a raw model and
+  +0.044 on a hybrid one. Field metrics are unchanged, since those positives sit
+  well above the grid floor.
+
+  Conversion now writes a `_model_config.json` beside every converted model,
+  recording `output_activation` along with the rest of the contract, and
+  `evaluate`, `board-test` and `measure-operational` apply the sigmoid
+  automatically when it says `logit`. Callers outside this package apply
+  `1 / (1 + exp(-x))`, or compare logits against `log(t / (1 - t))` since
+  thresholding is monotonic.
+- **`examples/reference_inference.py` and [Running Inference](docs/inference.md)**
+  document the whole path from an audio file to a detection, and which steps run
+  on the host and on the device. The script uses NumPy and TensorFlow Lite only,
+  so it reads as a specification for a firmware re-implementation.
 - **`--teacher_cache` and `--teacher_weight`** train on soft targets from a
   larger teacher model. Its per-window scores are computed once, offline, over
   every training recording and cached; training blends the teacher window that

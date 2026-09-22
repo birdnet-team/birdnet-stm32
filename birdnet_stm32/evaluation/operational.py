@@ -31,7 +31,7 @@ from birdnet_stm32.data.dataset import load_file_paths_from_directory
 from birdnet_stm32.evaluation.metrics import make_chunks_for_file
 from birdnet_stm32.evaluation.pooling import pool_scores
 from birdnet_stm32.models.frontend import hybrid_fft_bins
-from birdnet_stm32.models.runners import TFLiteRunner
+from birdnet_stm32.models.runners import TFLiteRunner, runner_for_config
 from birdnet_stm32.training.config import ModelConfig
 
 DEFAULT_THRESHOLDS = (0.25, 0.5, 0.75)
@@ -128,7 +128,8 @@ def _load_and_validate_int8_model(model_path: str | Path, cfg: dict[str, Any], c
         raise ValueError(
             "TFLite artifact has no dynamic-batch INT8 activations; it is not a full-INT8 deployment model"
         )
-    return runner
+    # The contract checks above read the interpreter, so wrap only afterwards.
+    return runner_for_config(runner, cfg)
 
 
 def measure_operational(
