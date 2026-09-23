@@ -122,9 +122,7 @@ def equalize_raw_frontend(
     if "fb" in stages:
         # One gain per band for both quadrature banks, so the magnitude stays meaningful.
         s = gains(np.maximum(before[f"{n}_fb_re"], before[f"{n}_fb_im"]))
-        for conv in (*fe.fb_re, *fe.fb_im):
-            (kernel,) = conv.get_weights()
-            conv.set_weights([(kernel * s[None, None, None, :]).astype(np.float32)])
+        fe.scale_filterbank_bands(s)
         gamma, beta, mean, var = fe.band_bn.get_weights()
         new_var = var * s**2
         gamma = gamma * np.sqrt(new_var + eps) / (s * np.sqrt(var + eps))

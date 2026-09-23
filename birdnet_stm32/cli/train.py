@@ -247,6 +247,29 @@ def get_args() -> argparse.Namespace:
         help="Magnitude scaling: learned hinge sum (pwl) or none",
     )
     parser.add_argument(
+        "--raw_magnitude",
+        type=str,
+        default="alpha_max",
+        choices=["alpha_max", "l1", "halfwave"],
+        help=(
+            "How the raw frontend turns its quadrature pair into a band envelope: "
+            "alpha_max (11 INT8 ops), l1 (7), halfwave (1)"
+        ),
+    )
+    parser.add_argument(
+        "--raw_overlap",
+        type=int,
+        default=2,
+        help="Raw analysis window as a multiple of its hop (2 = release geometry, 1 = half the window and MACs)",
+    )
+    parser.add_argument(
+        "--raw_bank",
+        type=str,
+        default="pair",
+        choices=["pair", "fused"],
+        help="Emit the raw quadrature filterbank as two banks (pair) or one bank of 2*num_mels filters (fused)",
+    )
+    parser.add_argument(
         "--input_compression",
         type=str,
         default="none",
@@ -681,6 +704,9 @@ def main():
         embeddings_size=args.embeddings_size,
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
+        raw_magnitude=args.raw_magnitude,
+        raw_overlap=args.raw_overlap,
+        raw_bank=args.raw_bank,
         frontend_trainable=args.frontend_trainable,
         dropout_rate=args.dropout,
     )
@@ -700,6 +726,9 @@ def main():
         audio_frontend=args.audio_frontend,
         mag_scale=args.mag_scale,
         input_compression=args.input_compression,
+        raw_magnitude=args.raw_magnitude,
+        raw_overlap=args.raw_overlap,
+        raw_bank=args.raw_bank,
         embeddings_size=args.embeddings_size,
         alpha=args.alpha,
         depth_multiplier=args.depth_multiplier,

@@ -137,6 +137,9 @@ def build_dscnn_model(
     depth_multiplier: int = 1,
     fft_length: int = 512,
     mag_scale: str = "pwl",
+    raw_magnitude: str = "alpha_max",
+    raw_overlap: int = 2,
+    raw_bank: str = "pair",
     frontend_trainable: bool = False,
     dropout_rate: float = 0.5,
     weight_decay: float = 1e-4,
@@ -158,6 +161,10 @@ def build_dscnn_model(
         depth_multiplier: Repeats multiplier for DS blocks per stage.
         fft_length: FFT size for hybrid/librosa paths.
         mag_scale: Magnitude scaling ('pwl' | 'none').
+        raw_magnitude: Quadrature combination for the raw frontend
+            ('alpha_max' | 'l1' | 'halfwave'); ignored by other frontends.
+        raw_overlap: Raw analysis window as a multiple of its hop; raw only.
+        raw_bank: 'pair' or 'fused' quadrature filterbank; raw only.
         frontend_trainable: Make frontend sub-layers trainable.
         dropout_rate: Dropout rate before the classifier head.
         weight_decay: L2 regularization weight for DS-CNN blocks.
@@ -233,6 +240,9 @@ def build_dscnn_model(
             chunk_duration=chunk_duration,
             fft_length=fft_length,
             mag_scale=mag_scale,
+            raw_magnitude=raw_magnitude,
+            raw_overlap=raw_overlap,
+            raw_bank=raw_bank,
             is_trainable=frontend_trainable,
             name="audio_frontend",
         )(inputs)
