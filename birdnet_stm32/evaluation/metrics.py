@@ -45,6 +45,38 @@ def macro_cmap(labels: np.ndarray, scores: np.ndarray) -> float:
     return float(class_average_precision(labels, scores).mean())
 
 
+def micro_average_precision(labels: np.ndarray, scores: np.ndarray) -> float:
+    """Area under one pooled precision-recall curve over every label decision.
+
+    The macro metric averages a curve per class, so a rare species counts as
+    much as a common one. This pools all ``[samples, classes]`` decisions into a
+    single curve instead, which is what a deployment sees: the detections a
+    recorder actually produces, weighted by how often each species calls.
+    Report both -- a model can gain on one and lose on the other.
+
+    Args:
+        labels: Binary ``[samples, classes]`` array.
+        scores: Matching score array.
+
+    Returns:
+        Pooled average precision, or ``nan`` when there are no positives.
+
+    Raises:
+        ValueError: On empty, mismatched, non-finite or non-binary input.
+    """
+    labels, scores = np.asarray(labels), np.asarray(scores)
+    if labels.ndim != 2 or labels.shape != scores.shape or not labels.size:
+        raise ValueError("AP requires nonempty, matching [samples, classes] arrays")
+    if not np.isfinite(scores).all() or not np.isfinite(labels).all():
+        raise ValueError("AP inputs must be finite")
+    if not np.isin(labels, [0, 1]).all():
+        raise ValueError("AP labels must be binary")
+    flat_labels = labels.reshape(-1)
+    if not flat_labels.any():
+        return float("nan")
+    return float(average_precision_score(flat_labels, scores.reshape(-1)))
+
+
 class ModelRunner(Protocol):
     """Inference interface shared by Keras and TFLite runners."""
 
