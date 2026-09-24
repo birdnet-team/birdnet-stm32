@@ -183,6 +183,23 @@ for toolchain setup and troubleshooting.
 - **Benchmark JSON**: structured report for experiment tracking (`--benchmark`)
 - **HTML report**: self-contained evaluation report (`--report_html`)
 
+### Public benchmark results
+
+Published models are scored on **WABAD** ([Zenodo 14191524](https://zenodo.org/records/14191524)),
+a public passive acoustic monitoring benchmark — 3,794 annotated calls across
+five northeastern sites, 44 of its species inside the 90-output list. It is
+public, so these numbers are comparable with results published elsewhere;
+catalog cMAP on our own split is not. Every figure is from the INT8 model that
+gets flashed, on 3 s windows at a 1.25 s hop, pooled over all five sites.
+
+| Model | Event recall @0.5 | Window cMAP | Window AUPRC |
+|---|---:|---:|---:|
+| `BirdNET_Tiny_N6_USNE_90_V1.4_Raw_INT8` | 0.154 | 0.204 | 0.250 |
+| `BirdNET_Tiny_N6_USNE_90_V1.4_Hybrid_INT8` | 0.185 | 0.285 | 0.335 |
+
+Per-version history and what each metric means:
+[Pre-trained Models](https://birdnet-team.github.io/birdnet-stm32/pretrained-models/#benchmark-results).
+
 ### Deployment
 
 - **X-CUBE-AI / stedgeai**: generate → flash → validate pipeline

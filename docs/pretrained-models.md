@@ -51,6 +51,40 @@ The model card records the exact input contract (sample rate, chunk duration,
 output count), the accuracy the model reached on its evaluation catalog, and its
 measured on-board timing. Read it before deploying.
 
+## Benchmark results
+
+Catalog accuracy is measured on our own dataset split, so nobody outside the
+project can reproduce it. These models are therefore also scored on **WABAD**
+([Zenodo 14191524](https://zenodo.org/records/14191524)), a public passive
+acoustic monitoring benchmark: 3,794 annotated calls across five northeastern
+sites (MABI, CB, SD, NL, FEU), of which 44 species fall inside the 90-species
+output list. Any model can be scored on it, so these numbers are comparable with
+published results elsewhere.
+
+Every score below is from the **INT8 deployment model** — the file you flash —
+scored on 3-second windows at a 1.25 s hop, pooled over all five sites.
+
+| Model | Event recall @0.25 | @0.5 | Macro recall @0.5 | Window cMAP | Window AUPRC |
+|---|---:|---:|---:|---:|---:|
+| `..._90_V1.1_INT8` | 0.213 | 0.122 | 0.096 | 0.167 | 0.224 |
+| `..._90_V1.2_INT8` | 0.225 | 0.133 | 0.107 | 0.168 | 0.240 |
+| `..._90_V1.3_Raw_INT8` | 0.220 | 0.137 | 0.107 | 0.183 | 0.246 |
+| `..._90_V1.3_Hybrid_INT8` | 0.205 | 0.112 | 0.074 | 0.208 | 0.276 |
+| `..._90_V1.4_Raw_INT8` | 0.228 | 0.154 | 0.131 | 0.204 | 0.250 |
+| `..._90_V1.4_Hybrid_INT8` | 0.284 | 0.185 | 0.160 | 0.285 | 0.335 |
+
+- **Event recall** is the share of annotated calls whose overlapping window
+  scored above the threshold — what a recorder set to that threshold would log.
+- **Window cMAP** averages a precision-recall curve per species, so a bird heard
+  twice weighs as much as one heard four hundred times. **Window AUPRC** pools
+  every window-species decision into one curve, which is closer to what a
+  deployment returns. They move independently, so both are reported: a model can
+  cover the species list well and still miss most of the calls a site produces.
+
+For scale, BirdNET+ V3.0 — a server-class model with no memory budget — reaches
+0.656 event recall @0.5 and 0.517 window cMAP on the same annotations. These are
+sub-megabyte models running on a microcontroller.
+
 ## Running a bundle on the board
 
 Everything the firmware needs is in the bundle; no extra downloads.
