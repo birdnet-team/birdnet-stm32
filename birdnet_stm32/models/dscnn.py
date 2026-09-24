@@ -17,7 +17,13 @@ import tensorflow as tf
 from tensorflow.keras import layers, regularizers
 
 from birdnet_stm32.models.blocks import _make_divisible
-from birdnet_stm32.models.frontend import AudioFrontendLayer, hybrid_fft_bins, normalize_frontend_name
+from birdnet_stm32.models.frontend import (
+    RELEASE_RAW_BANK,
+    RELEASE_RAW_MAGNITUDE,
+    AudioFrontendLayer,
+    hybrid_fft_bins,
+    normalize_frontend_name,
+)
 
 HEAD_POOLINGS = ("gap", "freq_mean_time_maxmean")
 STAGE_WIDTHS = (32, 64, 128, 256)
@@ -137,9 +143,9 @@ def build_dscnn_model(
     depth_multiplier: int = 1,
     fft_length: int = 512,
     mag_scale: str = "pwl",
-    raw_magnitude: str = "alpha_max",
+    raw_magnitude: str = RELEASE_RAW_MAGNITUDE,
     raw_overlap: int = 2,
-    raw_bank: str = "pair",
+    raw_bank: str = RELEASE_RAW_BANK,
     frontend_trainable: bool = False,
     dropout_rate: float = 0.5,
     weight_decay: float = 1e-4,
@@ -164,7 +170,8 @@ def build_dscnn_model(
         raw_magnitude: Quadrature combination for the raw frontend
             ('alpha_max' | 'l1' | 'halfwave'); ignored by other frontends.
         raw_overlap: Raw analysis window as a multiple of its hop; raw only.
-        raw_bank: 'pair' or 'fused' quadrature filterbank; raw only.
+        raw_bank: 'pair' or 'fused' quadrature filterbank; raw only. Defaults
+            to the release layout, as raw_magnitude does.
         frontend_trainable: Make frontend sub-layers trainable.
         dropout_rate: Dropout rate before the classifier head.
         weight_decay: L2 regularization weight for DS-CNN blocks.

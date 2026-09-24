@@ -328,9 +328,6 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--max_duration` | 60 | Max seconds to load per file |
 | `--audio_frontend` | raw | `raw`, `hybrid`, or `librosa` — raw models trained before the [NPU fixes](dev/audio-frontends.md#raw-waveform) must be retrained |
 | `--mag_scale` | pwl | `pwl` or `none` |
-| `--raw_magnitude` | alpha_max | How the raw frontend combines its quadrature pair: `alpha_max` (11 INT8 ops), `l1` (7), `halfwave` (1). Shorter chains cross fewer 8-bit grids, which is where raw's INT8 loss accumulates (experimental) |
-| `--raw_bank` | pair | Emit the raw quadrature filterbank as two banks of `num_mels` filters (`pair`, every model up to 1.4) or one bank of `2*num_mels` filters sliced in half (`fused`). Identical arithmetic and weights, half the convolutions and INT8 grids (experimental) |
-| `--raw_overlap` | 2 | Raw analysis window as a multiple of its hop. `1` halves the window, its MACs and the number of partial convolutions the filterbank is emitted as, at the cost of low-band frequency resolution (experimental) |
 | `--input_compression` | none | `none`, `sqrt` or `log`: compress a `librosa`/`hybrid` spectrogram before its first INT8 quantization; the firmware applies the same compression |
 | `--embeddings_size` | 512 | Embedding channels before head |
 | `--alpha` | 1.0 | Model width scaling |

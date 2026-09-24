@@ -43,12 +43,18 @@ from birdnet_stm32.audio.stft import mel_filterbank, mel_frequencies
 
 VALID_FRONTENDS = ("librosa", "hybrid", "raw")
 
-# How the raw path turns the quadrature pair into a band envelope. Every option
-# is homogeneous of degree one in (re, im), which is what keeps cross-layer
-# equalization valid, and every option stays on the NPU. They differ in how many
-# INT8 activation grids the signal crosses between the filterbank and the band
-# stage -- 11 ops, 7, or 1 -- which is the quantity raw's INT8 loss tracks.
-VALID_RAW_MAGNITUDES = ("alpha_max", "l1", "halfwave")
+# How the raw path turns the quadrature pair into a band envelope. Both options
+# are homogeneous of degree one in (re, im), which is what keeps cross-layer
+# equalization valid, and both stay on the NPU. They differ in how many INT8
+# activation grids the signal crosses between the filterbank and the band stage
+# -- 11 ops against 7 -- which is the quantity raw's INT8 loss tracks.
+#
+# A third option, half-wave rectification of each component (one op), was
+# measured and removed: trained at the B3 recipe it lost 0.038 float cMAP AND
+# quantized worse (INT8 loss 0.182 against 0.104), because its envelope keeps
+# the carrier beat that quadrature exists to cancel. Fewer grids only help when
+# what crosses them stays as clean.
+VALID_RAW_MAGNITUDES = ("alpha_max", "l1")
 
 # How the quadrature pair is emitted. ``pair`` is two banks of ``mel_bins``
 # filters, one per component, as every model up to 1.4 was trained. ``fused``
@@ -59,6 +65,13 @@ VALID_RAW_MAGNITUDES = ("alpha_max", "l1", "halfwave")
 # costs nothing measurable -- on the B3 model their per-part scales agree to
 # within 1% already.
 VALID_RAW_BANKS = ("pair", "fused")
+
+# What new models are built with. The layer's own defaults stay at the 1.0-1.4
+# frontend on purpose: a checkpoint saved before these existed carries neither
+# key, and must deserialize as the model it was trained as rather than silently
+# inheriting today's. These say what to build now.
+RELEASE_RAW_MAGNITUDE = "l1"
+RELEASE_RAW_BANK = "fused"
 
 # Default overlap factor of the raw analysis window: window = overlap * hop.
 # ``--raw_overlap 1`` halves the window, which halves the filterbank's MACs and
@@ -650,14 +663,17 @@ class AudioFrontendLayer(layers.Layer):
     def _band_envelope(self, re, im):
         """Combine the quadrature pair into a non-negative band envelope.
 
-        The three options trade INT8 activation grids against how faithfully
-        they follow the true modulus. Measured on the B3 filterbank over 48
+        The two options trade INT8 activation grids against how faithfully they
+        follow the true modulus. Measured on the B3 filterbank over 48
         validation recordings, per-band correlation with ``sqrt(re^2+im^2)``
         after the band smoother, and the SNR of the stage's own INT8 simulation:
 
             alpha_max (11 grids) .... r 0.9999, 20.9 dB
             l1         (7 grids) .... r 0.9980, 23.0 dB
-            halfwave   (1 grid)  .... r 0.8901, 21.1 dB
+
+        ``l1`` is what new models are built with: at the B3 recipe it trained to
+        the same float cMAP and cut the post-training quantization loss from
+        0.139 to 0.104.
 
         ``|x|`` is built from ReLU/SUB/ADD rather than ``tf.abs`` throughout.
         The N6 NPU's ABS ignores its input's quantization zero-point: on an
@@ -666,15 +682,6 @@ class AudioFrontendLayer(layers.Layer):
         0.1543 -- pure bias, cos 0.951). The filterbank sums feeding this never
         have a zero zero-point, so ABS is never safe here.
         """
-        if self.raw_magnitude == "halfwave":
-            # Half-wave rectification of each component, the classic hair-cell
-            # envelope detector, left to the band smoother to lowpass. The two
-            # ReLUs fuse into the summations that produce re and im, so the
-            # whole stage costs one ADD instead of eleven ops.
-            a = self._quantized_activation(f"{self.name}_hw_re", tf.nn.relu(re))
-            b = self._quantized_activation(f"{self.name}_hw_im", tf.nn.relu(im))
-            return self._quantized_activation(f"{self.name}_magnitude", a + b)
-
         a = self._abs(re, f"{self.name}_abs_re")
         b = self._abs(im, f"{self.name}_abs_im")
         if self.raw_magnitude == "l1":

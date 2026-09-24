@@ -34,7 +34,7 @@ def _waveform(n=2, samples=8000, seed=0):
 
 
 class TestConfigField:
-    def test_defaults_to_the_shipped_stage(self):
+    def test_defaults_to_the_legacy_stage_so_old_checkpoints_load_unchanged(self):
         assert ModelConfig().raw_magnitude == "alpha_max"
         assert ModelConfig.from_dict({"num_classes": 0}).raw_magnitude == "alpha_max"
 
@@ -53,8 +53,8 @@ class TestConfigField:
 
     def test_round_trips_through_json(self, tmp_path):
         path = tmp_path / "cfg.json"
-        ModelConfig(audio_frontend="raw", raw_magnitude="halfwave").save(path)
-        assert ModelConfig.load(path).raw_magnitude == "halfwave"
+        ModelConfig(audio_frontend="raw", raw_magnitude="l1").save(path)
+        assert ModelConfig.load(path).raw_magnitude == "l1"
 
 
 class TestEnvelope:
@@ -87,9 +87,9 @@ class TestEnvelope:
             np.testing.assert_allclose(two, 2.0 * one, rtol=1e-4, atol=1e-5)
 
     def test_the_stage_survives_a_config_round_trip(self):
-        fe = _frontend("halfwave")
-        assert fe.get_config()["raw_magnitude"] == "halfwave"
-        assert AudioFrontendLayer.from_config(fe.get_config()).raw_magnitude == "halfwave"
+        fe = _frontend("l1")
+        assert fe.get_config()["raw_magnitude"] == "l1"
+        assert AudioFrontendLayer.from_config(fe.get_config()).raw_magnitude == "l1"
 
     def test_an_unknown_stage_is_refused_at_construction(self):
         with pytest.raises(ValueError, match="raw_magnitude"):
@@ -117,7 +117,7 @@ class TestOpCount:
 
     def test_each_option_shortens_the_chain(self):
         counts = {name: len(self._grids(name)) for name in VALID_RAW_MAGNITUDES}
-        assert counts["halfwave"] < counts["l1"] < counts["alpha_max"]
+        assert counts["l1"] < counts["alpha_max"]
 
     def test_all_stages_name_the_tensor_equalization_watches(self):
         """`equalize` measures band spread at `<frontend>_magnitude`."""
@@ -260,3 +260,42 @@ class TestFusedBank:
     def test_an_unknown_layout_is_refused(self):
         with pytest.raises(ValueError, match="raw_bank"):
             self._layer("complex")
+
+
+class TestReleaseDefaults:
+    """What a model built today uses, against what an old config deserializes as.
+
+    A checkpoint from 1.0-1.4 carries neither key. It has to come back as the
+    model it was trained as, so the *layer* keeps the old defaults while the
+    *builder* uses the current release frontend.
+    """
+
+    def test_new_models_are_built_with_the_release_frontend(self):
+        from birdnet_stm32.models.dscnn import build_dscnn_model
+        from birdnet_stm32.models.frontend import RELEASE_RAW_BANK, RELEASE_RAW_MAGNITUDE
+
+        model = build_dscnn_model(
+            num_mels=16,
+            spec_width=32,
+            sample_rate=8000,
+            chunk_duration=1,
+            embeddings_size=32,
+            num_classes=4,
+            audio_frontend="raw",
+            alpha=0.25,
+        )
+        fe = model.get_layer("audio_frontend")
+        assert (fe.raw_magnitude, fe.raw_bank) == (RELEASE_RAW_MAGNITUDE, RELEASE_RAW_BANK) == ("l1", "fused")
+
+    def test_a_config_without_the_keys_deserializes_as_the_old_frontend(self):
+        config = AudioFrontendLayer(
+            mode="raw", mel_bins=16, spec_width=32, sample_rate=8000, chunk_duration=1
+        ).get_config()
+        del config["raw_magnitude"], config["raw_bank"]
+        restored = AudioFrontendLayer.from_config(config)
+        assert (restored.raw_magnitude, restored.raw_bank) == ("alpha_max", "pair")
+
+    def test_the_retired_stage_is_refused(self):
+        """halfwave lost on both axes; it is gone, not deprecated."""
+        with pytest.raises(ValueError, match="raw_magnitude"):
+            _frontend("halfwave")
