@@ -76,7 +76,8 @@ the 1.4 hybrid bundle.
 The INT8 models take and return **float32**; quantization is internal. Output is
 one value per class, in the order of `*_labels.txt`.
 
-Check `output_activation` in the config:
+Check `output_activation` in the config. **Every model from 1.5 on says
+`logit`**; 1.0 through 1.4 return probabilities.
 
 - **`sigmoid`** (or absent): the values are probabilities in [0, 1]. Use them.
 - **`logit`**: the values are logits. Apply `1 / (1 + exp(-x))` for
@@ -84,6 +85,20 @@ Check `output_activation` in the config:
   it entirely and compare logits against `log(t / (1 - t))`: thresholding is
   monotonic, so this is exact and free. A threshold of 0.5 becomes 0.0, and 0.25
   becomes −1.0986.
+
+This project's firmware applies the sigmoid (one `expf` per class, against ~69 ms
+of STFT on the hybrid model), so its score threshold and its reported percentages
+are probabilities exactly as in earlier releases. A re-implementation is free to
+choose either.
+
+Why the released models emit logits: an INT8 probability sits on a 1/256 grid,
+which floors every score below about 0.002 and ties the rest, costing 0.021
+catalog cMAP on raw and 0.035 on hybrid. A logit grid is uniform in logits
+instead, so it resolves small scores far better — and mid-range ones slightly
+worse. At this release's output step of 0.122, one step spans 0.031 in
+probability at p = 0.5 against the old 0.004, so a score near 0.5 is coarser than
+it used to be. That is the trade: ranking quality, which is what detection is,
+for resolution in the middle of a range where nothing is decided.
 
 ## From windows to detections
 

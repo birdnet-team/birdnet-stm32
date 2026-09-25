@@ -7,8 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-25
+
+Two models ship: `BirdNET_Tiny_N6_USNE_90_V1.5_Raw` and
+`..._V1.5_Hybrid`. The release is a **labels** release — nothing about the
+architecture changed — and it is the largest field improvement the project has
+measured.
+
+### Model performance
+
+Scored on [WABAD](https://zenodo.org/records/14191524), a public passive
+acoustic monitoring benchmark (3,794 annotated calls, five northeastern sites,
+44 species inside the output list), on the INT8 model that gets flashed:
+
+| Model | Event recall @0.5 | Window cMAP | Window AUPRC | Catalog cMAP |
+|---|---:|---:|---:|---:|
+| v1.4 Raw | 0.154 | 0.204 | 0.250 | 0.6923 |
+| **v1.5 Raw** | **0.248** | **0.258** | **0.342** | **0.7110** |
+| v1.4 Hybrid | 0.185 | 0.285 | 0.335 | 0.7385 |
+| **v1.5 Hybrid** | **0.361** | **0.376** | **0.461** | **0.7574** |
+
+Raw gains 61% field recall and 37% pooled AUPRC over v1.4 Raw; hybrid gains 95%
+and 38%. Both improve their catalog accuracy at the same time, so neither trades
+one axis for the other.
+
 ### Changed
 
+- **Both released models emit INT8 logits instead of probabilities.** Quantizing
+  probabilities puts every score on the 1/256 grid, which floors everything below
+  about 0.002 and ties the rest; logits keep their resolution where scores are
+  small, worth +0.021 catalog cMAP on raw and +0.035 on hybrid. **Callers apply
+  the sigmoid themselves**: `1 / (1 + exp(-x))`, or compare a logit against
+  `log(t / (1 - t))` since thresholding is monotonic. The firmware and this
+  package do it automatically from `output_activation` in the bundle's
+  `_model_config.json`; see [Running Inference](docs/inference.md). The bundle's
+  `_FP32.keras` and `_FP32.onnx` keep their sigmoid head and still return
+  probabilities — the config describes the `.tflite`, which is what the device
+  runs.
+- **Training draws its chunks where the teacher hears the species, and blends the
+  teacher's scores into the label** (`--crop_policy teacher`,
+  `--teacher_weight 0.5`). A recording carries one species label, so every chunk
+  drawn from it used to train as that species whether it held the call, silence
+  or a different bird: 21.2% of energy-cropped chunks had a teacher score below
+  0.05 on their own label, which teacher cropping cuts to 7.2%. This is where the
+  field gain comes from — it is worth more than doubling the training schedule.
+- **The raw frontend crosses fewer INT8 activation grids.** Its quadrature pair
+  is now one convolution bank of `2 x num_mels` filters sliced in half rather
+  than two banks, and its envelope is `|re| + |im|` rather than an 11-op
+  approximation of the modulus: 37 frontend operations against 46, identical
+  float accuracy, and post-training quantization loss cut from 0.139 to 0.104.
+  `--raw_magnitude` and `--raw_bank` are not exposed; this is simply what a raw
+  model is now. Checkpoints from 1.0-1.4 keep loading as the frontends they were
+  trained with.
 - **TensorFlow 2.21 and NumPy 2 are now the supported baseline** (previously
   TensorFlow 2.16+ and NumPy 1.x). No source change was needed; the floors in
   `pyproject.toml`, `requirements.txt`, the CI workflows and the documented
@@ -69,6 +119,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where each chunk starts in its recording (`load_audio_window(...,
   return_offset=True)`, `chunk_start_samples`, and `return_starts` on both crop
   functions); without it the lookup would be misaligned.
+- **A pooled area under the precision-recall curve on field data.** The field
+  benchmarks reported only `window_cmap_present`: one curve per species,
+  averaged, so a bird heard twice weighs as much as one heard four hundred
+  times. `birdnet_stm32.evaluation.metrics.micro_average_precision` pools every
+  window-species decision into a single curve, which is closer to what a
+  deployed recorder returns. Both are reported, per site and pooled, because
+  they move independently.
+- **WABAD results are published** with each release: in every bundle's model
+  card, in the README, and on the docs site. It is a public benchmark, so those
+  figures can be compared with anything published elsewhere, which catalog cMAP
+  on our own dataset split can never support.
 - **`--raw_time_masks` and `--raw_time_mask_ms`** apply SpecAugment-style time
   masking to the waveform for the `raw` frontend, which never sees a
   spectrogram in the loader and so could not use `--time_mask_max`. Off by

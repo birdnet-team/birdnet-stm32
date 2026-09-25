@@ -72,6 +72,24 @@ scored on 3-second windows at a 1.25 s hop, pooled over all five sites.
 | `..._90_V1.3_Hybrid_INT8` | 0.205 | 0.112 | 0.074 | 0.208 | 0.276 |
 | `..._90_V1.4_Raw_INT8` | 0.228 | 0.154 | 0.131 | 0.204 | 0.250 |
 | `..._90_V1.4_Hybrid_INT8` | 0.284 | 0.185 | 0.160 | 0.285 | 0.335 |
+| **`..._90_V1.5_Raw_INT8`** | **0.344** | **0.248** | **0.218** | **0.258** | **0.342** |
+| **`..._90_V1.5_Hybrid_INT8`** | **0.464** | **0.361** | **0.339** | **0.376** | **0.461** |
+| BirdNET+ V3.0 preview 3.1 | 0.766 | 0.656 | 0.607 | 0.517 | 0.617 |
+
+The last row is the server-class teacher these models are distilled from, scored
+on the same annotations and the same 44 species. It has no memory or latency
+budget and runs nowhere near a microcontroller; it is here as the ceiling, not
+as an alternative.
+
+Per site, for the current release (event recall @0.5 / window AUPRC):
+
+| Site | Calls | Species | v1.5 Raw | v1.5 Hybrid |
+|---|---:|---:|---|---|
+| MABI (Vermont) | 584 | 22 | 0.423 / 0.567 | 0.632 / 0.690 |
+| CB | 730 | 21 | 0.240 / 0.319 | 0.319 / 0.393 |
+| SD | 237 | 9 | 0.169 / 0.379 | 0.321 / 0.564 |
+| NL | 170 | 6 | 0.171 / 0.345 | 0.424 / 0.484 |
+| FEU (boreal) | 2,073 | 18 | 0.217 / 0.470 | 0.300 / 0.581 |
 
 - **Event recall** is the share of annotated calls whose overlapping window
   scored above the threshold — what a recorder set to that threshold would log.
@@ -81,9 +99,37 @@ scored on 3-second windows at a 1.25 s hop, pooled over all five sites.
   deployment returns. They move independently, so both are reported: a model can
   cover the species list well and still miss most of the calls a site produces.
 
-For scale, BirdNET+ V3.0 — a server-class model with no memory budget — reaches
-0.656 event recall @0.5 and 0.517 window cMAP on the same annotations. These are
-sub-megabyte models running on a microcontroller.
+## Cost on the device
+
+Measured on an STM32N6570-DK at 1 GHz, for **one 2.5-second chunk** — the
+firmware reads exactly one chunk per file, computes one frontend and runs one
+inference:
+
+| Model | Parameters | MACs | NPU | Frontend (M55) | Compute per chunk | NPU epochs |
+|---|---:|---:|---:|---:|---:|---:|
+| `..._90_V1.4_Raw_INT8` | 987,156 | 81.34 M | 15 ms | 0 ms | 15 ms | 58 (3 sw) |
+| `..._90_V1.4_Hybrid_INT8` | 946,196 | 104.83 M | 19 ms | 69 ms | 88 ms | 40 (4 sw) |
+| **`..._90_V1.5_Raw_INT8`** | 987,156 | 81.25 M | **15 ms** | 0 ms | **15 ms** | 53 (3 sw) |
+| **`..._90_V1.5_Hybrid_INT8`** | 946,196 | 104.83 M | 19 ms | 69 ms | 88 ms | 40 (4 sw) |
+| BirdNET+ V3.0 preview 3.1 | 135,228,889 | — | — | — | — | — |
+
+The teacher is listed for scale only: **137x the parameters** of either model here,
+520 MB on disk against under one megabyte, and no device timings because it does
+not run on this class of hardware at all.
+
+- **Raw is the cheap one and that is its whole purpose.** Its learned filterbank
+  runs on the NPU, so a chunk costs 15 ms of compute. Hybrid computes a 512-point
+  STFT on the Cortex-M55 first, which costs 69 ms — more than three times the
+  inference it feeds — for the accuracy in the table above.
+- **Compute per chunk excludes reading the audio.** The board test also reports
+  59 ms of SD-card read per chunk, which a deployment does not pay: a recorder's
+  audio arrives from the microphone over DMA, already in RAM. Including it, the
+  test harness measures 75 ms (raw) and 148 ms per file (hybrid).
+- **NPU epochs** are the compiler's scheduling units; the software ones are the
+  input quantize and output dequantize, which have run on the M55 in every
+  release. A shorter raw frontend in 1.5 took raw from 58 epochs to 53.
+- At 15 ms per 2.5 s chunk, raw is **167x faster than real time**, so duty cycle
+  rather than throughput sets a recorder's power budget.
 
 ## Running a bundle on the board
 
