@@ -53,6 +53,16 @@ def generate_app_config_h(model_cfg: dict, num_classes: int) -> str:
     frontend_str = model_cfg.get("audio_frontend", "hybrid")
     frontend_define = _FRONTEND_MAP.get(frontend_str, "APP_FRONTEND_HYBRID")
 
+    # From 1.5 the released models emit logits: quantizing probabilities puts
+    # every score on the INT8 1/256 grid. The sigmoid is one expf per class on
+    # the M55 -- 100 of them against ~69 ms of STFT -- so the firmware applies it
+    # and everything downstream, including the score threshold and the printed
+    # percentages, keeps meaning what it meant in every earlier release.
+    activation = model_cfg.get("output_activation", "sigmoid")
+    if activation not in ("sigmoid", "logit"):
+        raise ValueError(f"Unsupported output_activation for firmware: {activation!r}")
+    logit_output = 1 if activation == "logit" else 0
+
     # Format chunk_duration: integer when possible, float otherwise.
     chunk_literal = str(int(chunk)) if chunk == int(chunk) else str(chunk)
 
@@ -130,6 +140,9 @@ def generate_app_config_h(model_cfg: dict, num_classes: int) -> str:
 /* --- Inference ------------------------------------------------------------- */
 #define APP_TOP_K             5
 #define APP_SCORE_THRESHOLD   0.01f
+/* 1 when the model emits logits; the firmware applies the sigmoid itself, so
+ * APP_SCORE_THRESHOLD and the reported scores are probabilities either way. */
+#define APP_OUTPUT_LOGIT      {logit_output}
 
 #endif /* APP_CONFIG_H */
 """
@@ -211,6 +224,7 @@ def main() -> None:
         f"chunk={model_cfg['chunk_duration']}s, "
         f"samples={int(model_cfg['sample_rate'] * model_cfg['chunk_duration'])}, "
         f"frontend={model_cfg.get('audio_frontend', 'hybrid')}, "
+        f"output={model_cfg.get('output_activation', 'sigmoid')}, "
         f"classes={num_classes})"
     )
 

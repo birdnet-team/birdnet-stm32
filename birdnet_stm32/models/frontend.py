@@ -43,7 +43,40 @@ from birdnet_stm32.audio.stft import mel_filterbank, mel_frequencies
 
 VALID_FRONTENDS = ("librosa", "hybrid", "raw")
 
-# Overlap factor of the raw analysis window: window = RAW_OVERLAP * hop.
+# How the raw path turns the quadrature pair into a band envelope. Both options
+# are homogeneous of degree one in (re, im), which is what keeps cross-layer
+# equalization valid, and both stay on the NPU. They differ in how many INT8
+# activation grids the signal crosses between the filterbank and the band stage
+# -- 11 ops against 7 -- which is the quantity raw's INT8 loss tracks.
+#
+# A third option, half-wave rectification of each component (one op), was
+# measured and removed: trained at the B3 recipe it lost 0.038 float cMAP AND
+# quantized worse (INT8 loss 0.182 against 0.104), because its envelope keeps
+# the carrier beat that quadrature exists to cancel. Fewer grids only help when
+# what crosses them stays as clean.
+VALID_RAW_MAGNITUDES = ("alpha_max", "l1")
+
+# How the quadrature pair is emitted. ``pair`` is two banks of ``mel_bins``
+# filters, one per component, as every model up to 1.4 was trained. ``fused``
+# is one bank of ``2 * mel_bins`` filters whose output is sliced into the two
+# components: identical arithmetic and identical weights, half the convolutions
+# and half the summations, so the signal crosses half as many INT8 grids before
+# the magnitude. The two components then share one activation scale, which
+# costs nothing measurable -- on the B3 model their per-part scales agree to
+# within 1% already.
+VALID_RAW_BANKS = ("pair", "fused")
+
+# What new models are built with. The layer's own defaults stay at the 1.0-1.4
+# frontend on purpose: a checkpoint saved before these existed carries neither
+# key, and must deserialize as the model it was trained as rather than silently
+# inheriting today's. These say what to build now.
+RELEASE_RAW_MAGNITUDE = "l1"
+RELEASE_RAW_BANK = "fused"
+
+# Default overlap factor of the raw analysis window: window = overlap * hop.
+# ``--raw_overlap 1`` halves the window, which halves the filterbank's MACs and
+# emits half as many partial convolutions (see the note on the split below), at
+# the cost of frequency resolution in the low bands.
 RAW_OVERLAP = 2
 # Hops are rounded to this so the derived fold (hop // 2) is a multiple of 8.
 _HOP_ALIGN = 16
@@ -68,7 +101,18 @@ _HOP_ALIGN = 16
 # compact high-band filters stay exact. Splitting restores all of them. 8 is no
 # better than 4, so what remains at 4 is the INT8 requantization of the sum
 # rather than the original defect. See docs/dev/audio-frontends.md.
+#
+# The split is ``geometry.kernel`` (``2 * overlap``), which makes every partial
+# convolution accumulate exactly ``fold`` taps whatever the overlap is. At the
+# release geometry that is 4 and 112 taps, the configuration measured above.
 RAW_SPLIT = 4
+
+
+def raw_filterbank_split(geom: "RawGeometry") -> int:
+    """Number of partial convolutions the filterbank is emitted as."""
+    return int(geom.kernel)
+
+
 # Width of the per-band temporal lowpass applied after the modulus.
 SMOOTH_TAPS = 5
 
@@ -276,6 +320,9 @@ class AudioFrontendLayer(layers.Layer):
         mel_fmax: float | None = None,
         mel_norm: str = "slaney",
         mag_scale: str = "pwl",
+        raw_magnitude: str = "alpha_max",
+        raw_overlap: int = RAW_OVERLAP,
+        raw_bank: str = "pair",
         name: str = "audio_frontend",
         is_trainable: bool = False,
         activation_bounds: dict | None = None,
@@ -284,6 +331,12 @@ class AudioFrontendLayer(layers.Layer):
         super().__init__(name=name, **kwargs)
         assert mode in ("precomputed", "hybrid", "raw")
         assert mag_scale in VALID_MAG_SCALES
+        if raw_magnitude not in VALID_RAW_MAGNITUDES:
+            raise ValueError(f"raw_magnitude '{raw_magnitude}' not in {VALID_RAW_MAGNITUDES}")
+        if int(raw_overlap) < 1:
+            raise ValueError(f"raw_overlap must be >= 1, got {raw_overlap}")
+        if raw_bank not in VALID_RAW_BANKS:
+            raise ValueError(f"raw_bank '{raw_bank}' not in {VALID_RAW_BANKS}")
         self.mode = mode
         self.mel_bins = int(mel_bins)
         self.spec_width = int(spec_width)
@@ -295,6 +348,9 @@ class AudioFrontendLayer(layers.Layer):
         self.mel_fmax = mel_fmax
         self.mel_norm = mel_norm
         self.mag_scale = mag_scale
+        self.raw_magnitude = raw_magnitude
+        self.raw_overlap = int(raw_overlap)
+        self.raw_bank = raw_bank
         self.is_trainable = bool(is_trainable)
         reject_activation_bounds(activation_bounds)
         # Training may install a duck-typed quantization hook that simulates
@@ -305,6 +361,7 @@ class AudioFrontendLayer(layers.Layer):
         # One Conv2D per folded-channel group, per quadrature component.
         self.fb_re: list[layers.Conv2D] = []
         self.fb_im: list[layers.Conv2D] = []
+        self.fb: list[layers.Conv2D] = []
         self.split = RAW_SPLIT
 
         # Fixed input samples for one chunk
@@ -360,36 +417,66 @@ class AudioFrontendLayer(layers.Layer):
     def _build_raw_filterbank(self, name: str) -> None:
         """Size and construct the quadrature filterbank for the raw path.
 
-        Each quadrature component is emitted as ``RAW_SPLIT`` convolutions over
-        equal groups of the folded channels; their sum is the full filterbank.
-        See the note on ``RAW_SPLIT``.
+        Each quadrature component is emitted as ``raw_filterbank_split``
+        convolutions over equal groups of the folded channels; their sum is the
+        full filterbank. See the note on ``RAW_SPLIT``.
         """
-        geom = raw_filterbank_geometry(self._T, int(self.spec_width))
+        geom = raw_filterbank_geometry(self._T, int(self.spec_width), overlap=self.raw_overlap)
         self.geom = geom
-        if geom.fold % RAW_SPLIT:
-            raise ValueError(f"fold {geom.fold} is not divisible by RAW_SPLIT {RAW_SPLIT}")
-        self.split = RAW_SPLIT
+        split = raw_filterbank_split(geom)
+        if geom.fold % split:
+            raise ValueError(f"fold {geom.fold} is not divisible by the filterbank split {split}")
+        self.split = split
         conv_kwargs = dict(
-            filters=int(self.mel_bins),
             kernel_size=(1, geom.kernel),
             strides=(1, geom.stride),
             padding="valid",
             use_bias=False,
             trainable=self.is_trainable,
         )
-        self.fb_re = [layers.Conv2D(name=f"{name}_fb_re_{i}", **conv_kwargs) for i in range(self.split)]
-        self.fb_im = [layers.Conv2D(name=f"{name}_fb_im_{i}", **conv_kwargs) for i in range(self.split)]
+        if self.raw_bank == "fused":
+            self.fb = [
+                layers.Conv2D(filters=2 * int(self.mel_bins), name=f"{name}_fb_{i}", **conv_kwargs)
+                for i in range(self.split)
+            ]
+        else:
+            self.fb_re = [
+                layers.Conv2D(filters=int(self.mel_bins), name=f"{name}_fb_re_{i}", **conv_kwargs)
+                for i in range(self.split)
+            ]
+            self.fb_im = [
+                layers.Conv2D(filters=int(self.mel_bins), name=f"{name}_fb_im_{i}", **conv_kwargs)
+                for i in range(self.split)
+            ]
+
+    def filterbank_convs(self) -> list[layers.Conv2D]:
+        """Every convolution the raw filterbank is emitted as, in graph order."""
+        return list(self.fb) if self.raw_bank == "fused" else [*self.fb_re, *self.fb_im]
+
+    def scale_filterbank_bands(self, gains: np.ndarray) -> None:
+        """Multiply band ``c``'s filters by ``gains[c]``, both components.
+
+        Equalization's only handle on the filterbank, written once here because
+        a fused bank carries the two components in one kernel.
+        """
+        s = np.asarray(gains, dtype=np.float32)
+        if s.shape != (int(self.mel_bins),):
+            raise ValueError(f"expected one gain per band ({self.mel_bins}), got {s.shape}")
+        per_kernel = np.concatenate([s, s]) if self.raw_bank == "fused" else s
+        for conv in self.filterbank_convs():
+            (kernel,) = conv.get_weights()
+            conv.set_weights([(kernel * per_kernel[None, None, None, :]).astype(np.float32)])
 
     def build(self, input_shape):
         """Build the frontend layer based on the selected mode."""
         if self.mode == "hybrid":
             self._build_and_set_mel_mixer(n_fft=self.fft_length, cin=hybrid_fft_bins(self.fft_length))
         elif self.mode == "raw":
-            if self.geom is None or not self.fb_re or not self.fb_im:
+            if self.geom is None or not self.filterbank_convs():
                 raise RuntimeError("Raw frontend filterbank was not initialized")
             group = self.geom.fold // self.split
             folded = tf.TensorShape([None, 1, self.geom.crop // self.geom.fold, group])
-            for conv in (*self.fb_re, *self.fb_im):
+            for conv in self.filterbank_convs():
                 conv.build(folded)
             self._seed_gabor_weights()
 
@@ -405,9 +492,7 @@ class AudioFrontendLayer(layers.Layer):
     def _seed_gabor_weights(self) -> None:
         """Seed the raw filterbank with mel-spaced Gabor filters."""
         g = self.geom
-        fb_re = self.fb_re
-        fb_im = self.fb_im
-        if g is None or not fb_re or not fb_im:
+        if g is None or not self.filterbank_convs():
             raise RuntimeError("Raw frontend filterbank was not initialized")
         upper = float(self.mel_fmax) if self.mel_fmax is not None else (self.sample_rate / 2.0)
         real, imag = gabor_filterbank(
@@ -428,10 +513,15 @@ class AudioFrontendLayer(layers.Layer):
             return taps.reshape(self.mel_bins, g.kernel, g.fold).transpose(1, 2, 0)[None]
 
         group = g.fold // self.split
-        for i, (conv_re, conv_im) in enumerate(zip(fb_re, fb_im, strict=True)):
+        re_kernel = _to_folded_kernel(real)
+        im_kernel = _to_folded_kernel(imag)
+        for i in range(self.split):
             sl = slice(i * group, (i + 1) * group)
-            conv_re.set_weights([_to_folded_kernel(real)[:, :, sl, :]])
-            conv_im.set_weights([_to_folded_kernel(imag)[:, :, sl, :]])
+            if self.raw_bank == "fused":
+                self.fb[i].set_weights([np.concatenate([re_kernel[:, :, sl, :], im_kernel[:, :, sl, :]], axis=-1)])
+            else:
+                self.fb_re[i].set_weights([re_kernel[:, :, sl, :]])
+                self.fb_im[i].set_weights([im_kernel[:, :, sl, :]])
 
     def _build_and_set_mel_mixer(self, n_fft: int, cin: int):
         """Initialize mel_mixer from a Slaney mel basis."""
@@ -550,23 +640,59 @@ class AudioFrontendLayer(layers.Layer):
             return total
 
         # Named for the bank, not for one of its partial convolutions: this is
-        # the filterbank output, and the name is part of the QAT range contract.
-        re = self._quantized_activation(f"{self.name}_fb_re", _bank(self.fb_re, f"{self.name}_fb_re"))
-        im = self._quantized_activation(f"{self.name}_fb_im", _bank(self.fb_im, f"{self.name}_fb_im"))
+        # the filterbank output, and the name is part of the QAT range contract,
+        # which equalization reads by the same names.
+        if self.raw_bank == "fused":
+            # One bank of 2*mel_bins filters; the components are its two halves.
+            # Slicing a channel range is data movement, not arithmetic: the
+            # halves inherit the bank's scale rather than crossing a grid.
+            z = _bank(self.fb, f"{self.name}_fb")
+            m = int(self.mel_bins)
+            re = self._quantized_activation(f"{self.name}_fb_re", z[:, :, :, :m])
+            im = self._quantized_activation(f"{self.name}_fb_im", z[:, :, :, m:])
+        else:
+            re = self._quantized_activation(f"{self.name}_fb_re", _bank(self.fb_re, f"{self.name}_fb_re"))
+            im = self._quantized_activation(f"{self.name}_fb_im", _bank(self.fb_im, f"{self.name}_fb_im"))
 
-        # alpha-max-plus-beta-min: |z| ~= max(|re|,|im|) + 0.4*min(|re|,|im|).
-        # Within ~4% of the true magnitude, against ~17% ripple for |re|+|im| —
-        # and that ripple would beat at the carrier frequency, aliasing into the
-        # frame rate. Costs three elementwise ops, all of which stay on the NPU.
-        # |x| via _abs (ReLU, SUB, ADD) rather than tf.abs. The N6 NPU's ABS
-        # ignores its input's quantization zero-point: on an isolated ABS with
-        # zero-point -9 every element came back short by `|zp| * scale`
-        # (measured 2026-09-09: mean error -0.1543 against mae 0.1543 -- pure
-        # bias, cos 0.951). The filterbank sums feeding this never have a zero
-        # zero-point, so ABS is never safe here.
+        mag = self._band_envelope(re, im)
+
+        mag = self._calibrate(mag, training, smooth=True)
+        mag = mag[:, :, : self.spec_width, :]
+        return tf.transpose(mag, [0, 3, 2, 1])  # [B,mel,W,1]
+
+    def _band_envelope(self, re, im):
+        """Combine the quadrature pair into a non-negative band envelope.
+
+        The two options trade INT8 activation grids against how faithfully they
+        follow the true modulus. Measured on the B3 filterbank over 48
+        validation recordings, per-band correlation with ``sqrt(re^2+im^2)``
+        after the band smoother, and the SNR of the stage's own INT8 simulation:
+
+            alpha_max (11 grids) .... r 0.9999, 20.9 dB
+            l1         (7 grids) .... r 0.9980, 23.0 dB
+
+        ``l1`` is what new models are built with: at the B3 recipe it trained to
+        the same float cMAP and cut the post-training quantization loss from
+        0.139 to 0.104.
+
+        ``|x|`` is built from ReLU/SUB/ADD rather than ``tf.abs`` throughout.
+        The N6 NPU's ABS ignores its input's quantization zero-point: on an
+        isolated ABS with zero-point -9 every element came back short by
+        ``|zp| * scale`` (measured 2026-09-09: mean error -0.1543 against mae
+        0.1543 -- pure bias, cos 0.951). The filterbank sums feeding this never
+        have a zero zero-point, so ABS is never safe here.
+        """
         a = self._abs(re, f"{self.name}_abs_re")
         b = self._abs(im, f"{self.name}_abs_im")
-        # Written without MAXIMUM/MINIMUM, using the exact identity
+        if self.raw_magnitude == "l1":
+            # |re| + |im|: ~17% ripple against the true modulus on its own, but
+            # the ripple beats at the carrier and the band smoother averages it
+            # away, which is why the measured per-band correlation is 0.998.
+            return self._quantized_activation(f"{self.name}_magnitude", a + b)
+
+        # alpha-max-plus-beta-min: |z| ~= max(|re|,|im|) + 0.4*min(|re|,|im|),
+        # within ~4% of the true magnitude. Written without MAXIMUM/MINIMUM,
+        # using the exact identity
         #     max(a, b) + 0.4 * min(a, b) = b + 0.4 * a + 0.6 * relu(a - b).
         # TFLite's INT8 MINIMUM forces its inputs onto its output's scale, so the
         # converter quantized |re| and |im| to min's range (0..4.31 on the v1.2
@@ -579,14 +705,10 @@ class AudioFrontendLayer(layers.Layer):
         blend = self._quantized_activation(
             f"{self.name}_abs_blend", b + self._quantized_activation(f"{self.name}_abs_re_scale", 0.4 * a)
         )
-        mag = self._quantized_activation(
+        return self._quantized_activation(
             f"{self.name}_magnitude",
             blend + self._quantized_activation(f"{self.name}_abs_excess_scale", 0.6 * excess),
         )
-
-        mag = self._calibrate(mag, training, smooth=True)
-        mag = mag[:, :, : self.spec_width, :]
-        return tf.transpose(mag, [0, 3, 2, 1])  # [B,mel,W,1]
 
     def compute_output_shape(self, input_shape):
         """Return static output shape: (batch, mel_bins, spec_width, 1)."""
@@ -617,6 +739,9 @@ class AudioFrontendLayer(layers.Layer):
             "mel_fmax": self.mel_fmax,
             "mel_norm": self.mel_norm,
             "mag_scale": self.mag_scale,
+            "raw_magnitude": self.raw_magnitude,
+            "raw_overlap": self.raw_overlap,
+            "raw_bank": self.raw_bank,
             "name": self.name,
             "is_trainable": self.is_trainable,
         }

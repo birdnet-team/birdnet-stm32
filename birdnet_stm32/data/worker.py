@@ -7,19 +7,27 @@ small single-threaded process instead of a fork of the TensorFlow trainer.
 
 import contextlib
 import signal
+from pathlib import Path
 
 import numpy as np
 
-from birdnet_stm32.audio.activity import smart_crop, sort_by_activity
-from birdnet_stm32.audio.augmentation import apply_spec_augment
-from birdnet_stm32.audio.io import estimate_num_chunks, load_audio_window, split_audio_into_chunks
+from birdnet_stm32.audio.activity import smart_crop, sort_by_activity, uniform_crop
+from birdnet_stm32.audio.augmentation import apply_spec_augment, apply_time_mask
+from birdnet_stm32.audio.io import (
+    chunk_start_samples,
+    estimate_num_chunks,
+    load_audio_window,
+    split_audio_into_chunks,
+)
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
+from birdnet_stm32.data.teacher import TeacherTargets, blend_targets
 
 # ---------------------------------------------------------------------------
 # Multiprocessing worker — module-level for pickling
 # ---------------------------------------------------------------------------
 
 _worker_cfg: dict = {}
+_teacher: TeacherTargets | None = None
 
 
 def _init_worker(cfg: dict) -> None:
@@ -42,8 +50,12 @@ def _init_worker(cfg: dict) -> None:
         from threadpoolctl import threadpool_limits
 
         threadpool_limits(1)
-    global _worker_cfg  # noqa: PLW0603
+    global _worker_cfg, _teacher  # noqa: PLW0603
     _worker_cfg = cfg
+    # Memory-mapped, so every worker shares one copy through the page cache.
+    cache = cfg.get("teacher_cache")
+    needed = cfg.get("teacher_weight", 0.0) > 0 or cfg.get("crop_policy") == "teacher"
+    _teacher = TeacherTargets(cache, cfg["classes"]) if cache and needed else None
 
 
 def _process_file(path: str):
@@ -61,11 +73,13 @@ def _process_file(path: str):
     class_to_idx = cfg["class_to_idx"]
     num_classes = cfg["num_classes"]
 
+    labelled = None  # class index of the recording's label; None for noise
     if label_str.lower() in noise_labels:
         label = np.zeros(num_classes, dtype=np.float32)
     elif label_str in class_to_idx:
         label = np.zeros(num_classes, dtype=np.float32)
-        label[class_to_idx[label_str]] = 1.0
+        labelled = class_to_idx[label_str]
+        label[labelled] = 1.0
     else:
         return None  # unknown class
 
@@ -81,6 +95,8 @@ def _process_file(path: str):
     snr_threshold = cfg["snr_threshold"]
     random_offset = cfg["random_offset"]
     spec_augment = cfg["spec_augment"]
+    raw_time_masks = int(cfg.get("raw_time_masks", 0))
+    raw_time_mask_ms = float(cfg.get("raw_time_mask_ms", 30.0))
     freq_mask_max = cfg["freq_mask_max"]
     time_mask_max = cfg["time_mask_max"]
     audio_frontend = cfg["audio_frontend"]
@@ -88,12 +104,13 @@ def _process_file(path: str):
     candidate_chunks = cfg.get("candidate_chunks_per_file", min(8, max(4, max_chunks * 2)))
 
     try:
-        audio = load_audio_window(
+        audio, window_offset_s = load_audio_window(
             path,
             sample_rate=sr,
             max_duration=load_duration,
             chunk_duration=cd,
             random_offset=random_offset,
+            return_offset=True,
         )
     except Exception:
         return None
@@ -101,14 +118,47 @@ def _process_file(path: str):
     if audio.size == 0:
         return None
 
+    crop_policy = cfg.get("crop_policy", "energy")
     available_chunks = estimate_num_chunks(audio.shape[0], sr, cd)
-    if available_chunks > candidate_chunks:
-        audio_chunks = list(smart_crop(audio, sr, cd, max_chunks=candidate_chunks))
+    # Each chunk's start (samples into the loaded window) is carried along so a
+    # teacher target can be looked up for the exact stretch of audio it holds.
+    if crop_policy == "teacher":
+        # Every half-overlapping chunk of the loaded window is a candidate; the
+        # teacher, not energy, ranks them below.
+        audio_chunks = list(split_audio_into_chunks(audio, sample_rate=sr, chunk_duration=cd, chunk_overlap=cd / 2))
+        chunk_starts = [int(v) for v in chunk_start_samples(audio.shape[0], sr, cd, cd / 2)]
+    elif crop_policy == "uniform":
+        audio_chunks, chunk_starts = uniform_crop(audio, sr, cd, max_chunks=candidate_chunks, return_starts=True)
+    elif available_chunks > candidate_chunks:
+        audio_chunks, chunk_starts = smart_crop(audio, sr, cd, max_chunks=candidate_chunks, return_starts=True)
     else:
         audio_chunks = list(split_audio_into_chunks(audio, sample_rate=sr, chunk_duration=cd))
+        chunk_starts = [int(v) for v in chunk_start_samples(audio.shape[0], sr, cd)]
 
     if len(audio_chunks) == 0:
         return None
+
+    sample_id = Path(path).stem
+    teacher_rank = (
+        crop_policy == "teacher"
+        and _teacher is not None
+        and labelled is not None
+        and bool(_teacher.mask[labelled])
+        and sample_id in _teacher
+    )
+    if teacher_rank:
+        # Rank candidates by the teacher's score for the labelled species *before*
+        # computing any features: ranking needs only each chunk's position, and a
+        # spectrogram for every half-overlapping candidate would multiply the
+        # hybrid loader's STFT work by the candidate count. A chunk without a
+        # usable teacher score ranks last.
+        def heard(i):
+            scores = _teacher.lookup(sample_id, window_offset_s + chunk_starts[i] / sr, cd)
+            return -1.0 if scores is None else float(scores[labelled])
+
+        keep = sorted(range(len(audio_chunks)), key=heard, reverse=True)[:max_chunks]
+        audio_chunks = [audio_chunks[i] for i in keep]
+        chunk_starts = [chunk_starts[i] for i in keep]
 
     # --- Compute spectrograms / raw features for all chunks ---
     # Chunks are ranked on the uncompressed spectrogram whatever the model input
@@ -147,23 +197,42 @@ def _process_file(path: str):
         raise ValueError(f"Invalid audio frontend: {audio_frontend}")
     features = [ranked for _, ranked in pairs]
     model_input = {id(ranked): item for item, ranked in pairs}
+    start_of = {id(ranked): start for (_, ranked), start in zip(pairs, chunk_starts, strict=True)}
 
-    # Activity-sort: most salient first
-    pool = sort_by_activity(features, threshold=snr_threshold) or features
+    # Activity-sort: most salient first. Under the uniform policy the ranking is
+    # skipped too, since re-ranking uniformly drawn chunks by energy would put
+    # the very bias back that the policy exists to remove.
+    if teacher_rank:
+        pool = list(features)  # already in teacher order, and cut to max_chunks
+    elif crop_policy == "uniform":
+        pool = list(features)
+        np.random.shuffle(pool)
+    else:
+        # Energy, which is also the fallback for the teacher policy on noise
+        # recordings, teacher-less classes and recordings missing from the cache.
+        pool = sort_by_activity(features, threshold=snr_threshold) or features
     if not pool:
         return None
-    pool = [model_input[id(ranked)] for ranked in pool]
 
     # Take up to max_chunks salient items
-    selected = pool[:max_chunks]
+    selected = [(model_input[id(ranked)], start_of[id(ranked)]) for ranked in pool[:max_chunks]]
 
+    blend = _teacher is not None and cfg.get("teacher_weight", 0.0) > 0
     results = []
-    for item in selected:
+    for item, start in selected:
+        target = label
+        if blend:
+            teacher = _teacher.lookup(sample_id, window_offset_s + start / sr, cd)
+            if teacher is not None:
+                target = blend_targets(label, teacher, _teacher.mask, cfg["teacher_weight"])
         if audio_frontend == "raw":
             x = item[:T]
             if x.shape[0] < T:
                 x = np.pad(x, (0, T - x.shape[0]))
             sample = x / (np.max(np.abs(x)) + 1e-6)
+            # After normalization, so a mask cannot change the scaling peak.
+            if raw_time_masks > 0:
+                sample = apply_time_mask(sample, sr, num_masks=raw_time_masks, max_width_ms=raw_time_mask_ms)
         else:
             sample = item
 
@@ -171,6 +240,6 @@ def _process_file(path: str):
             sample = apply_spec_augment(sample, freq_mask_max=freq_mask_max, time_mask_max=time_mask_max)
 
         sample = np.expand_dims(sample, axis=-1).astype(np.float32)
-        results.append((sample, label))
+        results.append((sample, target))
 
     return results if results else None

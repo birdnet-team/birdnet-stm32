@@ -26,6 +26,22 @@ class ModelConfig:
         mag_scale: Magnitude scaling ('pwl', 'none').
         input_compression: Compression of a precomputed spectrogram input
             before quantization ('none', 'sqrt', 'log'); librosa/hybrid only.
+        raw_magnitude: How the raw frontend combines its quadrature pair into
+            a band envelope ('alpha_max', 'l1', 'halfwave'); raw only. The
+            options differ in how many INT8 activation grids sit between the
+            filterbank and the band stage.
+        raw_overlap: Analysis window of the raw filterbank as a multiple of
+            its hop; raw only. 2 is the release geometry (448 taps at 2.5 s /
+            256 frames); 1 halves the window, its MACs and the number of
+            partial convolutions it is emitted as.
+        raw_bank: How the raw quadrature pair is emitted: 'pair' (two banks,
+            as every model up to 1.4) or 'fused' (one bank of 2*num_mels
+            filters, sliced into the two components). Identical arithmetic,
+            half the convolutions and summations; raw only.
+        output_activation: What the converted model emits: 'sigmoid'
+            probabilities (default) or raw 'logit' scores. A logit model leaves
+            the sigmoid to the caller, which keeps the output off the INT8
+            1/256 probability grid; see docs/inference.md.
         embeddings_size: Dense embedding dimension before classifier.
         alpha: Width multiplier for channel counts.
         depth_multiplier: Block repeat count per stage.
@@ -48,6 +64,10 @@ class ModelConfig:
     audio_frontend: str = "hybrid"
     mag_scale: str = "pwl"
     input_compression: str = "none"
+    raw_magnitude: str = "alpha_max"
+    raw_overlap: int = 2
+    raw_bank: str = "pair"
+    output_activation: str = "sigmoid"
 
     # Model architecture
     embeddings_size: int = 256
@@ -68,6 +88,9 @@ class ModelConfig:
     _VALID_FRONTENDS = frozenset({"librosa", "hybrid", "raw"})
     _VALID_MAG_SCALES = frozenset({"pwl", "none"})
     _VALID_INPUT_COMPRESSIONS = frozenset({"none", "sqrt", "log"})
+    _VALID_RAW_MAGNITUDES = frozenset({"alpha_max", "l1", "halfwave"})
+    _VALID_RAW_BANKS = frozenset({"pair", "fused"})
+    _VALID_OUTPUT_ACTIVATIONS = frozenset({"sigmoid", "logit"})
     _VALID_HEAD_POOLINGS = frozenset({"gap", "freq_mean_time_maxmean"})
     _VALID_DW_KERNEL_SIZES = frozenset({3, 5})
 
@@ -90,6 +113,22 @@ class ModelConfig:
         if self.input_compression not in self._VALID_INPUT_COMPRESSIONS:
             raise ValueError(
                 f"input_compression '{self.input_compression}' not in {sorted(self._VALID_INPUT_COMPRESSIONS)}"
+            )
+        if self.raw_magnitude not in self._VALID_RAW_MAGNITUDES:
+            raise ValueError(f"raw_magnitude '{self.raw_magnitude}' not in {sorted(self._VALID_RAW_MAGNITUDES)}")
+        if self.raw_magnitude != "alpha_max" and self.audio_frontend != "raw":
+            raise ValueError("raw_magnitude applies to the raw frontend's quadrature pair only")
+        if self.raw_overlap < 1:
+            raise ValueError(f"raw_overlap must be >= 1, got {self.raw_overlap}")
+        if self.raw_overlap != 2 and self.audio_frontend != "raw":
+            raise ValueError("raw_overlap applies to the raw filterbank only")
+        if self.raw_bank not in self._VALID_RAW_BANKS:
+            raise ValueError(f"raw_bank '{self.raw_bank}' not in {sorted(self._VALID_RAW_BANKS)}")
+        if self.raw_bank != "pair" and self.audio_frontend != "raw":
+            raise ValueError("raw_bank applies to the raw filterbank only")
+        if self.output_activation not in self._VALID_OUTPUT_ACTIVATIONS:
+            raise ValueError(
+                f"output_activation '{self.output_activation}' not in {sorted(self._VALID_OUTPUT_ACTIVATIONS)}"
             )
         if self.input_compression != "none" and self.audio_frontend == "raw":
             raise ValueError("input_compression applies to spectrogram inputs, not the raw frontend")

@@ -62,6 +62,56 @@ def apply_mixup(
     return batch_samples, batch_labels
 
 
+def apply_time_mask(
+    waveform: np.ndarray,
+    sample_rate: int,
+    num_masks: int = 8,
+    max_width_ms: float = 30.0,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    """Zero random spans of a waveform: SpecAugment time masking, in the sample domain.
+
+    The ``raw`` frontend never sees a spectrogram in the loader, so it cannot
+    use :func:`apply_spec_augment` and has historically trained with mixup
+    alone. Zeroing a span of samples is equivalent: the learned filterbank
+    turns it into zeroed columns of the time axis, exactly what a spectrogram
+    time mask produces.
+
+    There is no waveform equivalent of *frequency* masking — removing a band
+    needs a filter, not a mask, which is what random equalization does.
+
+    Widths are given in milliseconds so the setting is independent of the frame
+    rate. At 256 frames over 2.5 s one frame is ~9.8 ms, so the 30 ms default
+    is about three frames: the thin-band regime that keeps narrow calls intact
+    rather than erasing them.
+
+    Args:
+        waveform: 1D float32 waveform. Masking is applied after any
+            normalization, so a mask cannot change the peak the signal was
+            scaled by.
+        sample_rate: Sampling rate (Hz).
+        num_masks: Number of masks to apply.
+        max_width_ms: Maximum width of each mask (milliseconds).
+        rng: Optional generator, for tests that need a fixed draw.
+
+    Returns:
+        Masked copy of the waveform, same shape and dtype.
+    """
+    if num_masks <= 0 or max_width_ms <= 0:
+        return waveform
+    rng = rng if rng is not None else np.random.default_rng()
+    out = waveform.copy()
+    n = out.shape[0]
+    max_width = max(1, int(sample_rate * max_width_ms / 1000.0))
+    for _ in range(num_masks):
+        w = int(rng.integers(0, max_width + 1))
+        if w <= 0 or w >= n:
+            continue
+        start = int(rng.integers(0, n - w))
+        out[start : start + w] = 0.0
+    return out
+
+
 def apply_spec_augment(
     spectrogram: np.ndarray,
     freq_mask_max: int = 8,

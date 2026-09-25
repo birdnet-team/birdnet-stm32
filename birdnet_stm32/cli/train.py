@@ -17,7 +17,7 @@ from birdnet_stm32.data.dataset import (
 )
 from birdnet_stm32.data.generator import estimate_samples_per_epoch, load_dataset
 from birdnet_stm32.models.dscnn import DW_KERNEL_SIZES, HEAD_POOLINGS, STAGE_WIDTHS, build_dscnn_model
-from birdnet_stm32.models.frontend import normalize_frontend_name
+from birdnet_stm32.models.frontend import RELEASE_RAW_BANK, RELEASE_RAW_MAGNITUDE, normalize_frontend_name
 from birdnet_stm32.models.profiler import print_profile
 from birdnet_stm32.training.config import ModelConfig
 from birdnet_stm32.training.trainer import compute_hop_length, train_model
@@ -286,6 +286,45 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--no_spec_augment", action="store_true", default=False, help="Disable SpecAugment")
     parser.add_argument("--freq_mask_max", type=int, default=8, help="Max frequency mask width (bins)")
     parser.add_argument("--time_mask_max", type=int, default=25, help="Max time mask width (frames)")
+    parser.add_argument(
+        "--crop_policy",
+        type=str,
+        default="energy",
+        choices=["energy", "uniform", "teacher"],
+        help=(
+            "How training chunks are chosen from a recording. 'energy' (default) ranks "
+            "candidates by short-time energy and keeps the loudest; 'uniform' draws start "
+            "offsets at random, which avoids biasing the sampler toward rain, wind and "
+            "insect choruses at the cost of some silent chunks; 'teacher' (needs "
+            "--teacher_cache) keeps the chunk where the teacher hears the labelled species "
+            "most, and falls back to energy where it has no score. Evaluation is "
+            "unaffected: it always scores whole files with overlapping windows."
+        ),
+    )
+    parser.add_argument(
+        "--teacher_cache",
+        type=str,
+        default=None,
+        help=(
+            "Directory of cached per-window teacher scores (see birdnet_stm32.data.teacher). "
+            "Each training chunk's label is blended with the teacher window nearest it. "
+            "Validation and checkpoint selection keep hard labels."
+        ),
+    )
+    parser.add_argument(
+        "--teacher_weight",
+        type=float,
+        default=0.0,
+        help="Teacher share of the training target in [0, 1] (0 = hard labels only)",
+    )
+    parser.add_argument(
+        "--raw_time_masks",
+        type=int,
+        default=0,
+        help="Number of waveform time masks for the raw frontend (0 = off). SpecAugment's "
+        "time axis, applied in the sample domain, which raw can use and SpecAugment cannot.",
+    )
+    parser.add_argument("--raw_time_mask_ms", type=float, default=30.0, help="Max width of each raw time mask (ms)")
     parser.add_argument("--mixup_alpha", type=float, default=0.2, help="Mixup alpha")
     parser.add_argument("--mixup_probability", type=float, default=0.25, help="Mixup batch fraction")
 
@@ -413,6 +452,12 @@ def get_args() -> argparse.Namespace:
 
     # Derive positive flags from --no_* flags
     args.spec_augment = not args.no_spec_augment
+    if not 0.0 <= args.teacher_weight <= 1.0:
+        parser.error(f"--teacher_weight must be in [0, 1], got {args.teacher_weight}")
+    if args.teacher_weight > 0 and not args.teacher_cache:
+        parser.error("--teacher_weight > 0 needs --teacher_cache")
+    if args.crop_policy == "teacher" and not args.teacher_cache:
+        parser.error("--crop_policy teacher needs --teacher_cache")
     args.deterministic = True  # always deterministic
 
     if args.validation_subset < 0:
@@ -554,6 +599,19 @@ def main():
         train_kwargs["loader_control"] = train_loader_control
 
     val_kwargs = dict(common_kwargs)
+    if args.teacher_cache and (args.teacher_weight > 0 or args.crop_policy == "teacher"):
+        # Fail here, in the main process, rather than inside every loader worker.
+        from pathlib import Path
+
+        from birdnet_stm32.data.teacher import TeacherTargets
+
+        teacher = TeacherTargets(args.teacher_cache, classes)
+        covered = sum(Path(p).stem in teacher for p in train_paths)
+        print(
+            f"Teacher targets: {covered}/{len(train_paths)} training files covered, "
+            f"{int(teacher.mask.sum())}/{len(classes)} classes, weight {args.teacher_weight}, "
+            f"crop policy {args.crop_policy}"
+        )
     train_dataset = load_dataset(
         train_paths,
         classes,
@@ -568,6 +626,11 @@ def main():
         spec_augment=args.spec_augment,
         freq_mask_max=args.freq_mask_max,
         time_mask_max=args.time_mask_max,
+        crop_policy=args.crop_policy,
+        teacher_cache=args.teacher_cache,
+        teacher_weight=args.teacher_weight,
+        raw_time_masks=args.raw_time_masks,
+        raw_time_mask_ms=args.raw_time_mask_ms,
         **train_kwargs,
     )
     from birdnet_stm32.training.validation import VALIDATION_SUBSET_SEED, FileCmap, stratified_validation_subset
@@ -618,6 +681,8 @@ def main():
         embeddings_size=args.embeddings_size,
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
+        raw_magnitude=RELEASE_RAW_MAGNITUDE,
+        raw_bank=RELEASE_RAW_BANK,
         frontend_trainable=args.frontend_trainable,
         dropout_rate=args.dropout,
     )
@@ -637,6 +702,8 @@ def main():
         audio_frontend=args.audio_frontend,
         mag_scale=args.mag_scale,
         input_compression=args.input_compression,
+        raw_magnitude=RELEASE_RAW_MAGNITUDE,
+        raw_bank=RELEASE_RAW_BANK,
         embeddings_size=args.embeddings_size,
         alpha=args.alpha,
         depth_multiplier=args.depth_multiplier,

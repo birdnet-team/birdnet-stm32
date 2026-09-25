@@ -181,10 +181,35 @@ class ChainedTFLiteRunner:
         return self.classifier.predict(np.asarray(embeddings, dtype=np.float32))
 
 
+class SigmoidRunner:
+    """Wrap a runner whose model emits logits, and return probabilities.
+
+    A model converted with ``--output_activation logit`` leaves the sigmoid to
+    its caller, which keeps its output off the INT8 1/256 probability grid.
+    Everything downstream — evaluation, the board comparison, the operational
+    gate — expects probabilities, so this puts the sigmoid back. It is 100
+    values per window; the cost is not measurable.
+    """
+
+    def __init__(self, runner):
+        self.runner = runner
+
+    def predict(self, x):
+        return 1.0 / (1.0 + np.exp(-np.asarray(self.runner.predict(x), dtype=np.float32)))
+
+
+def runner_for_config(runner, config: dict | None):
+    """Wrap *runner* in the sigmoid when *config* says the model emits logits."""
+    if config and config.get("output_activation", "sigmoid") == "logit":
+        return SigmoidRunner(runner)
+    return runner
+
+
 def load_model_runner(
     model_path: str,
     classifier_path: str = "",
-) -> KerasRunner | TFLiteRunner | ChainedTFLiteRunner:
+    config: dict | None = None,
+) -> KerasRunner | TFLiteRunner | ChainedTFLiteRunner | SigmoidRunner:
     """Load a .keras or .tflite model and return a runner with predict().
 
     Args:
@@ -192,6 +217,8 @@ def load_model_runner(
             ``classifier_path`` is given, this is the .tflite backbone.
         classifier_path: Optional .tflite classifier head. Supplying it runs
             the split pair as one chained model.
+        config: Optional model config. When it says ``output_activation:
+            "logit"``, the runner is wrapped so it returns probabilities.
 
     Returns:
         KerasRunner, TFLiteRunner, or ChainedTFLiteRunner instance.
@@ -202,7 +229,7 @@ def load_model_runner(
     if classifier_path:
         if not model_path.lower().endswith(".tflite"):
             raise ValueError("A classifier head can only be chained onto a .tflite backbone")
-        return ChainedTFLiteRunner(model_path, classifier_path)
+        return runner_for_config(ChainedTFLiteRunner(model_path, classifier_path), config)
     if model_path.lower().endswith(".tflite"):
-        return TFLiteRunner(model_path)
-    return KerasRunner(load_keras_model(model_path))
+        return runner_for_config(TFLiteRunner(model_path), config)
+    return runner_for_config(KerasRunner(load_keras_model(model_path)), config)

@@ -89,6 +89,7 @@ nav:
       - Training: training.md
       - Model Conversion: conversion.md
       - Evaluation: evaluation.md
+      - Running Inference: inference.md
       - Deployment: deployment.md
   - Firmware:
       - firmware/index.md

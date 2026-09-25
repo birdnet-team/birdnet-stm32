@@ -214,6 +214,26 @@ static bool run_inference(const float *spect, float *output)
     return true;
 }
 
+/* ---- Output activation --------------------------------------------------- */
+#if APP_OUTPUT_LOGIT
+/* The model emits logits from 1.5 on: quantizing probabilities would put every
+ * score on the INT8 1/256 grid, which floors everything below ~0.002. The
+ * sigmoid is 100 expf calls per window on the M55, negligible beside the STFT,
+ * and applying it here keeps APP_SCORE_THRESHOLD and every reported score in
+ * probability units, exactly as in earlier releases. */
+static void apply_output_activation(float *scores, int n)
+{
+    for (int i = 0; i < n; i++)
+        scores[i] = 1.0f / (1.0f + expf(-scores[i]));
+}
+#else
+static void apply_output_activation(float *scores, int n)
+{
+    (void)scores;
+    (void)n;
+}
+#endif
+
 /* ---- Top-K print helper -------------------------------------------------- */
 static void print_top_k(const char *filename, const float *scores, int k)
 {
@@ -505,6 +525,9 @@ int main(void)
             continue;
         }
         uint32_t npu_ms = HAL_GetTick() - t0;
+        /* Before anything reads `scores`, so the debug dump, the threshold and
+         * the printed percentages are all in the same units. */
+        apply_output_activation(scores, APP_NUM_CLASSES);
 #ifdef APP_DEBUG_IO
         printf("  [DBG-OUT] %d %d %d %d %d (x1e6)\n",
                (int)(scores[0] * 1e6f), (int)(scores[1] * 1e6f), (int)(scores[2] * 1e6f),

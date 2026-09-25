@@ -5,6 +5,136 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.5.0] - 2026-09-25
+
+Two models ship: `BirdNET_Tiny_N6_USNE_90_V1.5_Raw` and
+`..._V1.5_Hybrid`. The release is a **labels** release — nothing about the
+architecture changed — and it is the largest field improvement the project has
+measured.
+
+### Model performance
+
+Scored on [WABAD](https://zenodo.org/records/14191524), a public passive
+acoustic monitoring benchmark (3,794 annotated calls, five northeastern sites,
+44 species inside the output list), on the INT8 model that gets flashed:
+
+| Model | Event recall @0.5 | Window cMAP | Window AUPRC | Catalog cMAP |
+|---|---:|---:|---:|---:|
+| v1.4 Raw | 0.154 | 0.204 | 0.250 | 0.6923 |
+| **v1.5 Raw** | **0.248** | **0.258** | **0.342** | **0.7110** |
+| v1.4 Hybrid | 0.185 | 0.285 | 0.335 | 0.7385 |
+| **v1.5 Hybrid** | **0.361** | **0.376** | **0.461** | **0.7574** |
+
+Raw gains 61% field recall and 37% pooled AUPRC over v1.4 Raw; hybrid gains 95%
+and 38%. Both improve their catalog accuracy at the same time, so neither trades
+one axis for the other.
+
+### Changed
+
+- **Both released models emit INT8 logits instead of probabilities.** Quantizing
+  probabilities puts every score on the 1/256 grid, which floors everything below
+  about 0.002 and ties the rest; logits keep their resolution where scores are
+  small, worth +0.021 catalog cMAP on raw and +0.035 on hybrid. **Callers apply
+  the sigmoid themselves**: `1 / (1 + exp(-x))`, or compare a logit against
+  `log(t / (1 - t))` since thresholding is monotonic. The firmware and this
+  package do it automatically from `output_activation` in the bundle's
+  `_model_config.json`; see [Running Inference](docs/inference.md). The bundle's
+  `_FP32.keras` and `_FP32.onnx` keep their sigmoid head and still return
+  probabilities — the config describes the `.tflite`, which is what the device
+  runs.
+- **Training draws its chunks where the teacher hears the species, and blends the
+  teacher's scores into the label** (`--crop_policy teacher`,
+  `--teacher_weight 0.5`). A recording carries one species label, so every chunk
+  drawn from it used to train as that species whether it held the call, silence
+  or a different bird: 21.2% of energy-cropped chunks had a teacher score below
+  0.05 on their own label, which teacher cropping cuts to 7.2%. This is where the
+  field gain comes from — it is worth more than doubling the training schedule.
+- **The raw frontend crosses fewer INT8 activation grids.** Its quadrature pair
+  is now one convolution bank of `2 x num_mels` filters sliced in half rather
+  than two banks, and its envelope is `|re| + |im|` rather than an 11-op
+  approximation of the modulus: 37 frontend operations against 46, identical
+  float accuracy, and post-training quantization loss cut from 0.139 to 0.104.
+  `--raw_magnitude` and `--raw_bank` are not exposed; this is simply what a raw
+  model is now. Checkpoints from 1.0-1.4 keep loading as the frontends they were
+  trained with.
+- **TensorFlow 2.21 and NumPy 2 are now the supported baseline** (previously
+  TensorFlow 2.16+ and NumPy 1.x). No source change was needed; the floors in
+  `pyproject.toml`, `requirements.txt`, the CI workflows and the documented
+  requirements moved together.
+
+  The upgrade was verified against the published 1.4 artifacts rather than
+  assumed. Re-converting both 1.4 release checkpoints under 2.21, with the
+  release pipeline's own invocation, reproduces the shipped INT8 models: the
+  same catalog cMAP to four decimals, the same TFLite operator and tensor
+  inventory, the same compiler report from `stedgeai` (MACC, weights, arena
+  placement and epoch counts), the same on-target cosine and mean absolute
+  error, and the same host-versus-board agreement and per-file timing. The
+  ONNX export path and the full test suite pass unchanged.
+- **librosa and resampy are no longer runtime dependencies**, and numba and
+  llvmlite drop out with them. The package has computed its own spectrogram
+  input since 1.2 and never imports any of them; they had stayed declared.
+  librosa moves to the `dev` extra, where `tests/test_reference_stft.py` still
+  uses it as an independent reference for `birdnet_stm32.audio.stft`.
+  `requirements.txt` now pins `scipy` and `soundfile` explicitly: both are
+  imported directly, but had only ever arrived through librosa.
+
+### Added
+
+- **`--crop_policy`** selects how training chunks are drawn from a recording.
+  The default `energy` keeps the existing short-time-energy ranking; `uniform`
+  draws start offsets at random and skips the activity ranking; `teacher`
+  keeps the chunk where a cached teacher hears the recording's labelled species
+  most (see `--teacher_cache`), falling back to energy where it has no score. Energy ranking
+  favours the loudest part of a recording, which in field audio is as often
+  rain, wind or an insect chorus as the target species. Evaluation is
+  unaffected: it always scores whole files with overlapping windows.
+- **`convert --output_activation logit`** removes the final sigmoid before
+  conversion, so the model emits logits instead of probabilities. Quantizing
+  probabilities puts every score on the INT8 1/256 grid, which floors everything
+  below about 0.002 and ties the rest; logits keep their resolution where scores
+  are small. Measured over the full catalog: +0.021 cMAP on a raw model and
+  +0.044 on a hybrid one. Field metrics are unchanged, since those positives sit
+  well above the grid floor.
+
+  Conversion now writes a `_model_config.json` beside every converted model,
+  recording `output_activation` along with the rest of the contract, and
+  `evaluate`, `board-test` and `measure-operational` apply the sigmoid
+  automatically when it says `logit`. Callers outside this package apply
+  `1 / (1 + exp(-x))`, or compare logits against `log(t / (1 - t))` since
+  thresholding is monotonic.
+- **`examples/reference_inference.py` and [Running Inference](docs/inference.md)**
+  document the whole path from an audio file to a detection, and which steps run
+  on the host and on the device. The script uses NumPy and TensorFlow Lite only,
+  so it reads as a specification for a firmware re-implementation.
+- **`--teacher_cache` and `--teacher_weight`** train on soft targets from a
+  larger teacher model. Its per-window scores are computed once, offline, over
+  every training recording and cached; training blends the teacher window that
+  best matches each chunk into the chunk's label, on the classes the teacher
+  covers. A recording carries one species label, so every chunk drawn from it
+  has trained as that species alone, whether it held the call, silence or a
+  different bird. The teacher never runs during training, and validation and
+  checkpoint selection keep hard labels. Off by default. The loader now tracks
+  where each chunk starts in its recording (`load_audio_window(...,
+  return_offset=True)`, `chunk_start_samples`, and `return_starts` on both crop
+  functions); without it the lookup would be misaligned.
+- **A pooled area under the precision-recall curve on field data.** The field
+  benchmarks reported only `window_cmap_present`: one curve per species,
+  averaged, so a bird heard twice weighs as much as one heard four hundred
+  times. `birdnet_stm32.evaluation.metrics.micro_average_precision` pools every
+  window-species decision into a single curve, which is closer to what a
+  deployed recorder returns. Both are reported, per site and pooled, because
+  they move independently.
+- **WABAD results are published** with each release: in every bundle's model
+  card, in the README, and on the docs site. It is a public benchmark, so those
+  figures can be compared with anything published elsewhere, which catalog cMAP
+  on our own dataset split can never support.
+- **`--raw_time_masks` and `--raw_time_mask_ms`** apply SpecAugment-style time
+  masking to the waveform for the `raw` frontend, which never sees a
+  spectrogram in the loader and so could not use `--time_mask_max`. Off by
+  default.
+
 ## [1.4.0] - 2026-09-20
 
 Accuracy. A staged ablation over the backbone, scaling and spectrogram

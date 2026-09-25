@@ -183,6 +183,26 @@ for toolchain setup and troubleshooting.
 - **Benchmark JSON**: structured report for experiment tracking (`--benchmark`)
 - **HTML report**: self-contained evaluation report (`--report_html`)
 
+### Public benchmark results
+
+Published models are scored on **WABAD** ([Zenodo 14191524](https://zenodo.org/records/14191524)),
+a public passive acoustic monitoring benchmark — 3,794 annotated calls across
+five northeastern sites, 44 of its species inside the 90-output list. Every figure is from the INT8 model that gets flashed, on 3 s windows at a 1.25 s hop, pooled over all five sites.
+
+| Model | Event recall @0.5 | Window cMAP | Window AUPRC | Params | Compute per 2.5 s chunk |
+|---|---:|---:|---:|---:|---:|
+| `BirdNET_Tiny_N6_USNE_90_V1.5_Raw_INT8` | 0.248 | 0.258 | 0.342 | 987 k | **15 ms** (all NPU) |
+| `BirdNET_Tiny_N6_USNE_90_V1.5_Hybrid_INT8` | 0.361 | 0.376 | 0.461 | 946 k | 88 ms (69 ms STFT on the M55) |
+| BirdNET+ V3.0 preview 3.1, the teacher | 0.656 | 0.517 | 0.617 | 135 M | does not run on this hardware |
+
+Timings are measured on an STM32N6570-DK at 1 GHz for one chunk, excluding the
+audio read. Raw runs its learned filterbank on the NPU, which is why it costs a
+sixth of hybrid's compute; hybrid buys its accuracy with a 512-point STFT on the
+Cortex-M55.
+
+Per-version history and what each metric means:
+[Pre-trained Models](https://birdnet-team.github.io/birdnet-stm32/pretrained-models/#benchmark-results).
+
 ### Deployment
 
 - **X-CUBE-AI / stedgeai**: generate → flash → validate pipeline

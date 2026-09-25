@@ -119,7 +119,7 @@ def main():
         if not os.path.isfile(args.classifier_path):
             raise FileNotFoundError(f"Classifier head not found: {args.classifier_path}")
         print(f"Chaining backbone {args.model_path} with classifier head {args.classifier_path}")
-    runner = load_model_runner(args.model_path, args.classifier_path)
+    runner = load_model_runner(args.model_path, args.classifier_path, config=cfg)
 
     # Evaluate
     metrics, per_file, y_true, y_scores = evaluate(

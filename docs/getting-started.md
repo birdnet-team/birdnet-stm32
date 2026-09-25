@@ -5,7 +5,7 @@
 | Requirement | Version |
 |---|---|
 | Python | 3.12+ |
-| TensorFlow | 2.16+ (with CUDA for GPU training) |
+| TensorFlow | 2.21+ (with CUDA for GPU training) |
 | OS | Ubuntu 22.04+ (other Linux distros should work) |
 
 For STM32 deployment you also need:

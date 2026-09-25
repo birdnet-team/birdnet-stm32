@@ -61,8 +61,12 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         "--parity_tolerance",
         type=float,
-        default=0.05,
-        help="Top-1 tie margin and borderline margin around --detection_threshold; larger score gaps are flagged",
+        default=None,
+        help=(
+            "Top-1 tie margin and borderline margin around --detection_threshold; larger score gaps are "
+            "flagged. Default: 0.05, widened by a quarter of the output grid step for a logit model, "
+            "whose grid is uniform in logits rather than in probability"
+        ),
     )
     parser.add_argument(
         "--detection_threshold",
@@ -119,7 +123,8 @@ def main():
         score_threshold=args.score_threshold,
         timeout=args.timeout,
         host_audio_dir=args.host_audio_dir,
-        parity_tolerance=args.parity_tolerance,
+        parity_tolerance=0.05 if args.parity_tolerance is None else args.parity_tolerance,
+        parity_tolerance_explicit=args.parity_tolerance is not None,
         detection_threshold=args.detection_threshold,
     )
 

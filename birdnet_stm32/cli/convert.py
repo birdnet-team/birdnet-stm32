@@ -47,6 +47,19 @@ def get_args() -> argparse.Namespace:
     )
     parser.add_argument("--checkpoint_path", type=str, required=True, help="Path to trained .keras model")
     parser.add_argument("--model_config", type=str, default="", help="Path to model config JSON")
+    parser.add_argument(
+        "--output_activation",
+        type=str,
+        default="sigmoid",
+        choices=["sigmoid", "logit"],
+        help=(
+            "What the converted model emits. 'logit' removes the final sigmoid before "
+            "conversion, so the output stays off the INT8 1/256 probability grid: measured "
+            "+0.021 (raw) and +0.044 (hybrid) catalog cMAP. The caller applies the sigmoid, "
+            "or compares logits against log(t/(1-t)); see docs/inference.md. A config recording "
+            "the choice is written next to the model."
+        ),
+    )
     parser.add_argument("--output_path", type=str, default="", help="Output .tflite path")
     parser.add_argument("--data_path_train", type=str, default="", help="Training data directory for rep. dataset")
     parser.add_argument("--num_samples", type=int, default=1024, help="Representative dataset samples")
@@ -553,6 +566,27 @@ def main():
     model = load_keras_model(args.checkpoint_path)
     print(f"Loaded model from {args.checkpoint_path}")
 
+    if args.output_activation == "logit":
+        # Remove the final sigmoid so the model emits logits. Quantizing
+        # probabilities puts every score on a 1/256 grid, which floors everything
+        # below ~0.002 and ties the rest; logits keep their resolution.
+        head = model.layers[-1]
+        if getattr(head, "activation", None) is None or head.activation.__name__ != "sigmoid":
+            raise ValueError(
+                f"--output_activation logit expects a sigmoid output layer, found "
+                f"{type(head).__name__} with activation {getattr(head, 'activation', None)}"
+            )
+        head.activation = tf.keras.activations.linear
+        cfg["output_activation"] = "logit"
+        print("Output activation: logit (the final sigmoid is left to the caller)")
+        # Every artifact this command writes then emits logits: the TFLite model,
+        # the ONNX export (exported from this same stripped model), and this
+        # checkpoint. A bundle whose .keras returned probabilities while its
+        # .tflite returned logits would need two contracts to describe one model.
+        logit_keras = os.path.splitext(args.output_path)[0] + ".keras"
+        model.save(logit_keras)
+        print(f"Logit checkpoint saved to {logit_keras}")
+
     # Build representative dataset generator
     data_manifests: dict[str, dict] = {}
     if os.path.isdir(args.data_path_train):
@@ -682,6 +716,12 @@ def main():
         os.replace(tmp_path, args.output_path)
         tmp_path = ""
         print(f"TFLite model validated and saved to {args.output_path}")
+
+        # A config beside the model, so a bundle carries how it must be driven:
+        # the frontend, the input geometry, and whether it emits logits.
+        config_path = os.path.splitext(args.output_path)[0] + "_model_config.json"
+        ModelConfig.from_dict(cfg).save(config_path)
+        print(f"Model config saved to {config_path}")
 
         # Save validation data
         # Save labels only for a model that passed the gate.

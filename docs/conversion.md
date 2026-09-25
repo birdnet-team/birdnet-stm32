@@ -231,7 +231,37 @@ After conversion, the script reports:
 | `--split_head` | off | Also emit the backbone/classifier pair (see [Backbone and classifier split](#backbone-and-classifier-split)) |
 | `--backbone_path` | None | Convert only the head against this already-quantized backbone (see [Updating the head against a flashed backbone](#updating-the-head-against-a-flashed-backbone)); mutually exclusive with `--split_head` |
 | `--allow_backbone_mismatch` | off | Proceed when the checkpoint's backbone does not match `--backbone_path`; diagnostics only |
+| `--output_activation` | `sigmoid` | `logit` removes the final sigmoid, so the output stays off the INT8 1/256 grid (see below) |
 | `--report_json` | None | Save structured JSON conversion report |
+
+## Probability or logit output
+
+By default the converted model ends in a sigmoid, so it emits probabilities —
+and those probabilities are quantized onto the INT8 grid, whose step is 1/256.
+Everything below about 0.002 is floored to zero and the rest is tied to that
+grid, which costs ranking accuracy across the long tail of classes.
+
+`--output_activation logit` removes the sigmoid before conversion. The model
+then emits logits, whose grid (about 0.1 per step over roughly ±12) keeps far
+more resolution where scores are small. Measured on the 1.5 candidates over the
+full catalog:
+
+| Model | Probability output | Logit output | Δ cMAP |
+|---|---:|---:|---:|
+| raw, 100 epochs | 0.6897 | 0.7111 | +0.021 |
+| hybrid, 50 epochs | 0.7093 | 0.7533 | +0.044 |
+
+Field metrics (event recall, window cMAP on soundscapes) do not change: those
+positives sit well above the grid floor. The gain is in ranking near-zero
+scores, which is what catalog cMAP measures over thousands of recordings.
+
+The conversion writes a `_model_config.json` next to the model recording
+`"output_activation"`, and everything in this package that loads a model with
+its config — `evaluate`, `board-test`, `measure-operational` — applies the
+sigmoid automatically. A caller outside this package applies
+`1 / (1 + exp(-x))`, or skips it and compares logits against
+`log(t / (1 - t))`, since thresholding is monotonic. See
+[Running Inference](inference.md).
 
 ## Quantization details
 
