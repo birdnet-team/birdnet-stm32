@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+import pytest
+
 from birdnet_stm32.deploy.board_test import _load_gen_app_config
 from birdnet_stm32.deploy.config import DeployConfig, resolve_deploy_config
 from birdnet_stm32.deploy.stedgeai import detect_board
@@ -87,3 +89,42 @@ def test_firmware_makefile_links_external_memory_drivers():
         "Components/mx66uw1g45g/mx66uw1g45g.c",
     ):
         assert source in makefile
+
+
+def _hybrid_cfg(**overrides):
+    cfg = {
+        "sample_rate": 24000,
+        "chunk_duration": 2.5,
+        "fft_length": 512,
+        "hop_length": 234,
+        "spec_width": 256,
+        "num_mels": 64,
+        "audio_frontend": "hybrid",
+    }
+    cfg.update(overrides)
+    return cfg
+
+
+def test_firmware_applies_the_sigmoid_for_a_logit_model():
+    """The released models emit logits; the firmware owns the sigmoid.
+
+    Without this the firmware would compare logits against APP_SCORE_THRESHOLD
+    and print them as percentages, so a 0.5 threshold would silently become
+    0.62 and every reported score would change meaning between releases.
+    """
+    generator = _load_gen_app_config()
+    config = generator.generate_app_config_h(_hybrid_cfg(output_activation="logit"), num_classes=25)
+    assert "#define APP_OUTPUT_LOGIT      1" in config
+
+
+def test_a_probability_model_leaves_the_scores_alone():
+    generator = _load_gen_app_config()
+    for cfg in (_hybrid_cfg(output_activation="sigmoid"), _hybrid_cfg()):
+        assert "#define APP_OUTPUT_LOGIT      0" in generator.generate_app_config_h(cfg, num_classes=25)
+
+
+def test_an_unknown_output_activation_is_refused():
+    """Better a build error than firmware that misreads its own model."""
+    generator = _load_gen_app_config()
+    with pytest.raises(ValueError, match="output_activation"):
+        generator.generate_app_config_h(_hybrid_cfg(output_activation="softmax"), num_classes=25)

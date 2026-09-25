@@ -579,6 +579,13 @@ def main():
         head.activation = tf.keras.activations.linear
         cfg["output_activation"] = "logit"
         print("Output activation: logit (the final sigmoid is left to the caller)")
+        # Every artifact this command writes then emits logits: the TFLite model,
+        # the ONNX export (exported from this same stripped model), and this
+        # checkpoint. A bundle whose .keras returned probabilities while its
+        # .tflite returned logits would need two contracts to describe one model.
+        logit_keras = os.path.splitext(args.output_path)[0] + ".keras"
+        model.save(logit_keras)
+        print(f"Logit checkpoint saved to {logit_keras}")
 
     # Build representative dataset generator
     data_manifests: dict[str, dict] = {}

@@ -87,6 +87,9 @@ class BoardTestConfig:
     timeout: int = 300
     host_audio_dir: str = ""
     parity_tolerance: float = 0.05
+    # False means the default is derived from the model's own output grid; a
+    # caller that passes --parity_tolerance gets exactly what it asked for.
+    parity_tolerance_explicit: bool = False
     detection_threshold: float = 0.5
 
 
@@ -615,6 +618,61 @@ def load_truth(audio_dir: str | Path) -> dict[str, str]:
     return {}
 
 
+def output_grid_parity_allowance(model_path: str, model_cfg: dict, base: float = 0.05) -> float:
+    """Widen the parity allowance by what a logit model's output grid costs.
+
+    ``base`` (0.05) covers the board-versus-host frontend disagreement, measured
+    at 0.031-0.036 on the 1.4 releases, whose INT8 output was a probability on a
+    1/256 grid -- 0.004 steps, negligible beside it.
+
+    A logit model's output grid is uniform in logits, not in probability: one
+    step of ``scale`` spans ``scale * p * (1 - p)`` in probability, at most
+    ``scale / 4`` at p = 0.5. At the release scale of ~0.0996 that is 0.025, six
+    times the old step, so the same physical disagreement reads larger after the
+    sigmoid. The allowance grows by exactly that quarter-step rather than by a
+    number chosen to fit the measurement.
+
+    Args:
+        model_path: The .tflite deployed to the board.
+        model_cfg: Its model config, which records ``output_activation``.
+        base: Allowance for everything that is not the output grid.
+
+    Returns:
+        ``base`` for a probability model, ``base + scale / 4`` for a logit one.
+    """
+
+    if model_cfg.get("output_activation", "sigmoid") != "logit":
+        return base
+    step = int8_output_step(model_path)
+    return base if step is None else base + step / 4.0
+
+
+def int8_output_step(model_path: str) -> float | None:
+    """Quantization step of the last INT8 tensor before the float output.
+
+    The released models keep float32 I/O, so the output tensor itself carries no
+    quantization; the grid the scores actually sit on is the INT8 tensor that
+    ``DEQUANTIZE`` reads. Returns ``None`` when there is no such tensor.
+    """
+    from birdnet_stm32.models.runners import allocated_interpreter
+
+    interpreter = allocated_interpreter(model_path)
+    output_index = interpreter.get_output_details()[0]["index"]
+    details = {detail["index"]: detail for detail in interpreter.get_tensor_details()}
+    for position in range(interpreter._interpreter.NumNodes()):  # noqa: SLF001
+        op = interpreter._get_op_details(position)  # noqa: SLF001
+        if output_index not in op["outputs"]:
+            continue
+        for source in op["inputs"]:
+            detail = details.get(int(source))
+            if detail is None or detail["dtype"] != np.int8:
+                continue
+            scales = detail["quantization_parameters"]["scales"]
+            if len(scales) and float(scales[0]) > 0:
+                return float(scales[0])
+    return None
+
+
 def compare_board_host(
     board_results: list[dict],
     host_scores: dict[str, np.ndarray],
@@ -874,13 +932,18 @@ def run_board_test(cfg: BoardTestConfig) -> dict:
         local = [p for p in Path(cfg.host_audio_dir).iterdir() if p.suffix.lower() == ".wav"]
         unprocessed = sorted({p.name.upper() for p in local} - {name.upper() for name in board_files})
         host_scores = host_reference_scores(deploy.model_path, model_cfg, cfg.host_audio_dir, board_files)
+        tolerance = (
+            cfg.parity_tolerance
+            if cfg.parity_tolerance_explicit
+            else output_grid_parity_allowance(deploy.model_path, model_cfg)
+        )
         parity = compare_board_host(
             parsed["results"],
             host_scores,
             labels,
             top_k=min(cfg.top_k, FIRMWARE_TOP_K),
             threshold=max(cfg.score_threshold, FIRMWARE_SCORE_THRESHOLD),
-            tolerance=cfg.parity_tolerance,
+            tolerance=tolerance,
             detection_threshold=cfg.detection_threshold,
             truth=load_truth(cfg.host_audio_dir),
         )
