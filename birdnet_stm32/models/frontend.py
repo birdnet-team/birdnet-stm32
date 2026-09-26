@@ -50,7 +50,7 @@ VALID_FRONTENDS = ("librosa", "hybrid", "raw")
 # -- 11 ops against 7 -- which is the quantity raw's INT8 loss tracks.
 #
 # A third option, half-wave rectification of each component (one op), was
-# measured and removed: trained at the B3 recipe it lost 0.038 float cMAP AND
+# measured and removed: trained with teacher cropping for 50 epochs it lost 0.038 float cMAP AND
 # quantized worse (INT8 loss 0.182 against 0.104), because its envelope keeps
 # the carrier beat that quadrature exists to cancel. Fewer grids only help when
 # what crosses them stays as clean.
@@ -62,9 +62,24 @@ VALID_RAW_MAGNITUDES = ("alpha_max", "l1")
 # components: identical arithmetic and identical weights, half the convolutions
 # and half the summations, so the signal crosses half as many INT8 grids before
 # the magnitude. The two components then share one activation scale, which
-# costs nothing measurable -- on the B3 model their per-part scales agree to
+# costs nothing measurable -- on a trained model their per-part scales agree to
 # within 1% already.
 VALID_RAW_BANKS = ("pair", "fused")
+
+# How the filterbank is cut into the partial convolutions RAW_SPLIT asks for.
+# ``channels`` (every model up to 1.5) gives each partial an equal group of the
+# folded channels: in time, four scattered 28-sample pieces of every frame, a
+# comb that aliases all frequencies into every band. On broadband field audio
+# each partial is then large and the four cancel in the sum, so the band signal
+# survives only as a small difference of coarsely quantized partials. Keeping
+# those sums in float recovered half of raw's INT8 loss on dense field
+# recordings. ``taps`` gives each partial one kernel row instead: a contiguous
+# 112-sample segment of the filter, which stays band-selective. Same function,
+# same taps per convolution, same op count; it computes correctly on the N6 NPU
+# (``stedgeai validate --mode target``, cos 0.9999). Trained into a model it
+# gave +0.007 catalog cMAP after QAT with better field recall; from 1.6 on it is
+# what new models are built with.
+VALID_RAW_SPLIT_AXES = ("channels", "taps")
 
 # What new models are built with. The layer's own defaults stay at the 1.0-1.4
 # frontend on purpose: a checkpoint saved before these existed carries neither
@@ -72,6 +87,7 @@ VALID_RAW_BANKS = ("pair", "fused")
 # inheriting today's. These say what to build now.
 RELEASE_RAW_MAGNITUDE = "l1"
 RELEASE_RAW_BANK = "fused"
+RELEASE_RAW_SPLIT_AXIS = "taps"
 
 # Default overlap factor of the raw analysis window: window = overlap * hop.
 # ``--raw_overlap 1`` halves the window, which halves the filterbank's MACs and
@@ -323,6 +339,7 @@ class AudioFrontendLayer(layers.Layer):
         raw_magnitude: str = "alpha_max",
         raw_overlap: int = RAW_OVERLAP,
         raw_bank: str = "pair",
+        raw_split_axis: str = "channels",
         name: str = "audio_frontend",
         is_trainable: bool = False,
         activation_bounds: dict | None = None,
@@ -337,6 +354,8 @@ class AudioFrontendLayer(layers.Layer):
             raise ValueError(f"raw_overlap must be >= 1, got {raw_overlap}")
         if raw_bank not in VALID_RAW_BANKS:
             raise ValueError(f"raw_bank '{raw_bank}' not in {VALID_RAW_BANKS}")
+        if raw_split_axis not in VALID_RAW_SPLIT_AXES:
+            raise ValueError(f"raw_split_axis '{raw_split_axis}' not in {VALID_RAW_SPLIT_AXES}")
         self.mode = mode
         self.mel_bins = int(mel_bins)
         self.spec_width = int(spec_width)
@@ -351,6 +370,7 @@ class AudioFrontendLayer(layers.Layer):
         self.raw_magnitude = raw_magnitude
         self.raw_overlap = int(raw_overlap)
         self.raw_bank = raw_bank
+        self.raw_split_axis = raw_split_axis
         self.is_trainable = bool(is_trainable)
         reject_activation_bounds(activation_bounds)
         # Training may install a duck-typed quantization hook that simulates
@@ -427,8 +447,12 @@ class AudioFrontendLayer(layers.Layer):
         if geom.fold % split:
             raise ValueError(f"fold {geom.fold} is not divisible by the filterbank split {split}")
         self.split = split
+        # A tap split cuts along the kernel, so each partial is one row of it.
+        taps = self.raw_split_axis == "taps"
+        if taps and split != geom.kernel:
+            raise ValueError(f"a tap split needs one partial per kernel row ({geom.kernel}), got {split}")
         conv_kwargs = dict(
-            kernel_size=(1, geom.kernel),
+            kernel_size=(1, 1 if taps else geom.kernel),
             strides=(1, geom.stride),
             padding="valid",
             use_bias=False,
@@ -474,7 +498,7 @@ class AudioFrontendLayer(layers.Layer):
         elif self.mode == "raw":
             if self.geom is None or not self.filterbank_convs():
                 raise RuntimeError("Raw frontend filterbank was not initialized")
-            group = self.geom.fold // self.split
+            group = self.geom.fold if self.raw_split_axis == "taps" else self.geom.fold // self.split
             folded = tf.TensorShape([None, 1, self.geom.crop // self.geom.fold, group])
             for conv in self.filterbank_convs():
                 conv.build(folded)
@@ -512,16 +536,44 @@ class AudioFrontendLayer(layers.Layer):
             """
             return taps.reshape(self.mel_bins, g.kernel, g.fold).transpose(1, 2, 0)[None]
 
-        group = g.fold // self.split
-        re_kernel = _to_folded_kernel(real)
-        im_kernel = _to_folded_kernel(imag)
+        self.set_full_filterbank(_to_folded_kernel(real), _to_folded_kernel(imag))
+
+    def partial_kernel(self, full: np.ndarray, i: int) -> np.ndarray:
+        """Partial ``i``'s share of a full folded kernel ``[1, kernel, fold, M]``."""
+        if self.raw_split_axis == "taps":
+            return full[:, i : i + 1, :, :]
+        group = self.geom.fold // self.split
+        return full[:, :, i * group : (i + 1) * group, :]
+
+    def full_filterbank(self) -> tuple[np.ndarray, np.ndarray]:
+        """Reassemble the full folded kernels ``[1, kernel, fold, M]`` (real, imag)."""
+        g = self.geom
+        halves = []
+        for convs, part in (
+            ((self.fb, slice(0, self.mel_bins)), (self.fb, slice(self.mel_bins, None)))
+            if self.raw_bank == "fused"
+            else ((self.fb_re, slice(None)), (self.fb_im, slice(None)))
+        ):
+            full = np.zeros((1, g.kernel, g.fold, int(self.mel_bins)), dtype=np.float32)
+            for i, conv in enumerate(convs):
+                w = conv.get_weights()[0][..., part]
+                if self.raw_split_axis == "taps":
+                    full[:, i : i + 1, :, :] = w
+                else:
+                    group = g.fold // self.split
+                    full[:, :, i * group : (i + 1) * group, :] = w
+            halves.append(full)
+        return halves[0], halves[1]
+
+    def set_full_filterbank(self, re_kernel: np.ndarray, im_kernel: np.ndarray) -> None:
+        """Load full folded kernels ``[1, kernel, fold, M]`` into the partial convolutions."""
         for i in range(self.split):
-            sl = slice(i * group, (i + 1) * group)
             if self.raw_bank == "fused":
-                self.fb[i].set_weights([np.concatenate([re_kernel[:, :, sl, :], im_kernel[:, :, sl, :]], axis=-1)])
+                w = np.concatenate([self.partial_kernel(re_kernel, i), self.partial_kernel(im_kernel, i)], axis=-1)
+                self.fb[i].set_weights([w])
             else:
-                self.fb_re[i].set_weights([re_kernel[:, :, sl, :]])
-                self.fb_im[i].set_weights([im_kernel[:, :, sl, :]])
+                self.fb_re[i].set_weights([self.partial_kernel(re_kernel, i)])
+                self.fb_im[i].set_weights([self.partial_kernel(im_kernel, i)])
 
     def _build_and_set_mel_mixer(self, n_fft: int, cin: int):
         """Initialize mel_mixer from a Slaney mel basis."""
@@ -620,8 +672,15 @@ class AudioFrontendLayer(layers.Layer):
         # Sum of convolutions over a partition of the folded channels. Exactly
         # the full filterbank, but no partial convolution accumulates more than
         # `window / split` taps, which is what the NPU computes correctly.
-        def _bank(convs, tag):
+        def _part(i):
+            if self.raw_split_axis == "taps":
+                # Kernel row i: folded frames i, i + stride, ... -- one contiguous
+                # `fold`-sample segment of every analysis window.
+                return y[:, :, i : i + g.stride * (g.frames - 1) + 1, :]
             group = g.fold // self.split
+            return y[:, :, :, i * group : (i + 1) * group]
+
+        def _bank(convs, tag):
             # Each partial convolution output is its own INT8 tensor in the
             # converted graph, so it is a quantization boundary here too. QAT
             # without these simulated a nearly lossless filterbank: measured on
@@ -629,9 +688,7 @@ class AudioFrontendLayer(layers.Layer):
             # cMAP against 0.6229 converted, and 0.6432 with the filterbank kept
             # in float.
             parts = [
-                self._quantized_activation(
-                    f"{tag}_part_{i}", self._quantized_call(conv, y[:, :, :, i * group : (i + 1) * group])
-                )
+                self._quantized_activation(f"{tag}_part_{i}", self._quantized_call(conv, _part(i)))
                 for i, conv in enumerate(convs)
             ]
             total = parts[0]
@@ -664,14 +721,14 @@ class AudioFrontendLayer(layers.Layer):
         """Combine the quadrature pair into a non-negative band envelope.
 
         The two options trade INT8 activation grids against how faithfully they
-        follow the true modulus. Measured on the B3 filterbank over 48
+        follow the true modulus. Measured on a trained filterbank over 48
         validation recordings, per-band correlation with ``sqrt(re^2+im^2)``
         after the band smoother, and the SNR of the stage's own INT8 simulation:
 
             alpha_max (11 grids) .... r 0.9999, 20.9 dB
             l1         (7 grids) .... r 0.9980, 23.0 dB
 
-        ``l1`` is what new models are built with: at the B3 recipe it trained to
+        ``l1`` is what new models are built with: trained with teacher cropping it reached
         the same float cMAP and cut the post-training quantization loss from
         0.139 to 0.104.
 
@@ -742,6 +799,7 @@ class AudioFrontendLayer(layers.Layer):
             "raw_magnitude": self.raw_magnitude,
             "raw_overlap": self.raw_overlap,
             "raw_bank": self.raw_bank,
+            "raw_split_axis": self.raw_split_axis,
             "name": self.name,
             "is_trainable": self.is_trainable,
         }

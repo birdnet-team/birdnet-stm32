@@ -287,8 +287,6 @@ def test_file_cmap_traces_one_runner_per_model(tmp_path, monkeypatch):
     [
         (["--teacher_cache", "/c", "--teacher_weight", "0.5"], ["--teacher_cache", "--teacher_weight"]),
         (["--teacher_cache", "/c", "--crop_policy", "teacher"], ["--teacher_cache", "--crop_policy"]),
-        (["--crop_policy", "uniform"], ["--crop_policy"]),
-        (["--raw_time_masks", "8"], ["--raw_time_masks"]),
     ],
 )
 def test_qat_refuses_loader_options_it_would_silently_ignore(tmp_path, monkeypatch, flags, named):

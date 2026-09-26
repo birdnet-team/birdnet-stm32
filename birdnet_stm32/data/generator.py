@@ -155,8 +155,6 @@ def load_dataset(
     crop_policy = kwargs.get("crop_policy", "energy")
     teacher_cache = kwargs.get("teacher_cache")
     teacher_weight = float(kwargs.get("teacher_weight", 0.0))
-    raw_time_masks = int(kwargs.get("raw_time_masks", 0))
-    raw_time_mask_ms = float(kwargs.get("raw_time_mask_ms", 30.0))
     mixup_alpha = kwargs.get("mixup_alpha", 0.2)
     mixup_probability = kwargs.get("mixup_probability", 0.25)
     # Keep prefetch bounded to avoid RAM spikes with large raw batches.
@@ -214,8 +212,6 @@ def load_dataset(
         "classes": list(classes),
         "teacher_cache": str(teacher_cache) if teacher_cache else None,
         "teacher_weight": teacher_weight,
-        "raw_time_masks": raw_time_masks,
-        "raw_time_mask_ms": raw_time_mask_ms,
     }
 
     use_mp = num_workers > 0

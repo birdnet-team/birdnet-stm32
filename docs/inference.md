@@ -1,36 +1,62 @@
-# Running Inference
+# Reference Implementation
 
 A released bundle is a TFLite model plus the constants needed to feed it. This
-page is the contract: everything between an audio file and a detection, and
-which side runs each step. [`examples/reference_inference.py`](https://github.com/birdnet-team/birdnet-stm32/blob/master/examples/reference_inference.py)
-implements exactly this in one file, with NumPy and TensorFlow Lite and nothing
-from this package, so it can be read as a specification and ported to C.
+page is the contract: everything between an audio file and a detection, which
+side runs each step, and how to prove a port computes the same thing.
+
+The contract is implemented once, in
+[`reference/birdnet_tiny_reference.py`](https://github.com/birdnet-team/birdnet-stm32/blob/master/reference/birdnet_tiny_reference.py):
+one file, NumPy + SoundFile + TensorFlow Lite, nothing from this package, so it
+can be read top to bottom and ported. The
+[`reference/`](https://github.com/birdnet-team/birdnet-stm32/tree/master/reference)
+directory also holds the same frontend in portable C
+([`reference/c/`](https://github.com/birdnet-team/birdnet-stm32/tree/master/reference/c):
+windows, peak normalization, and the hybrid STFT through CMSIS-DSP, ready to
+drop into a firmware), a synthetic test recording and, for each released
+bundle, the value of every intermediate stage on it.
 
 ```bash
-python examples/reference_inference.py \
-    --bundle release/BirdNET_Tiny_N6_USNE_90_V1.4_Raw \
-    --audio recording.wav --explain
+# Run a bundle on a recording; --explain prints each stage's shape and range
+python reference/birdnet_tiny_reference.py --bundle <bundle-dir> --audio recording.wav --explain
+
+# Check an implementation stage by stage against the recorded test vectors
+python reference/birdnet_tiny_reference.py --bundle <bundle-dir> \
+    --check-vectors reference/vectors/<bundle>.json
+
+# Keep every intermediate as .npy, to compare with your own
+python reference/birdnet_tiny_reference.py --bundle <bundle-dir> --audio recording.wav --dump stages/
+
+# The C frontend: build on a host, run on the test signal, check every stage
+make -C reference/c
+reference/c/frontend_cli reference/vectors/test_signal.wav hybrid 2.5 512 384 sqrt > stages.jsonl
+python reference/birdnet_tiny_reference.py \
+    --check-vectors reference/vectors/BirdNET_Tiny_N6_USNE_90_V1.6_Hybrid.json --stages stages.jsonl
 ```
 
-`--explain` prints every step with its shapes and value ranges, which is the
-fastest way to find where a re-implementation diverges.
+A bundle directory is the unpacked release zip; the script reads its
+`*_INT8.tflite`, `*_model_config.json` and `*_labels.txt`.
 
 ## The pipeline
 
-| # | Step | Host | Device |
+| # | Step | Host | STM32N6 |
 |---|---|---|---|
-| 1 | Read audio as mono float32 at the model's sample rate | resample if needed | SD read; PCM16 at 24 kHz already, scale by 1/32768 |
+| 1 | Read audio as mono float32 at the model's sample rate | resample if needed | PCM16 at 24 kHz already; scale by 1/32768 |
 | 2 | Cut into windows: `chunk_duration` long, half that as hop | ✔ | firmware |
-| 3 | Normalize each window by its peak (**`raw` only**) | ✔ | firmware |
-| 4 | `hybrid` only: magnitude STFT of the window | ✔ | Cortex-M55 |
-| 5 | Run the model, one window at a time | ✔ | NPU |
-| 6 | Apply the sigmoid if the bundle emits logits | ✔ | firmware, or use logit thresholds |
-| 7 | Pool windows into per-file scores (max) and threshold | ✔ | firmware |
+| 3 | `raw`: divide each window by its peak | ✔ | firmware |
+| 3 | `hybrid`: magnitude STFT, compress, min-max normalize | ✔ | Cortex-M55, CMSIS-DSP |
+| 4 | Run the model, one window at a time | ✔ | NPU |
+| 5 | Apply the sigmoid if the bundle emits logits | ✔ | firmware, or use logit thresholds |
+| 6 | Pool windows into per-file scores (max) and threshold | ✔ | firmware |
 
 Every constant comes from the bundle's `*_model_config.json`: `sample_rate`,
 `chunk_duration`, `audio_frontend`, `fft_length`, `spec_width`,
 `input_compression`, and `output_activation`. Class order comes from
 `*_labels.txt`. Never hard-code these; a bundle is free to change them.
+
+The two frontends differ only in step 3. A `raw` model computes its own
+spectrogram inside the network, with a learned filterbank that runs on the NPU,
+so the host only normalizes the waveform. A `hybrid` model needs a magnitude
+STFT computed outside the network.
 
 ## Windows
 
@@ -41,35 +67,41 @@ unless they overlap, and the released models are evaluated this way.
 
 The **last window is right-aligned** to the end of the recording rather than
 zero-padded, so the final seconds are scored at full weight. A recording shorter
-than one window is zero-padded once, at the end.
+than one window is zero-padded once, at the end. Six seconds of audio give
+windows starting at 0, 1.25, 2.5 and 3.5 s.
 
 ## Normalization, and why it differs per frontend
 
 **`raw` needs it.** Each window is divided by its own largest absolute sample,
-so the loudest sample becomes 1.0. Per window, not per file: the models are
-trained that way, and it makes the input independent of recording gain.
+`x / (max|x| + 1e-6)`, so the loudest sample becomes 1.0. Per window, not per
+file: the models are trained that way, and it makes the input independent of
+recording gain.
 
 **`hybrid` does not.** Its spectrogram is min-max normalized to [0, 1] as the
-last step of step 4, and scaling the audio scales every magnitude by the same
+last step of step 3, and scaling the audio scales every magnitude by the same
 factor, which that normalization divides out. Feeding a peak-normalized window
 to a hybrid bundle gives the same answer; it is simply unnecessary.
 
-## The hybrid STFT
+## The hybrid spectrogram
 
-Specified in detail in [Spectrogram Input](dev/spectrogram-input.md), which the
-firmware reproduces. Four details are easy to get wrong:
+Specified in detail in [Spectrogram Input](dev/spectrogram-input.md); the
+firmware's `firmware/Src/audio_stft.c` computes it on the Cortex-M55. Six
+details, each of which changes the model's input if it is wrong:
 
-1. **The STFT is centered.** Zero-pad the window by `fft_length / 2` on both
-   sides first, so frame *i* is centered on sample *i · hop*, not started there.
-2. **The hop follows from the frame count**: `hop = samples // spec_width`. For
+1. **The hop follows from the frame count**: `hop = samples // spec_width`. For
    2.5 s at 24 kHz into 384 frames, that is 156 samples.
-3. **A periodic Hann window**, the one SciPy and librosa call `sym=False`.
-4. **Drop the Nyquist bin**, then **compress** (`input_compression`, `sqrt` in
-   the released hybrid bundle) and **min-max normalize to [0, 1]**. An
-   `fft_length` of 512 gives 256 rows.
+2. **The STFT is centered.** Zero-pad the window by `fft_length / 2` on both
+   sides first, so frame *i* is centered on sample *i · hop*, not started there.
+3. **A periodic Hann window**, `0.5 − 0.5 cos(2πn / N)`: SciPy's and librosa's
+   `sym=False`.
+4. **Drop the Nyquist bin.** An `fft_length` of 512 gives 256 rows. The FFT is
+   unscaled.
+5. **Compress** per `input_compression`: `sqrt` in every released hybrid bundle.
+6. **Min-max normalize** the window's whole spectrogram to [0, 1]:
+   `(S − min) / (max − min + 1e-10)`.
 
-The result is `[fft_length // 2, spec_width, 1]` float32 — `[256, 384, 1]` for
-the 1.4 hybrid bundle.
+The result is `[fft_length // 2, spec_width, 1]` float32, frequency-major —
+`[256, 384, 1]` for the released hybrid bundles.
 
 ## Model output
 
@@ -86,7 +118,7 @@ Check `output_activation` in the config. **Every model from 1.5 on says
   monotonic, so this is exact and free. A threshold of 0.5 becomes 0.0, and 0.25
   becomes −1.0986.
 
-This project's firmware applies the sigmoid (one `expf` per class, against ~69 ms
+This project's firmware applies the sigmoid (one `expf` per class, against 33 ms
 of STFT on the hybrid model), so its score threshold and its reported percentages
 are probabilities exactly as in earlier releases. A re-implementation is free to
 choose either.
@@ -95,10 +127,10 @@ Why the released models emit logits: an INT8 probability sits on a 1/256 grid,
 which floors every score below about 0.002 and ties the rest, costing 0.021
 catalog cMAP on raw and 0.035 on hybrid. A logit grid is uniform in logits
 instead, so it resolves small scores far better — and mid-range ones slightly
-worse. At this release's output step of 0.122, one step spans 0.031 in
-probability at p = 0.5 against the old 0.004, so a score near 0.5 is coarser than
-it used to be. That is the trade: ranking quality, which is what detection is,
-for resolution in the middle of a range where nothing is decided.
+worse. At an output step of 0.122, one step spans 0.031 in probability at
+p = 0.5 against the old 0.004, so a score near 0.5 is coarser than it used to
+be. That is the trade: ranking quality, which is what detection is, for
+resolution in the middle of a range where nothing is decided.
 
 ## From windows to detections
 
@@ -114,13 +146,34 @@ rates at 0.25, 0.5 and 0.75.
 
 ## Checking a re-implementation
 
-Compare against `examples/reference_inference.py` on the same file, window by
-window. Expect agreement to within a few INT8 steps rather than exactly: the
-last activation grid is 1/256, and small input differences (the order in which
-normalizations round, a different FFT library) move a score by a step or two.
+`reference/vectors/test_signal.wav` is a 6 s synthetic recording (24 kHz, mono,
+PCM16) with a sparse whistle, a frequency sweep and one loud transient. For each
+released bundle, `reference/vectors/<bundle>.json` records every window's stages:
 
-Measured between the reference script and this package's own evaluation path,
-over 60 windows of a 10-minute field recording:
+| Key | Stage |
+|---|---|
+| `window` | the cut audio (step 2) |
+| `stft_magnitude` | hybrid only: the linear magnitude STFT (steps 3.1–3.4) |
+| `compressed` | hybrid only: after compression (step 3.5) |
+| `model_input` | the tensor the model is fed |
+| `model_output` | the model's raw outputs (logits from 1.5 on) |
+
+Each array is summarized as its shape, sum, minimum, maximum and first eight
+values in row-major order — enough to find the first stage where a port
+diverges, in any language. `pooled` holds the recording's pooled probabilities.
+A frontend port that prints its stages as JSON lines in this format, as
+`reference/c/frontend_cli` does, is checked with `--check-vectors <vectors>
+--stages <file>` — no model or TFLite needed.
+
+A faithful port agrees to about 1e-4 relative on every input stage (float32, a
+different FFT library) and within one or two INT8 output steps on the model
+output; detections at 0.5 match exactly. `--check-vectors` applies exactly these
+tolerances. Typical mistakes, in the order they are usually made: a non-centered
+STFT, a symmetric Hann window, keeping the Nyquist bin, forgetting the min-max
+normalization, and normalizing a whole file instead of each window.
+
+On real field audio, measured between the reference script and this package's
+own evaluation path over 60 windows of a 10-minute recording:
 
 | | raw | hybrid |
 |---|---|---|
@@ -129,7 +182,10 @@ over 60 windows of a 10-minute field recording:
 | worst single window | 0.051 | 0.035 |
 | same detections at 0.5 | 100% | 99.98% |
 
-That is the same tolerance the project accepts between host and board
-(`board-test` flags differences above 0.05). If your implementation agrees this
-closely, it is correct; if whole classes disagree, look at step 4 first — a
-non-centered STFT or a missing min-max normalization is the usual cause.
+That is the tolerance the project accepts between host and board
+(`board-test` flags differences above 0.05). The test suite keeps the pieces in
+step: `tests/test_reference_implementation.py` checks that the reference and the
+training package build identical model inputs, `tests/test_reference_c.py`
+builds the C frontend and checks it against the vectors, and
+`tests/test_firmware_stft.py` compiles the firmware's STFT natively and checks
+it against the host.

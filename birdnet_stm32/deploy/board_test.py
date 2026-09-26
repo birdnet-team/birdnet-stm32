@@ -213,14 +213,14 @@ def patch_project(
     backups: list[Path] = []
 
     # --- 1. Copy firmware C sources into Core/Src --------------------------
-    for name in ("main.c", "wav_reader.c", "audio_stft.c", "audio_mel.c", "sd_handler.c", "fft.c"):
+    for name in ("main.c", "wav_reader.c", "audio_stft.c", "audio_mel.c", "sd_handler.c"):
         dst = core_src / name
         backups.append(_backup(dst))
         shutil.copy2(fw / "Src" / name, dst)
 
     # --- 2. Copy firmware headers into Core/Inc ----------------------------
     #  Skip app_config.h — we patch the NPU_Validation original in step 6.
-    for name in ("wav_reader.h", "audio_stft.h", "audio_mel.h", "sd_handler.h", "fft.h"):
+    for name in ("wav_reader.h", "audio_stft.h", "audio_mel.h", "sd_handler.h"):
         dst = core_inc / name
         backups.append(_backup(dst))
         shutil.copy2(fw / "Inc" / name, dst)
@@ -263,6 +263,15 @@ def patch_project(
         if p.is_file():
             shutil.copy2(p, fatfs_dst / p.name)
 
+    # --- 5b. Copy the CMSIS-DSP subset (the STFT's FFT and magnitude) ------
+    # Sources must sit under the project tree: its Makefile maps every
+    # C_SOURCES entry below BASE_PATH to an object file.
+    dsp_dst = project / CMSIS_DSP_DIR
+    if dsp_dst.exists():
+        shutil.rmtree(dsp_dst)
+    backups.append(dsp_dst)  # entire dir — removed on cleanup
+    shutil.copytree(fw / "Drivers" / "CMSIS-DSP", dsp_dst)
+
     # --- 6. Generate app_config.h from model_config.json ------------------
     #  Replaces the NPU_Validation app_config.h with a generated version
     #  that includes both the board support defines and our audio/inference
@@ -294,6 +303,35 @@ def _patch_app_config(path: Path, model_cfg: dict, num_classes: int) -> None:
 
 MAKEFILE_END_SENTINEL = "# --- end BirdNET-STM32 additions ---"
 
+# Where patch_project puts firmware/Drivers/CMSIS-DSP inside the project.
+CMSIS_DSP_DIR = "CMSIS_DSP"
+# The CMSIS-DSP sources the STFT needs: arm_rfft_fast_f32, arm_cmplx_mag_f32.
+CMSIS_DSP_SOURCES = (
+    "TransformFunctions/arm_rfft_fast_f32.c",
+    "TransformFunctions/arm_rfft_fast_init_f32.c",
+    "TransformFunctions/arm_cfft_f32.c",
+    "TransformFunctions/arm_cfft_init_f32.c",
+    "TransformFunctions/arm_cfft_radix8_f32.c",
+    "TransformFunctions/arm_bitreversal2.c",
+    "CommonTables/arm_common_tables.c",
+    "CommonTables/arm_const_structs.c",
+    "CommonTables/arm_mve_tables.c",
+    "ComplexMathFunctions/arm_cmplx_mag_f32.c",
+)
+
+
+def _cmsis_dsp_block() -> str:
+    """Makefile lines that build the CMSIS-DSP subset with Helium."""
+    root = f"$(PROJECT_PATH)/{CMSIS_DSP_DIR}"
+    lines = [f"C_SOURCES += {root}/Source/{src}" for src in CMSIS_DSP_SOURCES]
+    lines += [
+        f"C_INCLUDES += -I{root}/Include -I{root}/PrivateInclude",
+        "C_DEFS += -DARM_MATH_HELIUM",
+        # CMSIS-DSP's Helium code relies on implicit vector conversions under GCC.
+        "CFLAGS_OTHERS += -flax-vector-conversions",
+    ]
+    return "".join(line + "\n" for line in lines)
+
 
 def _patch_makefile(path: Path) -> None:
     """Insert BirdNET sources before the OBJECTS definition in the Makefile."""
@@ -324,13 +362,12 @@ C_SOURCES += $(CORE_PATH)/Src/wav_reader.c
 C_SOURCES += $(CORE_PATH)/Src/audio_stft.c
 C_SOURCES += $(CORE_PATH)/Src/audio_mel.c
 C_SOURCES += $(CORE_PATH)/Src/sd_handler.c
-C_SOURCES += $(CORE_PATH)/Src/fft.c
 C_SOURCES += $(FATFS_PATH)/ff.c
 C_SOURCES += $(FATFS_PATH)/diskio.c
 C_SOURCES += $(FATFS_PATH)/ff_gen_drv.c
 C_SOURCES += $(FATFS_PATH)/sd_diskio.c
 C_INCLUDES += -I$(FATFS_PATH)
-{MAKEFILE_END_SENTINEL}
+{_cmsis_dsp_block()}{MAKEFILE_END_SENTINEL}
 """
     # Insert before OBJECTS definition so pattern substitution picks up our sources.
     # The OBJECTS line uses $(C_SOURCES:...) pattern substitution.

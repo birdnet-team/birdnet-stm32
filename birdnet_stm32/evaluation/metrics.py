@@ -11,7 +11,7 @@ import numpy as np
 from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score
 from tqdm import tqdm
 
-from birdnet_stm32.audio.io import load_audio_file
+from birdnet_stm32.audio.io import load_audio_file, peak_normalize
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
 from birdnet_stm32.data.dataset import NOISE_CLASSES
 from birdnet_stm32.evaluation.pooling import pool_scores
@@ -144,7 +144,7 @@ def make_chunks_for_file(
             x = ch[:chunk_len]
             if x.shape[0] < chunk_len:
                 x = np.pad(x, (0, chunk_len - x.shape[0]))
-            x = x / (np.max(np.abs(x)) + 1e-6)
+            x = peak_normalize(x)
             out.append(x[:, None].astype(np.float32))
     else:
         raise ValueError(f"Invalid audio_frontend: {frontend}")

@@ -1,3 +1,6 @@
+# Vendored third-party sources stay byte-identical to upstream.
+exclude: ^firmware/Drivers/
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0

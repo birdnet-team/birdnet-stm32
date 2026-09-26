@@ -1,5 +1,6 @@
 # Custom
 *.wav
+!reference/vectors/*.wav
 samples/
 checkpoints/
 /release/
@@ -148,3 +149,6 @@ firmware/network.h
 
 # Legacy script backups
 *.py.bak
+
+# Reference C frontend build output
+reference/c/frontend_cli

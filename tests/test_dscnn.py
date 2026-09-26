@@ -1,6 +1,5 @@
 """Unit tests for DS-CNN model architecture."""
 
-import numpy as np
 import pytest
 
 tf = pytest.importorskip("tensorflow", reason="TensorFlow required for model tests")
@@ -240,37 +239,6 @@ class TestBackboneOptions:
         for layer in model.layers:
             if isinstance(layer, tf.keras.layers.DepthwiseConv2D):
                 assert layer.kernel_size == (3, 3), layer.name
-
-    def test_time_maxmean_head_adds_no_trainable_weights(self):
-        def trainable(model):
-            return sum(int(np.prod(w.shape)) for w in model.trainable_weights)
-
-        gap = _raw_model()
-        maxmean = _raw_model(head_pooling="freq_mean_time_maxmean")
-        assert trainable(maxmean) == trainable(gap)
-        assert not maxmean.get_layer("pool_freq_mean").trainable
-        assert maxmean.output_shape == (None, 5)
-        names = {layer.name for layer in maxmean.layers}
-        assert {"pool_freq_mean", "pool_time_max", "pool_time_mean", "pool_flatten"} <= names
-        assert "gap" not in names
-
-    def test_time_maxmean_head_is_gap_plus_time_max(self):
-        """Mean over time of the frequency mean is GAP; the max branch adds on top."""
-        from birdnet_stm32.models.dscnn import pooling_head
-
-        fmap = tf.random.uniform((2, 4, 8, 16))
-        pooled = pooling_head(fmap, "freq_mean_time_maxmean")
-        expected = tf.reduce_mean(fmap, axis=[1, 2]) + tf.reduce_max(tf.reduce_mean(fmap, axis=1), axis=1)
-        np.testing.assert_allclose(pooled.numpy(), expected.numpy(), rtol=1e-5, atol=1e-6)
-
-    def test_time_maxmean_head_splits(self):
-        from birdnet_stm32.conversion.split import find_embedding_layer, split_model
-
-        model = _raw_model(head_pooling="freq_mean_time_maxmean")
-        assert find_embedding_layer(model).name == "pool_flatten"
-        backbone, classifier = split_model(model)
-        x = tf.random.uniform((2, *model.input_shape[1:]), -0.1, 0.1)
-        np.testing.assert_allclose(classifier(backbone(x)).numpy(), model(x).numpy(), rtol=1e-5, atol=1e-6)
 
     def test_dw_kernel_5_spares_stage_1(self):
         model = _raw_model(dw_kernel_size=5)

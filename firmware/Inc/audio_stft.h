@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
- * Real-valued STFT using a plain-C 512-point FFT — produces a linear
- * magnitude spectrogram compatible with the BirdNET hybrid frontend.
+ * Real-valued STFT through CMSIS-DSP (Helium on the Cortex-M55) — produces a
+ * linear magnitude spectrogram compatible with the BirdNET hybrid frontend.
  */
 
 #ifndef AUDIO_STFT_H
@@ -14,13 +14,13 @@
  * Produces a spectrogram of shape [fft_bins, spec_width] stored in
  * row-major order (frequency-major: row = frequency bin, col = time frame).
  *
- * Uses a custom radix-2 FFT and a periodic Hann window, with frames centred on
+ * Uses CMSIS-DSP's real FFT and a periodic Hann window, with frames centred on
  * t * hop_length and zero-padded at the edges -- librosa.stft(center=True,
  * pad_mode="constant"), which is what the host feeds the model.
  *
  * @param audio       Input: mono float32 samples, length >= chunk_samples.
  * @param chunk_samples  Number of input samples (e.g. sample_rate * duration).
- * @param fft_length  FFT window size (must be 512).
+ * @param fft_length  FFT window size: a power of two from 32 to 512.
  * @param hop_length  Hop between successive frames (e.g. 258).
  * @param spec_width  Number of STFT frames to produce.
  * @param out         Output buffer: [fft_bins x spec_width] floats,

@@ -1,4 +1,4 @@
-"""Unit tests for Phase 10 evaluation reporting features.
+"""Unit tests for the evaluation reporting features.
 
 Tests bootstrap AP CI, DET curve, species report CSV, benchmark JSON,
 DET plot, and HTML report generation.

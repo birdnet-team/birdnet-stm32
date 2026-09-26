@@ -14,7 +14,7 @@ that are tested against each other:
 | Implementation | File | Checked by |
 |---|---|---|
 | Python reference (host) | `birdnet_stm32/audio/stft.py` | `tests/test_reference_stft.py` (against librosa) |
-| C firmware (Cortex-M55) | `firmware/Src/audio_stft.c`, `fft.c`, `audio_mel.c` | `tests/test_firmware_stft.py` (compiled natively, against the reference) |
+| C firmware (Cortex-M55) | `firmware/Src/audio_stft.c` (CMSIS-DSP FFT), `audio_mel.c` | `tests/test_firmware_stft.py` (compiled natively, against the reference) |
 | This page | | the reference implementation below is copied from it |
 
 Deviating from any step below changes the model input. Tolerance for a correct
@@ -217,18 +217,19 @@ spec_minmax_normalize(buf, rows * APP_SPEC_WIDTH);                      /* step 
 | Function | File | Notes |
 |---|---|---|
 | `stft_magnitude` | `audio_stft.c` | Centered framing with zero padding, periodic Hann, `sqrt(re^2 + im^2)` |
-| `fft_512_real` | `fft.c` | Plain-C 512-point real FFT (no CMSIS-DSP), output in CMSIS layout: `buf[0]` DC, `buf[1]` Nyquist, then `(re, im)` pairs; twiddles precomputed once |
+| `arm_rfft_fast_f32`, `arm_cmplx_mag_f32` | `Drivers/CMSIS-DSP/` | CMSIS-DSP real FFT (Helium on the M55), packed output: `[0]` DC, `[1]` Nyquist, then `(re, im)` pairs; and its vectorized magnitude |
 | `mel_init`, `mel_filterbank` | `audio_mel.c` | Builds `F` once at start-up (`fmin` 150 Hz, `fmax` Nyquist), then a sparse matrix product |
 | `spec_compress` | `audio_stft.c` | `SPEC_COMPRESS_SQRT` / `SPEC_COMPRESS_LOG` (80 dB floor, natural log) |
 | `spec_minmax_normalize` | `audio_stft.c` | `(S - min) / (max - min + 1e-10)` |
 
 `APP_HOP_LENGTH`, `APP_INPUT_COMPRESSION` and the other constants come from
 `app_config.h`, which `firmware/gen_app_config.py` writes from the model config.
-Any FFT library works in place of `fft.c` if it produces the same unscaled
-complex spectrum, for example CMSIS-DSP `arm_rfft_fast_f32`.
+Any FFT library works in place of CMSIS-DSP if it produces the same unscaled
+complex spectrum.
 
-Measured on the STM32N6570-DK: steps 1-4 plus normalization take **42 ms** per
-chunk (256 FFTs), and `sqrt` compression adds **4 ms**. The mel projection has
+Measured on the STM32N6570-DK at the default 400 MHz, for the released hybrid
+geometry (384 frames of a 2.5 s chunk): the whole input, steps 1–4 with `sqrt`
+compression and min-max normalization, takes **33 ms**. The mel projection has
 not been timed on the board.
 
 ## Pitfalls

@@ -2,7 +2,7 @@
 
 Raw's INT8 loss tracks the number of 8-bit activation grids its frontend puts
 between the filterbank and the backbone, not the arithmetic of any one of them
-(dev/ssw_magpie_rt_model.md, Phase C1). These options shorten that chain: 11
+(see ``VALID_RAW_MAGNITUDES`` in the frontend). These options shorten that chain: 11
 elementwise ops for ``alpha_max``, 7 for ``l1``, 1 for ``halfwave``.
 """
 

@@ -19,7 +19,6 @@ but are part of the ordered output contract.
 | `<basename>_FP32.keras` | Host inference, fine-tuning, re-conversion |
 | `<basename>_original_FP32.keras` | Pre-QAT checkpoint, for retraining from an untouched state |
 | `<basename>_FP32.onnx` | Host and interchange inference |
-| `<basename>_INT8_stedgeai_report.txt` | Memory footprint and NPU operator coverage |
 | `<basename>_model_card.md` | Contract, provenance, measured accuracy, and on-board timing |
 
 A bundle whose model was exported split carries these as well. The firmware runs
@@ -29,10 +28,13 @@ so a species-list change can be pushed without resending the whole model.
 | File | Use it for |
 |---|---|
 | `<basename>_INT8_backbone.tflite` | Audio to embeddings. Flashed once and reused across heads |
-| `<basename>_INT8_classifier.tflite` | Embeddings to scores. The only part that changes with the species list |
-| `<basename>_INT8_backbone.tflite.gz`, `<basename>_INT8_classifier.tflite.gz` | The same two, gzipped; the head is what an over-the-air update carries |
-| `<basename>_INT8_backbone.tflite.fingerprint.json` | Identity of the backbone. A replacement head must be calibrated against a matching one |
-| `<basename>_INT8_classifier_labels.txt` | The head's own ordered labels, so an updated head brings its species list with it |
+| `<basename>_INT8_classifier.tflite` | Embeddings to scores, in the order of `_labels.txt`. The only part that changes with the species list |
+
+Bundles up to 1.5 also carry gzipped copies of both halves, the backbone's
+`.fingerprint.json`, the classifier's own labels (identical to `_labels.txt`)
+and the compiler report `_INT8_stedgeai_report.txt`. From 1.6 these stay with
+the maintainers' validation record; `convert --split_head` produces all of them
+for your own models.
 
 Chaining the backbone into the classifier reproduces `_INT8.tflite`; both halves
 are gated on that equivalence before either is published. To build a further
@@ -62,7 +64,8 @@ output list. Any model can be scored on it, so these numbers are comparable with
 published results elsewhere.
 
 Every score below is from the **INT8 deployment model** — the file you flash —
-scored on 3-second windows at a 1.25 s hop, pooled over all five sites.
+scored on 2.5-second windows at a 1.25 s hop (the teacher on its native
+3-second windows), pooled over all five sites.
 
 | Model | Event recall @0.25 | @0.5 | Macro recall @0.5 | Window cMAP | Window AUPRC |
 |---|---:|---:|---:|---:|---:|
@@ -72,8 +75,10 @@ scored on 3-second windows at a 1.25 s hop, pooled over all five sites.
 | `..._90_V1.3_Hybrid_INT8` | 0.205 | 0.112 | 0.074 | 0.208 | 0.276 |
 | `..._90_V1.4_Raw_INT8` | 0.228 | 0.154 | 0.131 | 0.204 | 0.250 |
 | `..._90_V1.4_Hybrid_INT8` | 0.284 | 0.185 | 0.160 | 0.285 | 0.335 |
-| **`..._90_V1.5_Raw_INT8`** | **0.344** | **0.248** | **0.218** | **0.258** | **0.342** |
-| **`..._90_V1.5_Hybrid_INT8`** | **0.464** | **0.361** | **0.339** | **0.376** | **0.461** |
+| `..._90_V1.5_Raw_INT8` | 0.344 | 0.248 | 0.218 | 0.258 | 0.342 |
+| `..._90_V1.5_Hybrid_INT8` | 0.464 | 0.361 | 0.339 | 0.376 | 0.461 |
+| **`..._90_V1.6_Raw_INT8`** | **0.343** | **0.255** | **0.219** | **0.269** | **0.352** |
+| **`..._90_V1.6_Hybrid_INT8`** | **0.464** | **0.361** | **0.339** | **0.376** | **0.461** |
 | BirdNET+ V3.0 preview 3.1 | 0.766 | 0.656 | 0.607 | 0.517 | 0.617 |
 
 The last row is the server-class teacher these models are distilled from, scored
@@ -83,13 +88,19 @@ as an alternative.
 
 Per site, for the current release (event recall @0.5 / window AUPRC):
 
-| Site | Calls | Species | v1.5 Raw | v1.5 Hybrid |
-|---|---:|---:|---|---|
-| MABI (Vermont) | 584 | 22 | 0.423 / 0.567 | 0.632 / 0.690 |
-| CB | 730 | 21 | 0.240 / 0.319 | 0.319 / 0.393 |
-| SD | 237 | 9 | 0.169 / 0.379 | 0.321 / 0.564 |
-| NL | 170 | 6 | 0.171 / 0.345 | 0.424 / 0.484 |
-| FEU (boreal) | 2,073 | 18 | 0.217 / 0.470 | 0.300 / 0.581 |
+| Site | Calls | Species | v1.6 Raw | v1.5 Raw | v1.6 Hybrid |
+|---|---:|---:|---|---|---|
+| MABI (Vermont) | 584 | 22 | 0.389 / 0.549 | 0.423 / 0.567 | 0.632 / 0.690 |
+| CB | 730 | 21 | 0.255 / 0.347 | 0.240 / 0.319 | 0.319 / 0.393 |
+| SD | 237 | 9 | 0.152 / 0.386 | 0.169 / 0.379 | 0.321 / 0.564 |
+| NL | 170 | 6 | 0.259 / 0.398 | 0.171 / 0.345 | 0.424 / 0.484 |
+| FEU (boreal) | 2,073 | 18 | 0.229 / 0.485 | 0.217 / 0.470 | 0.300 / 0.581 |
+
+v1.6 ships a new Raw model. v1.6 Hybrid is the v1.5 Hybrid re-issued: the same
+INT8 model byte for byte, so the same scores, with the 1.6 firmware's faster STFT.
+v1.6 Raw gains most at the sites with the densest audio (NL, CB, FEU) and gives a
+little back at MABI and SD: the change it carries, a filterbank split that keeps
+each INT8 partial sum band-selective, targets broadband backgrounds.
 
 - **Event recall** is the share of annotated calls whose overlapping window
   scored above the threshold — what a recorder set to that threshold would log.
@@ -101,16 +112,20 @@ Per site, for the current release (event recall @0.5 / window AUPRC):
 
 ## Cost on the device
 
-Measured on an STM32N6570-DK at 1 GHz, for **one 2.5-second chunk** — the
-firmware reads exactly one chunk per file, computes one frontend and runs one
-inference:
+Measured on an STM32N6570-DK in the firmware's clock profile — CPU, NPU and
+buses all at **400 MHz**, no overdrive, which is ST's profile for nominal core
+voltage — for **one 2.5-second chunk**: the firmware reads exactly one chunk per
+file, computes one frontend and runs one inference. Hybrid rows use the 1.6
+firmware's STFT (33 ms); the firmware of 1.5 and earlier took 69 ms for it.
 
 | Model | Parameters | MACs | NPU | Frontend (M55) | Compute per chunk | NPU epochs |
 |---|---:|---:|---:|---:|---:|---:|
 | `..._90_V1.4_Raw_INT8` | 987,156 | 81.34 M | 15 ms | 0 ms | 15 ms | 58 (3 sw) |
-| `..._90_V1.4_Hybrid_INT8` | 946,196 | 104.83 M | 19 ms | 69 ms | 88 ms | 40 (4 sw) |
-| **`..._90_V1.5_Raw_INT8`** | 987,156 | 81.25 M | **15 ms** | 0 ms | **15 ms** | 53 (3 sw) |
-| **`..._90_V1.5_Hybrid_INT8`** | 946,196 | 104.83 M | 19 ms | 69 ms | 88 ms | 40 (4 sw) |
+| `..._90_V1.4_Hybrid_INT8` | 946,196 | 104.83 M | 19 ms | 33 ms | 52 ms | 40 (4 sw) |
+| `..._90_V1.5_Raw_INT8` | 987,156 | 81.25 M | 15 ms | 0 ms | 15 ms | 53 (3 sw) |
+| `..._90_V1.5_Hybrid_INT8` | 946,196 | 104.83 M | 19 ms | 33 ms | 52 ms | 40 (4 sw) |
+| **`..._90_V1.6_Hybrid_INT8`** | 946,196 | 104.83 M | 19 ms | 33 ms | 52 ms | 40 (4 sw) |
+| **`..._90_V1.6_Raw_INT8`** | 987,156 | 81.25 M | **16 ms** | 0 ms | **16 ms** | 52 (3 sw) |
 | BirdNET+ V3.0 preview 3.1 | 135,228,889 | — | — | — | — | — |
 
 The teacher is listed for scale only: **137x the parameters** of either model here,
@@ -118,17 +133,18 @@ The teacher is listed for scale only: **137x the parameters** of either model he
 not run on this class of hardware at all.
 
 - **Raw is the cheap one and that is its whole purpose.** Its learned filterbank
-  runs on the NPU, so a chunk costs 15 ms of compute. Hybrid computes a 512-point
-  STFT on the Cortex-M55 first, which costs 69 ms — more than three times the
-  inference it feeds — for the accuracy in the table above.
+  runs on the NPU, so a chunk costs 16 ms of compute. Hybrid computes a 512-point
+  STFT on the Cortex-M55 first, which costs 33 ms with CMSIS-DSP's Helium FFT —
+  more than the inference it feeds — for the accuracy in the table above.
 - **Compute per chunk excludes reading the audio.** The board test also reports
   59 ms of SD-card read per chunk, which a deployment does not pay: a recorder's
   audio arrives from the microphone over DMA, already in RAM. Including it, the
-  test harness measures 75 ms (raw) and 148 ms per file (hybrid).
+  test harness measures 75 ms (raw) and 113 ms per file (hybrid).
 - **NPU epochs** are the compiler's scheduling units; the software ones are the
   input quantize and output dequantize, which have run on the M55 in every
-  release. A shorter raw frontend in 1.5 took raw from 58 epochs to 53.
-- At 15 ms per 2.5 s chunk, raw is **167x faster than real time**, so duty cycle
+  release. A shorter raw frontend in 1.5 took raw from 58 epochs to 53, and
+  1.6's kernel split to 52.
+- At 16 ms per 2.5 s chunk, raw is **156x faster than real time**, so duty cycle
   rather than throughput sets a recorder's power budget.
 
 ## Running a bundle on the board

@@ -50,7 +50,9 @@ out = sys.argv[3]
 # Source of the trained filterbank and of the audio used for calibration. The
 # "real"/"shuffled"/"maskrand"/"realtop"/"realbits*" modes read
 # <run>/int8/smoke25.tflite; the "audio" calibration reads <run>/sdcard/audio/*.WAV.
-run = os.environ.get("NPU_REPRO_RUN", "/data3/ssw_magpie_rt_model/checks/smoke25/run")
+run = os.environ.get("NPU_REPRO_RUN", "")
+if not run and (weights_src != "random" or calib_src != "random"):
+    raise SystemExit("set NPU_REPRO_RUN to a board-test run directory for trained weights or audio")
 rng = np.random.default_rng(0)
 
 

@@ -20,12 +20,13 @@ from birdnet_stm32.models.blocks import _make_divisible
 from birdnet_stm32.models.frontend import (
     RELEASE_RAW_BANK,
     RELEASE_RAW_MAGNITUDE,
+    RELEASE_RAW_SPLIT_AXIS,
     AudioFrontendLayer,
     hybrid_fft_bins,
     normalize_frontend_name,
 )
 
-HEAD_POOLINGS = ("gap", "freq_mean_time_maxmean")
+HEAD_POOLINGS = ("gap",)
 STAGE_WIDTHS = (32, 64, 128, 256)
 DW_KERNEL_SIZES = (3, 5)
 
@@ -94,16 +95,8 @@ def ds_conv_block(
 def pooling_head(x: tf.Tensor, head_pooling: str = "gap") -> tf.Tensor:
     """Collapse a [B, F, T, C] feature map into a [B, C] embedding vector.
 
-    ``gap`` averages over frequency and time. ``freq_mean_time_maxmean``
-    averages over frequency, then adds the max and the mean over time, so a
-    call that fills a few frames of the window is not averaged away. It adds no
-    trainable weights.
-
-    The frequency mean is a frozen depthwise convolution with a constant
-    1/F kernel rather than a pooling op: on the STM32N6 an average that
-    collapses frequency but keeps time (``AveragePool`` or ``MEAN`` alike) falls
-    back to the Cortex-M55, while the convolution stays on the NPU. For F = 4
-    the kernel value 0.25 is exact on the per-channel INT8 grid.
+    Global average pooling over frequency and time. (A max + mean over time
+    was measured and lost; ``gap`` is the only head.)
 
     Args:
         x: Feature map with static frequency and time dimensions.
@@ -114,20 +107,6 @@ def pooling_head(x: tf.Tensor, head_pooling: str = "gap") -> tf.Tensor:
     """
     if head_pooling == "gap":
         return layers.GlobalAveragePooling2D(name="gap")(x)
-    if head_pooling == "freq_mean_time_maxmean":
-        n_freq, n_time = int(x.shape[1]), int(x.shape[2])
-        x = layers.DepthwiseConv2D(
-            kernel_size=(n_freq, 1),
-            padding="valid",
-            use_bias=False,
-            depthwise_initializer=tf.keras.initializers.Constant(1.0 / n_freq),
-            trainable=False,
-            name="pool_freq_mean",
-        )(x)
-        t_max = layers.MaxPooling2D(pool_size=(1, n_time), name="pool_time_max")(x)
-        t_mean = layers.GlobalAveragePooling2D(keepdims=True, name="pool_time_mean")(x)
-        x = layers.Add(name="pool_time_maxmean")([t_max, t_mean])
-        return layers.Flatten(name="pool_flatten")(x)
     raise ValueError(f"head_pooling '{head_pooling}' not in {HEAD_POOLINGS}")
 
 
@@ -146,6 +125,7 @@ def build_dscnn_model(
     raw_magnitude: str = RELEASE_RAW_MAGNITUDE,
     raw_overlap: int = 2,
     raw_bank: str = RELEASE_RAW_BANK,
+    raw_split_axis: str = RELEASE_RAW_SPLIT_AXIS,
     frontend_trainable: bool = False,
     dropout_rate: float = 0.5,
     weight_decay: float = 1e-4,
@@ -172,6 +152,9 @@ def build_dscnn_model(
         raw_overlap: Raw analysis window as a multiple of its hop; raw only.
         raw_bank: 'pair' or 'fused' quadrature filterbank; raw only. Defaults
             to the release layout, as raw_magnitude does.
+        raw_split_axis: 'channels' or 'taps': how the raw filterbank is cut
+            into partial convolutions; raw only. Defaults to the release
+            layout.
         frontend_trainable: Make frontend sub-layers trainable.
         dropout_rate: Dropout rate before the classifier head.
         weight_decay: L2 regularization weight for DS-CNN blocks.
@@ -250,6 +233,7 @@ def build_dscnn_model(
             raw_magnitude=raw_magnitude,
             raw_overlap=raw_overlap,
             raw_bank=raw_bank,
+            raw_split_axis=raw_split_axis,
             is_trainable=frontend_trainable,
             name="audio_frontend",
         )(inputs)

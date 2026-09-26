@@ -63,14 +63,20 @@ from the compiler command line:
 
 Controls which clock configuration is used at startup:
 
-| `USE_OVERDRIVE` | CPU Clock | NPU Clock | VDD Core |
+| `USE_OVERDRIVE` | `NO_OVD_CLK400` | VDD core | Clocks |
 |---|---|---|---|
-| `0` (default) | 600 MHz | 800 MHz | Nominal |
-| `1` | 800 MHz | 1 GHz | Upscaled via SMPS/I2C |
+| `0` (default) | defined (default) | nominal | CPU, NIC, NOC and NPU all at 400 MHz |
+| `1` | ignored | raised via SMPS/I2C | CPU 800 MHz, NPU 1 GHz |
+
+`gen_app_config.py` emits both defines. `USE_OVERDRIVE 0` without
+`NO_OVD_CLK400` would run the NPU at 800 MHz on nominal core voltage, which is
+out of specification: the NPU then still completes every inference with
+plausible timings and returns wrong scores. Every published timing is measured
+in the default 400 MHz profile.
 
 Overdrive provides maximum throughput but draws more power and requires VDD
-core upscaling. The default non-overdrive configuration is already comfortably
-real-time; exact latency depends on the frontend and model topology.
+core upscaling. The default 400 MHz profile is already comfortably real-time:
+15 ms per 2.5 s chunk for a raw model, 52 ms for a hybrid one.
 
 !!! tip "Consistency is critical"
     If `app_config.h` values don't match the TFLite model's expectations, the

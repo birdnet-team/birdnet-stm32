@@ -112,7 +112,7 @@ typedef struct {
 
 **Location:** `firmware/Src/audio_stft.c`
 
-Computes a magnitude STFT using `fft.c` that reproduces the host's hybrid
+Computes a magnitude STFT with CMSIS-DSP that reproduces the host's hybrid
 input — `librosa.stft(center=True, pad_mode="constant", window="hann")` — and
 normalizes it like the host. `tests/test_firmware_stft.py` compiles this file
 natively and checks it against `get_spectrogram_from_audio()`.
@@ -132,10 +132,16 @@ void stft_magnitude(const float *audio, uint32_t num_samples,
    - Extract `fft_length` samples centred on `frame × hop_length`, taking
      zeros outside the chunk (librosa's `center=True, pad_mode="constant"`).
    - Multiply by the Hann window.
-   - Call `fft_512_real()` for the FFT.
-   - Compute magnitude for bins 0–255 and omit Nyquist, matching the model input.
+   - Real FFT with CMSIS-DSP's `arm_rfft_fast_f32` (Helium-vectorized).
+   - Magnitude for bins 0–255 with `arm_cmplx_mag_f32`; Nyquist is omitted,
+     matching the model input.
    - Store in output as `out[freq_bin * spec_width + frame]`
-     (frequency-major).
+     (frequency-major), eight frames at a time so each store run fills a
+     cache line.
+
+At the default 400 MHz, a 384-frame STFT of a 2.5 s chunk takes 33 ms. The
+FFT size is any power of two from 32 to 512; the working buffers are static and
+sized for 512.
 
 ### `spec_minmax_normalize()`
 
@@ -191,56 +197,19 @@ This reproduces librosa's Slaney-normalized mel weight matrices natively on the 
 
 ---
 
-## `fft.c` — 512-Point Real FFT
+## CMSIS-DSP (vendored)
 
-**Location:** `firmware/Src/fft.c`
+**Location:** `firmware/Drivers/CMSIS-DSP/`
 
-A self-contained radix-2 Decimation-in-Time (DIT) FFT with **zero external
-dependencies**.
+An unmodified subset of [CMSIS-DSP](https://github.com/ARM-software/CMSIS-DSP)
+`v1.16.2` (Apache-2.0): the headers and the ten sources `arm_rfft_fast_f32` and
+`arm_cmplx_mag_f32` need. The build defines `ARM_MATH_HELIUM`, so the FFT uses
+the Cortex-M55's vector extension, and GCC needs `-flax-vector-conversions` for
+that code. The native tests compile the same sources on the host with
+`__GNUC_PYTHON__`, CMSIS-DSP's portable path.
 
-### Why Not CMSIS-DSP?
-
-The CMSIS-DSP `arm_rfft_fast_f32` requires linking `libarm_cortexM55l_math.a`,
-which adds ~200 KB to the binary and complicates the Makefile. Our custom
-512-point FFT is plain C and has no external dependencies. In the verified
-hybrid board run, the complete 256-frame STFT took about 58 ms at the default
-clock configuration.
-
-### Algorithm
-
-1. **Input packing**: treat 512 real samples as 256 complex pairs
-   (`x[2k] + j·x[2k+1]`).
-2. **Bit-reversal permutation**: reorder the 256 complex values for in-place
-   butterfly computation.
-3. **Butterfly stages**: 8 stages of radix-2 DIT butterflies with precomputed
-   twiddle factors (`cos` + `j·sin`).
-4. **Split-radix unpack**: decompose the 256-point complex FFT result into 257
-   real-FFT bins (DC through Nyquist) using even/odd twiddle factors.
-
-### Output Format
-
-CMSIS-DSP compatible layout:
-
-| Index | Content |
-|---|---|
-| `buf[0]` | DC component (real) |
-| `buf[1]` | Nyquist component (real) |
-| `buf[2k]`, `buf[2k+1]` | Real and imaginary parts of bin _k_ (k = 1..255) |
-
-### Performance
-
-| Metric | Value |
-|---|---|
-| Per-frame time | Model/clock dependent |
-| 256-frame STFT | ~58 ms measured, including windowing and magnitude |
-| Table init | One-time, first call only |
-| Static memory | ~4 KB (twiddle + bit-reversal tables) |
-
-### Limitations
-
-The FFT size is **hardcoded at 512** (256 complex points). The twiddle tables,
-bit-reversal tables, and buffer sizes are all compile-time constants. To support
-other FFT sizes, the code would need generalization or conditional compilation.
+The plain-C radix-2 FFT it replaced (up to 1.5) took 69 ms for the same STFT;
+the board's scores are unchanged.
 
 ---
 

@@ -7,6 +7,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-26
+
+Two models ship: `BirdNET_Tiny_N6_USNE_90_V1.6_Raw`, a new model, and
+`..._V1.6_Hybrid`, the v1.5 Hybrid weights re-issued unchanged — its INT8 model
+is byte-identical — with a 1.6 model card and re-validated on the 1.6 firmware,
+which computes its input in half the time. Alongside the models, 1.6 publishes a
+reference implementation of the audio processing, in Python and C, with test
+vectors, and slims the bundles to the files a user needs.
+
+### Model performance
+
+Scored on [WABAD](https://zenodo.org/records/14191524) (3,794 annotated calls,
+five northeastern sites, 44 species inside the output list) and on the catalog
+test split, on the INT8 model that gets flashed:
+
+| Model | Event recall @0.5 | Window cMAP | Window AUPRC | Catalog cMAP | NPU per 2.5 s |
+|---|---:|---:|---:|---:|---:|
+| v1.5 Raw | 0.248 | 0.258 | 0.342 | 0.7110 | 15 ms |
+| **v1.6 Raw** | **0.255** | **0.269** | **0.352** | **0.7134** | 16 ms |
+| v1.5 Hybrid | 0.361 | 0.376 | 0.461 | 0.7574 | 19 ms + 69 ms STFT |
+| **v1.6 Hybrid** (same weights) | 0.361 | 0.376 | 0.461 | 0.7574 | 19 ms + **33 ms** STFT |
+
+v1.6 Raw is better than v1.5 Raw on every field metric at the same catalog
+accuracy (+0.002, within noise), from one change to how its filterbank is cut
+for the NPU, which costs nothing at inference. It passed the release gates:
+Keras/TFLite parity, ONNX validation, STM32N6 compilation (52 epochs, 3 in
+software), on-target validation (cos 0.99979), the operational gate and a
+25-file board test with host parity.
+
+### Added
+
+- **A reference implementation in `reference/`**, linked from the top of the
+  README: the whole inference contract — windows, per-window normalization, the
+  hybrid STFT, logits, pooling — as one readable Python file that depends only on
+  NumPy, SoundFile and TensorFlow Lite, and the same frontend in portable C
+  (`reference/c/`: windows, peak normalization and the hybrid STFT through
+  CMSIS-DSP's real FFT), ready to drop into a firmware.
+  It ships with a synthetic test recording and, for each released bundle, the
+  value of every intermediate stage on it (`reference/vectors/`), and
+  `--check-vectors` compares an implementation against them stage by stage —
+  with `--stages`, a port's own stage printout, no model needed.
+  `tests/test_reference_implementation.py` keeps the reference and the training
+  package building identical model inputs. It replaces
+  `examples/reference_inference.py`; the docs page is now
+  [Reference Implementation](docs/inference.md).
+- `--calibration_dir` for `equalize`, `train --qat` and `convert`: draw the
+  INT8 calibration audio from any directory (stratified by subfolder) instead
+  of the training files, so a model trained on focal recordings can be
+  calibrated on field recordings from where it will be deployed. The parity
+  check that gates a conversion still uses held-out training files.
+
+### Changed
+
+- **The firmware computes the hybrid STFT with CMSIS-DSP on Helium: 33 ms
+  instead of 69 ms** per 2.5 s chunk at 400 MHz, with identical board scores
+  (25/25 files, same maximum difference to the host). The FFT and magnitude are
+  CMSIS-DSP's `arm_rfft_fast_f32` and `arm_cmplx_mag_f32`, built for the M55's
+  vector extension, and the spectrogram is stored eight frames at a time so its
+  frequency-major writes fill cache lines. A hybrid chunk now costs 52 ms of
+  compute (19 ms NPU + 33 ms STFT). An unmodified subset of CMSIS-DSP v1.16.2
+  (Apache-2.0) is vendored in `firmware/Drivers/CMSIS-DSP`; the plain-C
+  `fft.c` is gone, and the STFT accepts any power-of-two FFT length up to 512.
+- **Raw models cut their filterbank along the kernel.** The NPU needs the
+  filterbank split into four partial convolutions; each partial used to take a
+  group of the folded input channels, which in time is a comb of short pieces
+  that aliases every frequency into every band, so on broadband field audio the
+  partials cancel in their sum and the band signal is lost to their INT8
+  rounding. Each partial is now one contiguous segment of the filter. Same
+  function, operations and cost, validated on the NPU; trained and taken
+  through QAT it gains 0.007 catalog cMAP with better field recall. Checkpoints
+  from 1.5 and earlier load with the split they were trained with.
+
+### Fixed
+
+- **Device timings were published with the wrong clock.** The firmware runs
+  ST's all-400 MHz profile (CPU, NPU and buses, nominal core voltage), and every
+  timing in the docs was measured there, but they were labelled "at 1 GHz", and
+  the firmware pages described 600 MHz CPU / 800 MHz NPU as the default, a
+  combination the generated firmware never selects because the NPU is out of
+  specification at 800 MHz without overdrive. Timing tables are updated to the
+  current firmware; the README's benchmark windows are 2.5 s, not 3 s.
+
+### Removed
+
+- **Leaner release bundles.** A bundle and its zip now hold the model files,
+  labels, config, model card and license files only. The `.gz` copies, the
+  backbone fingerprint, the compiler report and the classifier's own labels
+  (identical to the model's) are still produced and validated, but no longer
+  published; `convert --split_head` still writes them for your own models.
+- Training options that were measured and lost, so the CLI only offers what a
+  model is actually trained with: `--raw_time_masks` / `--raw_time_mask_ms`
+  (waveform time masking for `raw`), `--crop_policy uniform`, and
+  `--head_pooling` with its `freq_mean_time_maxmean` head. Released models all
+  use `gap` pooling and load unchanged.
+
 ## [1.5.0] - 2026-09-25
 
 Two models ship: `BirdNET_Tiny_N6_USNE_90_V1.5_Raw` and
@@ -467,7 +562,7 @@ and the board test checks itself against the host instead of being read by eye.
 - Correct the `--batch_validate` help text: it repeats validation over the same
   deterministic manifest to measure runtime repeatability, not "different
   random seeds".
-- Consolidate Magpie RT experiments around an isolated driver that stops on
+- Consolidate the model experiments around an isolated driver that stops on
   failure, preserves the selected INT8 bytes and leaves catalog-test data for
   final evaluation.
 
@@ -670,7 +765,7 @@ checkpoints still load.
 - The public model naming convention
   `BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>_<PRECISION>` and a
   gitignored release-staging workflow with validation reports and checksums.
-- The `BirdNET_Tiny_N6_USNE_30_V1.0` Magpie RT model: 30 northeastern-US bird
+- The `BirdNET_Tiny_N6_USNE_30_V1.0` model: 30 northeastern-US bird
   species plus eight nuisance outputs, validated Keras/TFLite/ONNX formats,
   an untouched pre-QAT checkpoint, model card, sanitized reports, and physical
   STM32N6570-DK measurements.

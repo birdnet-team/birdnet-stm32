@@ -148,7 +148,7 @@ The firmware's `main()` function initializes the board in a specific order that
 | 3 | `SystemClock_Config_ResetClocks()` | Reset all clock domains to known state |
 | 4 | `system_init_post()` | Post-reset cleanup (clear pending interrupts) |
 | 5 | `SCB_EnableICache()` / `SCB_EnableDCache()` | Enable CPU caches |
-| 6 | Clock configuration | Default: `SystemClock_Config_HSI_no_overdrive()` at 600 MHz; optional overdrive first raises VDD core and selects the 800 MHz clock path |
+| 6 | Clock configuration | Default: `SystemClock_Config_HSI_400()`, CPU/NIC/NOC/NPU at 400 MHz on nominal core voltage; optional overdrive first raises VDD core, then runs the CPU at 800 MHz and the NPU at 1 GHz |
 | 7 | `fuse_vddio()` | Configure IO voltage rails for XSPI interfaces |
 | 8 | `UART_Config()` | USART1 at 921,600 baud (ST-LINK VCP) |
 | 9 | `BSP_XSPI_RAM_Init()` + `BSP_XSPI_NOR_Init()` | Memory-map external HyperRAM and NOR flash |

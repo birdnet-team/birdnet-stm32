@@ -45,7 +45,7 @@ class ModelConfig:
         embeddings_size: Dense embedding dimension before classifier.
         alpha: Width multiplier for channel counts.
         depth_multiplier: Block repeat count per stage.
-        head_pooling: Pooling head ('gap', 'freq_mean_time_maxmean').
+        head_pooling: Pooling head; 'gap' is the only one.
         dw_kernel_size: Depthwise kernel size in stages 2-4 (3 or 5).
         stage_widths: Base output channels of the four stages, before alpha.
         num_classes: Number of output classes.
@@ -91,7 +91,7 @@ class ModelConfig:
     _VALID_RAW_MAGNITUDES = frozenset({"alpha_max", "l1", "halfwave"})
     _VALID_RAW_BANKS = frozenset({"pair", "fused"})
     _VALID_OUTPUT_ACTIVATIONS = frozenset({"sigmoid", "logit"})
-    _VALID_HEAD_POOLINGS = frozenset({"gap", "freq_mean_time_maxmean"})
+    _VALID_HEAD_POOLINGS = frozenset({"gap"})
     _VALID_DW_KERNEL_SIZES = frozenset({3, 5})
 
     def __post_init__(self) -> None:
