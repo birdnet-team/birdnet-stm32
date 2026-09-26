@@ -68,7 +68,18 @@ FATFS_PATH = FatFs
 C_SOURCES += Src/wav_reader.c
 C_SOURCES += Src/audio_stft.c
 C_SOURCES += Src/sd_handler.c
-C_SOURCES += Src/fft.c
+C_SOURCES += Src/audio_mel.c
+CMSIS_DSP = Drivers/CMSIS-DSP
+C_SOURCES += $(CMSIS_DSP)/Source/TransformFunctions/arm_rfft_fast_f32.c
+C_SOURCES += $(CMSIS_DSP)/Source/TransformFunctions/arm_rfft_fast_init_f32.c
+C_SOURCES += $(CMSIS_DSP)/Source/TransformFunctions/arm_cfft_f32.c
+C_SOURCES += $(CMSIS_DSP)/Source/TransformFunctions/arm_cfft_init_f32.c
+C_SOURCES += $(CMSIS_DSP)/Source/TransformFunctions/arm_cfft_radix8_f32.c
+C_SOURCES += $(CMSIS_DSP)/Source/TransformFunctions/arm_bitreversal2.c
+C_SOURCES += $(CMSIS_DSP)/Source/CommonTables/arm_common_tables.c
+C_SOURCES += $(CMSIS_DSP)/Source/CommonTables/arm_const_structs.c
+C_SOURCES += $(CMSIS_DSP)/Source/CommonTables/arm_mve_tables.c
+C_SOURCES += $(CMSIS_DSP)/Source/ComplexMathFunctions/arm_cmplx_mag_f32.c
 C_SOURCES += Drivers/$(FATFS_PATH)/ff.c
 C_SOURCES += Drivers/$(FATFS_PATH)/diskio.c
 C_SOURCES += Drivers/$(FATFS_PATH)/ff_gen_drv.c
@@ -94,13 +105,15 @@ HEX = $(CP) -O ihex
 BIN = $(CP) -O binary -S
 
 CPU = -mcpu=cortex-m55
-FPU = -mfpu=fpv5-sp-d16
+# auto: the Cortex-M55's FPU plus Helium (MVE), which CMSIS-DSP's FFT uses.
+FPU = -mfpu=auto
 FLOAT-ABI = -mfloat-abi=hard
 MCU = $(CPU) -mthumb $(FPU) $(FLOAT-ABI) -mcmse
 
-C_DEFS = -DSTM32N657xx -DUSE_HAL_DRIVER -DCORE_CM55 -DSECURE=1 -DCPU_IN_SECURE_STATE -DUSE_UART_BAUDRATE=921600 -DUSE_OVERDRIVE=0 -DLL_ATON_PLATFORM=LL_ATON_PLAT_STM32N6 -DLL_ATON_OSAL=LL_ATON_OSAL_BARE_METAL -DLL_ATON_RT_MODE=LL_ATON_RT_ASYNC -DLL_ATON_EB_DBG_INFO -DLL_ATON_DBG_BUFFER_INFO_EXCLUDED=1 -DLL_ATON_SW_FALLBACK=1 
+C_DEFS = -DSTM32N657xx -DUSE_HAL_DRIVER -DCORE_CM55 -DSECURE=1 -DCPU_IN_SECURE_STATE -DUSE_UART_BAUDRATE=921600 -DUSE_OVERDRIVE=0 -DLL_ATON_PLATFORM=LL_ATON_PLAT_STM32N6 -DLL_ATON_OSAL=LL_ATON_OSAL_BARE_METAL -DLL_ATON_RT_MODE=LL_ATON_RT_ASYNC -DLL_ATON_EB_DBG_INFO -DLL_ATON_DBG_BUFFER_INFO_EXCLUDED=1 -DLL_ATON_SW_FALLBACK=1 -DARM_MATH_HELIUM
 
 C_INCLUDES += -IInc -I. -IDrivers/FatFs -IConfig -IDrivers -IDrivers/HAL_SD
+C_INCLUDES += -I$(CMSIS_DSP)/Include -I$(CMSIS_DSP)/PrivateInclude
 C_INCLUDES += -I$(CMSIS_PATH)/Core/Include
 C_INCLUDES += -I$(CMSIS_PATH)/Device/ST/STM32N6xx/Include
 C_INCLUDES += -I$(CMSIS_PATH)/Device/ST/STM32N6xx/Include/Templates
@@ -111,12 +124,13 @@ C_INCLUDES += -I$(ATONN_RT_PATH)
 C_INCLUDES += -I$(MIDDLEWARES_PATH)/AI/Inc
 C_INCLUDES += -I$(MIDDLEWARES_PATH)/AI/Npu/Devices/STM32N6XX
 
-CFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections
+# CMSIS-DSP's Helium code relies on implicit vector conversions under GCC.
+CFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections -flax-vector-conversions
 
 ASFLAGS = $(MCU) $(OPT) -Wall -fdata-sections -ffunction-sections
 
 LDSCRIPT = STM32N657xx.ld
-LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections /home/mi/Code/X-CUBE-AI.10.2.0/Middlewares/ST/AI/Lib/GCC/ARMCortexM55/NetworkRuntime1020_CM55_GCC.a
+LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections $(XCUBE_AI_DIR)/Middlewares/ST/AI/Lib/GCC/ARMCortexM55/NetworkRuntime1020_CM55_GCC.a
 
 BUILD_DIR = build
 

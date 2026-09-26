@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The firmware computes the hybrid STFT with CMSIS-DSP on Helium: 33 ms
+  instead of 69 ms** per 2.5 s chunk at 400 MHz, with identical board scores
+  (25/25 files, same maximum difference to the host). The FFT and magnitude are
+  CMSIS-DSP's `arm_rfft_fast_f32` and `arm_cmplx_mag_f32`, built for the M55's
+  vector extension, and the spectrogram is stored eight frames at a time so its
+  frequency-major writes fill cache lines. A hybrid chunk now costs 52 ms of
+  compute (19 ms NPU + 33 ms STFT). An unmodified subset of CMSIS-DSP v1.16.2
+  (Apache-2.0) is vendored in `firmware/Drivers/CMSIS-DSP`; the plain-C
+  `fft.c` is gone, and the STFT accepts any power-of-two FFT length up to 512.
 - **Raw models cut their filterbank along the kernel.** The NPU needs the
   filterbank split into four partial convolutions; each partial used to take a
   group of the folded input channels, which in time is a comb of short pieces

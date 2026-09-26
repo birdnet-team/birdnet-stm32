@@ -29,7 +29,7 @@ reports bird species detections over UART.
 ```mermaid
 flowchart LR
     SD["SD card<br/>WAV files"] --> WAV["wav_reader.c<br/>PCM16 → float32"]
-    WAV --> |Hybrid / Precomputed| STFT["audio_stft.c<br/>Hann + 512-pt FFT"]
+    WAV --> |Hybrid / Precomputed| STFT["audio_stft.c<br/>Hann + CMSIS-DSP FFT"]
     WAV --> |Raw| NORM["Peak normalize"] --> NPU
     STFT --> |Precomputed| Mel["audio_mel.c<br/>Mel Filterbank"]
     STFT --> |Hybrid| NPU["NPU (LL_ATON)<br/>DS-CNN inference"]
@@ -63,20 +63,21 @@ firmware/
 ├── Src/
 │   ├── main.c           # Board init + processing loop
 │   ├── wav_reader.c     # RIFF/WAVE parser, PCM16→float32
-│   ├── audio_stft.c     # Hann-windowed STFT
-│   ├── fft.c            # 512-pt real FFT (radix-2 DIT)
+│   ├── audio_stft.c     # Hann-windowed STFT (CMSIS-DSP FFT)
+│   ├── audio_mel.c      # Mel filterbank (precomputed frontend)
 │   └── sd_handler.c     # BSP SD + FatFs mount/scan/write
 ├── Inc/
 │   ├── app_config.h     # Audio params (patched at deploy time)
 │   ├── app_labels.h     # Class names (auto-generated)
 │   ├── wav_reader.h
 │   ├── audio_stft.h
-│   ├── fft.h
+│   ├── audio_mel.h
 │   └── sd_handler.h
 ├── Drivers/
 │   ├── HAL_SD/          # HAL SD card driver sources
 │   ├── FatFs/           # FatFs R0.15 filesystem
 │   └── stm32n6570_discovery_sd.*  # BSP SD driver
+│   ├── CMSIS-DSP/       # Vendored CMSIS-DSP subset: real FFT + magnitude (Helium)
 └── README.md            # Standalone firmware reference
 ```
 

@@ -160,19 +160,10 @@ matches the model's training sample rate.
 
 ## FFT Size
 
-The `fft.c` implementation is **hardcoded for N=512** (256 complex points).
-The twiddle tables, bit-reversal tables, and stack buffers are all sized for 512.
-
-If you need a different FFT size:
-
-- **1024-point:** Would require doubling all tables and adding a 9th butterfly
-  stage. Possible but requires code changes.
-- **256-point:** Would require halving tables and removing a butterfly stage.
-- **Arbitrary size:** Would require a fully general FFT implementation (e.g.,
-  mixed-radix or split-radix).
-
-For now, the spectral firmware paths are locked to a 512-point FFT. This
-provides 256 frequency bins (Nyquist omitted). Raw models bypass the FFT.
+The STFT accepts any power-of-two FFT length from 32 to 512 (CMSIS-DSP's
+`arm_rfft_fast_f32`); the static working buffers are sized for 512. A larger
+FFT needs `STFT_MAX_FFT` in `audio_stft.c` raised, at 28 bytes of RAM per extra
+sample. Raw models bypass the FFT.
 
 ## `assert_failed()` and `Error_Handler()`
 

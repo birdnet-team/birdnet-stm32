@@ -18,8 +18,10 @@ import numpy as np
 import pytest
 
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
+from birdnet_stm32.deploy.board_test import CMSIS_DSP_SOURCES
 
 FIRMWARE = Path(__file__).resolve().parent.parent / "firmware"
+CMSIS_DSP = FIRMWARE / "Drivers" / "CMSIS-DSP"
 
 HARNESS = r"""
 #include <stdio.h>
@@ -70,9 +72,14 @@ def harness(tmp_path_factory):
             str(exe),
             str(work / "harness.c"),
             str(FIRMWARE / "Src" / "audio_stft.c"),
-            str(FIRMWARE / "Src" / "fft.c"),
             str(FIRMWARE / "Src" / "audio_mel.c"),
+            *[str(CMSIS_DSP / "Source" / src) for src in CMSIS_DSP_SOURCES],
             f"-I{FIRMWARE / 'Inc'}",
+            f"-I{CMSIS_DSP / 'Include'}",
+            f"-I{CMSIS_DSP / 'PrivateInclude'}",
+            # CMSIS-DSP's portable path, without the CMSIS-Core headers of a
+            # device build: the same source the M55 runs, minus Helium.
+            "-D__GNUC_PYTHON__",
             "-lm",
         ],
         check=True,

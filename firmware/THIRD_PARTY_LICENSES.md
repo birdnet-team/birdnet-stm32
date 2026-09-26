@@ -73,3 +73,20 @@ and any warranties related to this software are DISCLAIMED.
 The copyright owner or contributors be NOT LIABLE for any damages caused
 by use of this software.
 ```
+
+---
+
+## CMSIS-DSP — Apache-2.0
+
+Applies to everything under `Drivers/CMSIS-DSP/`: an unmodified subset of
+[ARM-software/CMSIS-DSP](https://github.com/ARM-software/CMSIS-DSP) `v1.16.2`,
+used for the hybrid frontend's FFT and complex magnitude on the Cortex-M55. The
+full license text is in `Drivers/CMSIS-DSP/LICENSE`.
+
+```
+Copyright (C) 2010-2021 ARM Limited or its affiliates. All rights reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at http://www.apache.org/licenses/LICENSE-2.0
+```
