@@ -262,7 +262,7 @@ its config — `evaluate`, `board-test`, `measure-operational` — applies the
 sigmoid automatically. A caller outside this package applies
 `1 / (1 + exp(-x))`, or skips it and compares logits against
 `log(t / (1 - t))`, since thresholding is monotonic. See
-[Running Inference](inference.md).
+[Reference Implementation](inference.md).
 
 ## Quantization details
 

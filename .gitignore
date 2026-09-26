@@ -1,5 +1,6 @@
 # Custom
 *.wav
+!reference/vectors/*.wav
 samples/
 checkpoints/
 /release/

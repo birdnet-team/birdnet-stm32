@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A reference implementation in `reference/`**, linked from the top of the
+  README: the whole inference contract — windows, per-window normalization, the
+  hybrid STFT, logits, pooling — as one readable Python file that depends only on
+  NumPy, SoundFile and TensorFlow Lite, so it can be ported to another language.
+  It ships with a synthetic test recording and, for each released bundle, the
+  value of every intermediate stage on it (`reference/vectors/`), and
+  `--check-vectors` compares an implementation against them stage by stage.
+  `tests/test_reference_implementation.py` keeps the reference and the training
+  package building identical model inputs. It replaces
+  `examples/reference_inference.py`; the docs page is now
+  [Reference Implementation](docs/inference.md).
 - `--calibration_dir` for `equalize`, `train --qat` and `convert`: draw the
   INT8 calibration audio from any directory (stratified by subfolder) instead
   of the training files, so a model trained on focal recordings can be

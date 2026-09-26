@@ -25,6 +25,24 @@ waveform, hybrid STFT, and precomputed-mel deployment paths. A released raw
 model scores a 2.5-second window at 24 kHz in **15 ms on the NPU** (75 ms per
 file on the board including the SD-card read), with CPU and NPU at 400 MHz.
 
+## Running the models anywhere: the reference implementation
+
+**[`reference/`](reference/)** is the specification of the audio processing a
+model needs — windows, normalization, the hybrid STFT, logits, pooling — as
+one readable Python file with no dependency on this package, so it can be
+ported to C, Rust or a phone. It comes with a synthetic test recording and the
+value of every intermediate stage on it for each released model, so a port can
+be checked step by step:
+
+```bash
+python reference/birdnet_tiny_reference.py --bundle <bundle-dir> --audio recording.wav --explain
+python reference/birdnet_tiny_reference.py --bundle <bundle-dir> \
+    --check-vectors reference/vectors/<bundle>.json
+```
+
+The same contract is documented in
+[Reference Implementation](https://birdnet-team.github.io/birdnet-stm32/inference/).
+
 ## Quick start
 
 ```bash
