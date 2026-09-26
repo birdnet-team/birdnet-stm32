@@ -30,6 +30,22 @@ def fast_resample(y: np.ndarray, sr_in: int, sr_out: int) -> np.ndarray:
     return np.asarray(resample_poly(y, up, down), dtype=np.float32)
 
 
+def peak_normalize(x: np.ndarray) -> np.ndarray:
+    """Divide raw waveform windows by their peak, along the last axis.
+
+    The ``raw`` models' input normalization, per window: ``x / (max|x| + 1e-6)``.
+    Training, calibration and evaluation all go through here, and the firmware
+    and ``reference/`` implement the same expression.
+
+    Args:
+        x: One window ``[T]`` or a batch ``[N, T]``.
+
+    Returns:
+        The scaled window(s), same shape.
+    """
+    return x / (np.max(np.abs(x), axis=-1, keepdims=True) + 1e-6)
+
+
 def estimate_num_chunks(
     num_samples: int,
     sample_rate: int,

@@ -17,6 +17,7 @@ from birdnet_stm32.audio.io import (
     chunk_start_samples,
     estimate_num_chunks,
     load_audio_window,
+    peak_normalize,
     split_audio_into_chunks,
 )
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
@@ -229,7 +230,7 @@ def _process_file(path: str):
             x = item[:T]
             if x.shape[0] < T:
                 x = np.pad(x, (0, T - x.shape[0]))
-            sample = x / (np.max(np.abs(x)) + 1e-6)
+            sample = peak_normalize(x)
             # After normalization, so a mask cannot change the scaling peak.
             if raw_time_masks > 0:
                 sample = apply_time_mask(sample, sr, num_masks=raw_time_masks, max_width_ms=raw_time_mask_ms)

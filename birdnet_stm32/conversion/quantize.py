@@ -13,7 +13,7 @@ import numpy as np
 import tensorflow as tf
 from tqdm import tqdm
 
-from birdnet_stm32.audio.io import load_audio_file
+from birdnet_stm32.audio.io import load_audio_file, peak_normalize
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
 from birdnet_stm32.models.frontend import normalize_frontend_name
 from birdnet_stm32.models.runners import allocated_interpreter
@@ -148,7 +148,7 @@ def representative_data_gen(
                 rms = np.sqrt(np.mean(x**2))
                 if snr_threshold > 0 and rms < snr_threshold:
                     continue
-                x = x / (np.max(np.abs(x)) + 1e-6)
+                x = peak_normalize(x)
                 x = x.astype(np.float32)[None, :, None]
             elif frontend == "hybrid":
                 x = sample.astype(np.float32)[None, :, :, None]
