@@ -50,7 +50,7 @@ VALID_FRONTENDS = ("librosa", "hybrid", "raw")
 # -- 11 ops against 7 -- which is the quantity raw's INT8 loss tracks.
 #
 # A third option, half-wave rectification of each component (one op), was
-# measured and removed: trained at the B3 recipe it lost 0.038 float cMAP AND
+# measured and removed: trained with teacher cropping for 50 epochs it lost 0.038 float cMAP AND
 # quantized worse (INT8 loss 0.182 against 0.104), because its envelope keeps
 # the carrier beat that quadrature exists to cancel. Fewer grids only help when
 # what crosses them stays as clean.
@@ -62,7 +62,7 @@ VALID_RAW_MAGNITUDES = ("alpha_max", "l1")
 # components: identical arithmetic and identical weights, half the convolutions
 # and half the summations, so the signal crosses half as many INT8 grids before
 # the magnitude. The two components then share one activation scale, which
-# costs nothing measurable -- on the B3 model their per-part scales agree to
+# costs nothing measurable -- on a trained model their per-part scales agree to
 # within 1% already.
 VALID_RAW_BANKS = ("pair", "fused")
 
@@ -664,14 +664,14 @@ class AudioFrontendLayer(layers.Layer):
         """Combine the quadrature pair into a non-negative band envelope.
 
         The two options trade INT8 activation grids against how faithfully they
-        follow the true modulus. Measured on the B3 filterbank over 48
+        follow the true modulus. Measured on a trained filterbank over 48
         validation recordings, per-band correlation with ``sqrt(re^2+im^2)``
         after the band smoother, and the SNR of the stage's own INT8 simulation:
 
             alpha_max (11 grids) .... r 0.9999, 20.9 dB
             l1         (7 grids) .... r 0.9980, 23.0 dB
 
-        ``l1`` is what new models are built with: at the B3 recipe it trained to
+        ``l1`` is what new models are built with: trained with teacher cropping it reached
         the same float cMAP and cut the post-training quantization loss from
         0.139 to 0.104.
 

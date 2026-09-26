@@ -467,7 +467,7 @@ and the board test checks itself against the host instead of being read by eye.
 - Correct the `--batch_validate` help text: it repeats validation over the same
   deterministic manifest to measure runtime repeatability, not "different
   random seeds".
-- Consolidate Magpie RT experiments around an isolated driver that stops on
+- Consolidate the model experiments around an isolated driver that stops on
   failure, preserves the selected INT8 bytes and leaves catalog-test data for
   final evaluation.
 
@@ -670,7 +670,7 @@ checkpoints still load.
 - The public model naming convention
   `BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>_<PRECISION>` and a
   gitignored release-staging workflow with validation reports and checksums.
-- The `BirdNET_Tiny_N6_USNE_30_V1.0` Magpie RT model: 30 northeastern-US bird
+- The `BirdNET_Tiny_N6_USNE_30_V1.0` model: 30 northeastern-US bird
   species plus eight nuisance outputs, validated Keras/TFLite/ONNX formats,
   an untouched pre-QAT checkpoint, model card, sanitized reports, and physical
   STM32N6570-DK measurements.
