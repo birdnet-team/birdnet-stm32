@@ -136,50 +136,6 @@ def smart_crop(
     return result([audio[s : s + chunk_size].astype(np.float32) for s in selected_starts], selected_starts)
 
 
-def uniform_crop(
-    audio: np.ndarray,
-    sample_rate: int,
-    chunk_duration: float,
-    max_chunks: int = 5,
-    rng: np.random.Generator | None = None,
-    return_starts: bool = False,
-) -> list[np.ndarray] | tuple[list[np.ndarray], list[int]]:
-    """Draw chunks from uniformly random start offsets, ignoring energy.
-
-    The counterpart to :func:`smart_crop`. Energy-ranked cropping selects the
-    loudest part of a recording, which in field audio is as often rain, wind or
-    an insect chorus as it is the target bird, and it systematically skips the
-    faint distant calls a detector most needs to learn. Uniform sampling has no
-    such bias, at the cost of returning silent chunks from sparse recordings.
-
-    Args:
-        audio: 1D float32 audio signal (mono).
-        sample_rate: Sampling rate (Hz).
-        chunk_duration: Desired chunk length (seconds).
-        max_chunks: Maximum number of chunks to return.
-        rng: Optional generator, for tests that need a fixed draw.
-        return_starts: Also return each chunk's start sample.
-
-    Returns:
-        List of 1D float32 chunks, or ``(chunks, starts)`` with
-        ``return_starts``. A file shorter than one chunk is zero-padded and
-        returned once, as ``smart_crop`` does.
-    """
-    rng = rng if rng is not None else np.random.default_rng()
-    chunk_size = int(sample_rate * chunk_duration)
-    n = audio.shape[0]
-
-    if n <= chunk_size:
-        padded = np.pad(audio, (0, max(0, chunk_size - n)))
-        chunks, starts = [padded[:chunk_size].astype(np.float32)], [0]
-        return (chunks, starts) if return_starts else chunks
-
-    n_chunks = max(1, min(max_chunks, n // chunk_size))
-    starts = [int(v) for v in rng.integers(0, n - chunk_size + 1, size=n_chunks)]
-    chunks = [audio[s : s + chunk_size].astype(np.float32) for s in starts]
-    return (chunks, starts) if return_starts else chunks
-
-
 def get_activity_ratio(x: np.ndarray, k: float = 2.0, max_active: float = 0.8, subsample: int = 512) -> float:
     """Compute the fraction of units above median + k * MAD, capped to avoid broadband noise.
 

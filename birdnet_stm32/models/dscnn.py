@@ -25,7 +25,7 @@ from birdnet_stm32.models.frontend import (
     normalize_frontend_name,
 )
 
-HEAD_POOLINGS = ("gap", "freq_mean_time_maxmean")
+HEAD_POOLINGS = ("gap",)
 STAGE_WIDTHS = (32, 64, 128, 256)
 DW_KERNEL_SIZES = (3, 5)
 
@@ -94,16 +94,8 @@ def ds_conv_block(
 def pooling_head(x: tf.Tensor, head_pooling: str = "gap") -> tf.Tensor:
     """Collapse a [B, F, T, C] feature map into a [B, C] embedding vector.
 
-    ``gap`` averages over frequency and time. ``freq_mean_time_maxmean``
-    averages over frequency, then adds the max and the mean over time, so a
-    call that fills a few frames of the window is not averaged away. It adds no
-    trainable weights.
-
-    The frequency mean is a frozen depthwise convolution with a constant
-    1/F kernel rather than a pooling op: on the STM32N6 an average that
-    collapses frequency but keeps time (``AveragePool`` or ``MEAN`` alike) falls
-    back to the Cortex-M55, while the convolution stays on the NPU. For F = 4
-    the kernel value 0.25 is exact on the per-channel INT8 grid.
+    Global average pooling over frequency and time. (A max + mean over time
+    was measured and lost; ``gap`` is the only head.)
 
     Args:
         x: Feature map with static frequency and time dimensions.
@@ -114,20 +106,6 @@ def pooling_head(x: tf.Tensor, head_pooling: str = "gap") -> tf.Tensor:
     """
     if head_pooling == "gap":
         return layers.GlobalAveragePooling2D(name="gap")(x)
-    if head_pooling == "freq_mean_time_maxmean":
-        n_freq, n_time = int(x.shape[1]), int(x.shape[2])
-        x = layers.DepthwiseConv2D(
-            kernel_size=(n_freq, 1),
-            padding="valid",
-            use_bias=False,
-            depthwise_initializer=tf.keras.initializers.Constant(1.0 / n_freq),
-            trainable=False,
-            name="pool_freq_mean",
-        )(x)
-        t_max = layers.MaxPooling2D(pool_size=(1, n_time), name="pool_time_max")(x)
-        t_mean = layers.GlobalAveragePooling2D(keepdims=True, name="pool_time_mean")(x)
-        x = layers.Add(name="pool_time_maxmean")([t_max, t_mean])
-        return layers.Flatten(name="pool_flatten")(x)
     raise ValueError(f"head_pooling '{head_pooling}' not in {HEAD_POOLINGS}")
 
 

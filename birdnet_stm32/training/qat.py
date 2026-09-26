@@ -483,7 +483,6 @@ def run_qat(args: argparse.Namespace) -> None:
             ("--teacher_cache", bool(getattr(args, "teacher_cache", None))),
             ("--teacher_weight", getattr(args, "teacher_weight", 0.0) > 0),
             ("--crop_policy", getattr(args, "crop_policy", "energy") != "energy"),
-            ("--raw_time_masks", getattr(args, "raw_time_masks", 0) > 0),
         )
         if active
     ]

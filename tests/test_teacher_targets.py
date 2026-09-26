@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from birdnet_stm32.audio.activity import smart_crop, uniform_crop
+from birdnet_stm32.audio.activity import smart_crop
 from birdnet_stm32.audio.io import chunk_start_samples, load_audio_window, split_audio_into_chunks
 from birdnet_stm32.data.teacher import TeacherTargets, blend_targets
 
@@ -131,17 +131,9 @@ class TestChunkStarts:
         for s, c in zip(starts, chunks, strict=True):
             np.testing.assert_array_equal(audio[s : s + int(SR * CD)], c)
 
-    def test_uniform_crop_starts_locate_its_chunks(self):
-        rng = np.random.default_rng(3)
-        audio = rng.standard_normal(SR * 12).astype(np.float32)
-        chunks, starts = uniform_crop(audio, SR, CD, max_chunks=3, rng=rng, return_starts=True)
-        for s, c in zip(starts, chunks, strict=True):
-            np.testing.assert_array_equal(audio[s : s + int(SR * CD)], c)
-
-    def test_without_return_starts_the_signatures_are_unchanged(self):
+    def test_without_return_starts_the_signature_is_unchanged(self):
         audio = np.ones(SR * 8, dtype=np.float32)
         assert isinstance(smart_crop(audio, SR, CD, max_chunks=2), list)
-        assert isinstance(uniform_crop(audio, SR, CD, max_chunks=2), list)
 
     def test_load_audio_window_reports_where_it_read(self, tmp_path):
         """The offset returned must be where the samples really came from."""

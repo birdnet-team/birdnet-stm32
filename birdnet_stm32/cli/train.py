@@ -16,7 +16,7 @@ from birdnet_stm32.data.dataset import (
     upsample_minority_classes,
 )
 from birdnet_stm32.data.generator import estimate_samples_per_epoch, load_dataset
-from birdnet_stm32.models.dscnn import DW_KERNEL_SIZES, HEAD_POOLINGS, STAGE_WIDTHS, build_dscnn_model
+from birdnet_stm32.models.dscnn import DW_KERNEL_SIZES, STAGE_WIDTHS, build_dscnn_model
 from birdnet_stm32.models.frontend import RELEASE_RAW_BANK, RELEASE_RAW_MAGNITUDE, normalize_frontend_name
 from birdnet_stm32.models.profiler import print_profile
 from birdnet_stm32.training.config import ModelConfig
@@ -259,13 +259,6 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--alpha", type=float, default=1.0, help="Width multiplier")
     parser.add_argument("--depth_multiplier", type=int, default=1, help="Depth multiplier")
     parser.add_argument(
-        "--head_pooling",
-        type=str,
-        default="gap",
-        choices=list(HEAD_POOLINGS),
-        help="Pooling head: global average (gap), or mean over frequency then max + mean over time",
-    )
-    parser.add_argument(
         "--dw_kernel_size",
         type=int,
         default=3,
@@ -290,12 +283,10 @@ def get_args() -> argparse.Namespace:
         "--crop_policy",
         type=str,
         default="energy",
-        choices=["energy", "uniform", "teacher"],
+        choices=["energy", "teacher"],
         help=(
             "How training chunks are chosen from a recording. 'energy' (default) ranks "
-            "candidates by short-time energy and keeps the loudest; 'uniform' draws start "
-            "offsets at random, which avoids biasing the sampler toward rain, wind and "
-            "insect choruses at the cost of some silent chunks; 'teacher' (needs "
+            "candidates by short-time energy and keeps the loudest; 'teacher' (needs "
             "--teacher_cache) keeps the chunk where the teacher hears the labelled species "
             "most, and falls back to energy where it has no score. Evaluation is "
             "unaffected: it always scores whole files with overlapping windows."
@@ -317,14 +308,6 @@ def get_args() -> argparse.Namespace:
         default=0.0,
         help="Teacher share of the training target in [0, 1] (0 = hard labels only)",
     )
-    parser.add_argument(
-        "--raw_time_masks",
-        type=int,
-        default=0,
-        help="Number of waveform time masks for the raw frontend (0 = off). SpecAugment's "
-        "time axis, applied in the sample domain, which raw can use and SpecAugment cannot.",
-    )
-    parser.add_argument("--raw_time_mask_ms", type=float, default=30.0, help="Max width of each raw time mask (ms)")
     parser.add_argument("--mixup_alpha", type=float, default=0.2, help="Mixup alpha")
     parser.add_argument("--mixup_probability", type=float, default=0.25, help="Mixup batch fraction")
 
@@ -629,8 +612,6 @@ def main():
         crop_policy=args.crop_policy,
         teacher_cache=args.teacher_cache,
         teacher_weight=args.teacher_weight,
-        raw_time_masks=args.raw_time_masks,
-        raw_time_mask_ms=args.raw_time_mask_ms,
         **train_kwargs,
     )
     from birdnet_stm32.training.validation import VALIDATION_SUBSET_SEED, FileCmap, stratified_validation_subset
@@ -675,7 +656,6 @@ def main():
         num_classes=len(classes),
         alpha=args.alpha,
         depth_multiplier=args.depth_multiplier,
-        head_pooling=args.head_pooling,
         dw_kernel_size=args.dw_kernel_size,
         stage_widths=args.stage_widths,
         embeddings_size=args.embeddings_size,
@@ -707,7 +687,6 @@ def main():
         embeddings_size=args.embeddings_size,
         alpha=args.alpha,
         depth_multiplier=args.depth_multiplier,
-        head_pooling=args.head_pooling,
         dw_kernel_size=args.dw_kernel_size,
         stage_widths=list(args.stage_widths),
         num_classes=len(classes),

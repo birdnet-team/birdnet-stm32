@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Training options that were measured and lost, so the CLI only offers what a
+  model is actually trained with: `--raw_time_masks` / `--raw_time_mask_ms`
+  (waveform time masking for `raw`), `--crop_policy uniform`, and
+  `--head_pooling` with its `freq_mean_time_maxmean` head. Released models all
+  use `gap` pooling and load unchanged.
+
 ## [1.5.0] - 2026-09-25
 
 Two models ship: `BirdNET_Tiny_N6_USNE_90_V1.5_Raw` and

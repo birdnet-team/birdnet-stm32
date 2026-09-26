@@ -74,13 +74,8 @@ The DS-CNN is scaled with two knobs:
 - **`--depth_multiplier`**: repeats each depthwise-separable block. Default 1.
   Increase to 2 for deeper models.
 
-Two experimental options change the backbone shape. Both default to the release
-architecture, and neither has been validated on INT8 or on the board yet:
+Two options change the backbone shape:
 
-- **`--head_pooling`**: `gap` (default) averages the final feature map over
-  frequency and time. `freq_mean_time_maxmean` averages over frequency, then
-  adds the max and the mean over time, so a short call is not averaged away.
-  It adds no weights.
 - **`--dw_kernel_size`**: depthwise kernel size in stages 2–4, `3` (default) or
   `5`. Stage 1 stays 3 × 3.
 - **`--stage_widths`**: base output channels of the four stages before
@@ -105,13 +100,6 @@ architecture, and neither has been validated on INT8 or on the board yet:
   masking to spectrograms during training. Disable with `--no_spec_augment`.
   Control mask widths with `--freq_mask_max` (default 8 bins) and
   `--time_mask_max` (default 25 frames).
-- **Raw time masking**: the `raw` frontend never sees a spectrogram in the
-  loader, so it cannot use SpecAugment. `--raw_time_masks` (default 0, off)
-  zeroes that many spans of the waveform, each up to `--raw_time_mask_ms`
-  (default 30 ms) wide, after peak normalization. The learned filterbank turns
-  a zeroed span into zeroed time columns, so this is SpecAugment's time axis
-  applied in the sample domain. There is no waveform equivalent of frequency
-  masking, which needs a filter rather than a mask.
 - **Teacher targets**: `--teacher_cache` points at per-window scores from a
   larger model, computed once offline over every training recording, and
   `--teacher_weight` (default 0, off) blends them into each chunk's label as
@@ -124,12 +112,10 @@ architecture, and neither has been validated on INT8 or on the board yet:
   is documented in `birdnet_stm32/data/teacher.py`.
 - **Smart crop**: long recordings (> 2 chunks) are automatically cropped to
   salient regions using short-time energy (STE) analysis, reducing label
-  noise from silent or irrelevant segments. `--crop_policy uniform` turns this
-  off and draws start offsets at random instead. Energy ranking selects the
-  loudest part of a recording, which in field audio is as often rain, wind or
-  an insect chorus as the target bird, and it skips faint distant calls;
-  uniform sampling has no such bias but returns more silent chunks.
-  `--crop_policy teacher` (needs `--teacher_cache`) ranks half-overlapping
+  noise from silent or irrelevant segments. Energy ranking selects the loudest
+  part of a recording, which in field audio is as often rain, wind or an
+  insect chorus as the target bird. `--crop_policy teacher` (needs
+  `--teacher_cache`) ranks half-overlapping
   candidates by the teacher's score for the recording's labelled species and
   keeps the best, so the chunk is chosen for holding the species rather than
   for being loud. It falls back to energy for noise recordings, classes the
@@ -332,7 +318,6 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--embeddings_size` | 512 | Embedding channels before head |
 | `--alpha` | 1.0 | Model width scaling |
 | `--depth_multiplier` | 1 | Block repeats per stage |
-| `--head_pooling` | gap | `gap` or `freq_mean_time_maxmean` (experimental) |
 | `--dw_kernel_size` | 3 | Depthwise kernel in stages 2–4: `3` or `5` (experimental) |
 | `--stage_widths` | 32 64 128 256 | Base channels of the four stages, before `--alpha` (experimental) |
 | `--frontend_trainable` | False | Make frontend weights trainable |
@@ -343,9 +328,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--time_mask_max` | 25 | Max time mask width (frames) |
 | `--teacher_cache` | None | Directory of cached per-window teacher scores (experimental) |
 | `--teacher_weight` | 0.0 | Teacher share of the training target in [0, 1] (0 = hard labels only) |
-| `--crop_policy` | energy | How training chunks are chosen: `energy`, `uniform` or `teacher` (experimental) |
-| `--raw_time_masks` | 0 | Waveform time masks for the `raw` frontend (0 = off, experimental) |
-| `--raw_time_mask_ms` | 30.0 | Max width of each raw time mask (ms) |
+| `--crop_policy` | energy | How training chunks are chosen: `energy` or `teacher` (needs `--teacher_cache`) |
 | `--dropout` | 0.5 | Dropout rate before classifier head |
 | `--optimizer` | adam | `adam`, `sgd`, or `adamw` |
 | `--weight_decay` | 0.0 | Weight decay (adamw only) |

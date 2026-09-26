@@ -137,13 +137,13 @@ class TestModelConfig:
         assert cfg.stage_widths == [32, 64, 128, 256]
 
     def test_backbone_options_round_trip_and_validate(self, tmp_path):
-        cfg = ModelConfig(head_pooling="freq_mean_time_maxmean", dw_kernel_size=5)
+        cfg = ModelConfig(dw_kernel_size=5)
         path = tmp_path / "cfg.json"
         cfg.save(path)
         loaded = ModelConfig.load(path)
-        assert (loaded.head_pooling, loaded.dw_kernel_size) == ("freq_mean_time_maxmean", 5)
+        assert (loaded.head_pooling, loaded.dw_kernel_size) == ("gap", 5)
         with pytest.raises(ValueError, match="head_pooling"):
-            ModelConfig(head_pooling="attn")
+            ModelConfig(head_pooling="freq_mean_time_maxmean")
         with pytest.raises(ValueError, match="dw_kernel_size"):
             ModelConfig(dw_kernel_size=7)
         with pytest.raises(ValueError, match="stage_widths"):

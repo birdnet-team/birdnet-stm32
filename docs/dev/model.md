@@ -65,13 +65,7 @@ stage 1 carries the largest feature map and stays 3 × 3.
 
 After the final stage:
 
-1. **Pooling** (`head_pooling`):
-    - `gap` (default): global average pooling over frequency and time.
-    - `freq_mean_time_maxmean`: mean over frequency, then the sum of max and
-      mean over time, flattened. No trainable weights. The frequency mean is a
-      frozen depthwise convolution with a constant 1/F kernel, because the N6
-      runs an average that collapses frequency but keeps time (`AveragePool`
-      or `MEAN`) on the Cortex-M55; the convolution stays on the NPU.
+1. **Pooling**: global average pooling over frequency and time.
 2. **Dropout** (0.5)
 3. **Dense** with sigmoid activation → `[B, num_classes]`
 
