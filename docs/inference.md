@@ -30,7 +30,7 @@ python reference/birdnet_tiny_reference.py --bundle <bundle-dir> --audio recordi
 make -C reference/c
 reference/c/frontend_cli reference/vectors/test_signal.wav hybrid 2.5 512 384 sqrt > stages.jsonl
 python reference/birdnet_tiny_reference.py \
-    --check-vectors reference/vectors/BirdNET_Tiny_N6_USNE_90_V1.5_Hybrid.json --stages stages.jsonl
+    --check-vectors reference/vectors/BirdNET_Tiny_N6_USNE_90_V1.6_Hybrid.json --stages stages.jsonl
 ```
 
 A bundle directory is the unpacked release zip; the script reads its
