@@ -19,6 +19,26 @@ from birdnet_stm32.models.frontend import normalize_frontend_name
 from birdnet_stm32.models.runners import allocated_interpreter
 
 
+def calibration_source(data_path_train: str, calibration_dir: str, classes: list[str] | None) -> list[str]:
+    """Audio files that INT8 calibration draws from.
+
+    By default the training files of the model's classes. ``calibration_dir``
+    replaces them with any directory of audio, grouped by subfolder: field
+    recordings from the deployment domain calibrate the activation ranges on the
+    input density the model will actually see, while training stays on focal
+    audio. The draw is stratified by subfolder and seeded, as always.
+    """
+    from birdnet_stm32.data.dataset import load_file_paths_from_directory
+
+    if calibration_dir:
+        paths, _ = load_file_paths_from_directory(calibration_dir)
+        if not paths:
+            raise ValueError(f"No audio found under --calibration_dir {calibration_dir}")
+        return paths
+    paths, _ = load_file_paths_from_directory(data_path_train, classes=classes)
+    return paths
+
+
 def stratified_sample_paths(
     file_paths: list[str],
     num_samples: int,

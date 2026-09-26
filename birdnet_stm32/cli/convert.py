@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from birdnet_stm32.audio.activity import pick_random_samples
 from birdnet_stm32.conversion.quantize import (
+    calibration_source,
     convert_to_tflite,
     representative_data_gen,
     stratified_sample_paths,
@@ -63,6 +64,13 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--output_path", type=str, default="", help="Output .tflite path")
     parser.add_argument("--data_path_train", type=str, default="", help="Training data directory for rep. dataset")
     parser.add_argument("--num_samples", type=int, default=1024, help="Representative dataset samples")
+    parser.add_argument(
+        "--calibration_dir",
+        type=str,
+        default="",
+        help="Calibrate on this directory of audio (e.g. field recordings) instead of --data_path_train; "
+        "the parity validation set is still drawn from --data_path_train",
+    )
     parser.add_argument("--validate_samples", type=int, default=256, help="Validation samples")
     parser.add_argument(
         "--min_cosine_sim",
@@ -595,14 +603,15 @@ def main():
         if not file_paths:
             raise ValueError("No training audio found for the classes in the model config.")
 
-        class_count = len({os.path.basename(os.path.dirname(path)) for path in file_paths})
-        stratified_paths = stratified_sample_paths(file_paths, args.num_samples, seed=42)
+        calibration_files = calibration_source(args.data_path_train, args.calibration_dir, configured_classes)
+        class_count = len({os.path.basename(os.path.dirname(path)) for path in calibration_files})
+        stratified_paths = stratified_sample_paths(calibration_files, args.num_samples, seed=42)
         if len(stratified_paths) != args.num_samples:
             raise ValueError(
                 f"Requested {args.num_samples} calibration paths but only {len(stratified_paths)} are available."
             )
         print(f"Representative dataset: {len(stratified_paths)} stratified samples from {class_count} folders.")
-        data_manifests["calibration"] = _manifest_record(stratified_paths, args.data_path_train)
+        data_manifests["calibration"] = _manifest_record(stratified_paths, args.calibration_dir or args.data_path_train)
 
         def rep_data_gen(num_samples: int | None = None):
             count = len(stratified_paths) if num_samples is None else min(num_samples, len(stratified_paths))

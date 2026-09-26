@@ -6,8 +6,7 @@ import os
 import shutil
 
 from birdnet_stm32.conversion.equalize import STAGES, equalize_raw_frontend
-from birdnet_stm32.conversion.quantize import representative_data_gen, stratified_sample_paths
-from birdnet_stm32.data.dataset import load_file_paths_from_directory
+from birdnet_stm32.conversion.quantize import calibration_source, representative_data_gen, stratified_sample_paths
 from birdnet_stm32.models.runners import load_keras_model
 from birdnet_stm32.training.config import ModelConfig
 
@@ -24,6 +23,9 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint_path", type=str, required=True, help="Trained float .keras model (raw frontend)")
     parser.add_argument("--model_config", type=str, default="", help="Path to model config JSON")
     parser.add_argument("--data_path_train", type=str, required=True, help="Training data directory")
+    parser.add_argument(
+        "--calibration_dir", type=str, default="", help="Draw the calibration audio from here instead (see convert)"
+    )
     parser.add_argument("--output_path", type=str, required=True, help="Output .keras path")
     parser.add_argument(
         "--num_samples",
@@ -52,7 +54,7 @@ def main():
         raise SystemExit(f"--num_samples must be at least --gain_samples + {CHECK_SAMPLES}")
     cfg = ModelConfig.load(args.model_config).to_dict()
 
-    file_paths, _ = load_file_paths_from_directory(args.data_path_train, classes=cfg.get("class_names") or None)
+    file_paths = calibration_source(args.data_path_train, args.calibration_dir, cfg.get("class_names") or None)
     paths = stratified_sample_paths(file_paths, args.num_samples, seed=42)
     if len(paths) != args.num_samples:
         raise ValueError(f"Requested {args.num_samples} calibration paths but only {len(paths)} are available.")

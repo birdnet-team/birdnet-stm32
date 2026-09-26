@@ -388,6 +388,13 @@ def get_args() -> argparse.Namespace:
         help="Quantization-aware fine-tuning (requires pretrained --checkpoint_path)",
     )
     parser.add_argument(
+        "--calibration_dir",
+        type=str,
+        default="",
+        help="QAT: calibrate activation ranges on this directory of audio (e.g. field recordings) "
+        "instead of the training files",
+    )
+    parser.add_argument(
         "--qat_calibration_samples",
         type=int,
         default=1024,

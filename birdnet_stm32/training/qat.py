@@ -594,6 +594,11 @@ def run_qat(args: argparse.Namespace) -> None:
     print(f"[QAT] Frozen {n_frozen} BatchNorm layers")
 
     calibration_count = int(args.qat_calibration_samples)
+    if getattr(args, "calibration_dir", ""):
+        from birdnet_stm32.conversion.quantize import calibration_source
+
+        calibration_source_paths = calibration_source("", args.calibration_dir, None)
+        print(f"[QAT] Calibrating activation ranges on {args.calibration_dir}")
     calibration_paths = stratified_sample_paths(calibration_source_paths, calibration_count, seed=42)
     if len(calibration_paths) != calibration_count:
         raise ValueError(

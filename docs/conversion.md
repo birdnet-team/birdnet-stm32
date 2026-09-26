@@ -225,6 +225,7 @@ After conversion, the script reports:
 | `--min_cosine_sim` | 0.95 | Fail conversion if cosine similarity is below this |
 | `--min_cosine_p05` | 0.90 | Fail conversion if fifth-percentile cosine is below this |
 | `--quantization` | `ptq` | `ptq` (full INT8 with calibration) or `dynamic` (dynamic range, no calibration data) |
+| `--calibration_dir` | — | Calibrate on this directory of audio instead of `--data_path_train` (any layout, stratified by subfolder). The parity validation set still comes from `--data_path_train` |
 | `--per_tensor` | off | Use per-tensor quantization instead of per-channel |
 | `--batch_validate` | 0 | Run validation N times with different seeds, report worst-case |
 | `--export_onnx` | off | Export and validate ONNX (requires `tf2onnx`, `onnx`, and `onnxruntime`) |

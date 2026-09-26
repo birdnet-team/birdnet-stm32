@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--calibration_dir` for `equalize`, `train --qat` and `convert`: draw the
+  INT8 calibration audio from any directory (stratified by subfolder) instead
+  of the training files, so a model trained on focal recordings can be
+  calibrated on field recordings from where it will be deployed. The parity
+  check that gates a conversion still uses held-out training files.
+
 ### Changed
 
 - **Raw models cut their filterbank along the kernel.** The NPU needs the

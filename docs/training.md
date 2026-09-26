@@ -346,6 +346,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--checkpoint_path` | checkpoints/best_model.keras | Output path (.keras) |
 | `--qat` | False | Quantization-aware fine-tuning |
 | `--qat_calibration_samples` | 1024 | Exact stratified samples used for QAT and conversion calibration |
+| `--calibration_dir` | — | QAT: draw the calibration audio from this directory (any layout, stratified by subfolder) instead of the training files, e.g. field recordings from the deployment domain; `equalize` and `convert` take the same option |
 | `--qat_distillation_weight` | 1.0 | Frozen-teacher Bernoulli-KL weight |
 | `--qat_cosine_weight` | 0.10 | Mean teacher/student cosine-loss weight |
 | `--qat_cosine_tail_weight` | 0.75 | Worst-sample cosine-loss weight |
