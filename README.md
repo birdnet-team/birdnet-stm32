@@ -22,7 +22,7 @@ A compact DS-CNN trained on raw waveforms or spectral features, quantized to
 INT8 with post-training quantization or quantization-aware fine-tuning, and
 deployed using ST's X-CUBE-AI toolchain. The standalone firmware supports raw
 waveform, hybrid STFT, and precomputed-mel deployment paths. A released raw
-model scores a 2.5-second window at 24 kHz in **15 ms on the NPU** (75 ms per
+model scores a 2.5-second window at 24 kHz in **16 ms on the NPU** (75 ms per
 file on the board including the SD-card read), with CPU and NPU at 400 MHz.
 
 ## Running the models anywhere: the reference implementation
@@ -208,7 +208,7 @@ five northeastern sites, 44 of its species inside the 90-output list. Every figu
 
 | Model | Event recall @0.5 | Window cMAP | Window AUPRC | Params | Compute per 2.5 s chunk |
 |---|---:|---:|---:|---:|---:|
-| `BirdNET_Tiny_N6_USNE_90_V1.5_Raw_INT8` | 0.248 | 0.258 | 0.342 | 987 k | **15 ms** (all NPU) |
+| `BirdNET_Tiny_N6_USNE_90_V1.6_Raw_INT8` | 0.255 | 0.269 | 0.352 | 987 k | **16 ms** (all NPU) |
 | `BirdNET_Tiny_N6_USNE_90_V1.5_Hybrid_INT8` | 0.361 | 0.376 | 0.461 | 946 k | 52 ms (33 ms STFT on the M55) |
 | BirdNET+ V3.0 preview 3.1, the teacher | 0.656 | 0.517 | 0.617 | 135 M | does not run on this hardware |
 

@@ -136,7 +136,7 @@ everything in step: `tests/test_reference_implementation.py` (this reference
 and the training package build identical model inputs),
 `tests/test_reference_c.py` (`c/` reproduces the recorded vectors) and
 `tests/test_firmware_stft.py` (the firmware's STFT, compiled natively, matches
-the host). Timings per 2.5 s window at the firmware's 400 MHz clock: `raw` 15 ms
+the host). Timings per 2.5 s window at the firmware's 400 MHz clock: `raw` 16 ms
 on the NPU; `hybrid` 33 ms of STFT on the M55 plus 19 ms on the NPU.
 
 The `raw` model's in-network frontend (learned Gabor filterbank, magnitude,

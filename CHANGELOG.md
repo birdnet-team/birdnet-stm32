@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-26
+
+One new model ships: `BirdNET_Tiny_N6_USNE_90_V1.6_Raw`. The v1.5 Hybrid stays
+current; its weights are unchanged, and the firmware now computes its input in
+half the time. Alongside the model, 1.6 publishes a reference implementation of
+the audio processing, in Python and C, with test vectors.
+
+### Model performance
+
+Scored on [WABAD](https://zenodo.org/records/14191524) (3,794 annotated calls,
+five northeastern sites, 44 species inside the output list) and on the catalog
+test split, on the INT8 model that gets flashed:
+
+| Model | Event recall @0.5 | Window cMAP | Window AUPRC | Catalog cMAP | NPU per 2.5 s |
+|---|---:|---:|---:|---:|---:|
+| v1.5 Raw | 0.248 | 0.258 | 0.342 | 0.7110 | 15 ms |
+| **v1.6 Raw** | **0.255** | **0.269** | **0.352** | **0.7134** | 16 ms |
+| v1.5 Hybrid (current) | 0.361 | 0.376 | 0.461 | 0.7574 | 19 ms + 33 ms STFT |
+
+v1.6 Raw is better than v1.5 Raw on every field metric at the same catalog
+accuracy (+0.002, within noise), from one change to how its filterbank is cut
+for the NPU, which costs nothing at inference. It passed the release gates:
+Keras/TFLite parity, ONNX validation, STM32N6 compilation (52 epochs, 3 in
+software), on-target validation (cos 0.99979), the operational gate and a
+25-file board test with host parity.
+
 ### Added
 
 - **A reference implementation in `reference/`**, linked from the top of the
