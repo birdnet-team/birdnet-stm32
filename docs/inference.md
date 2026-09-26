@@ -9,8 +9,11 @@ The contract is implemented once, in
 one file, NumPy + SoundFile + TensorFlow Lite, nothing from this package, so it
 can be read top to bottom and ported. The
 [`reference/`](https://github.com/birdnet-team/birdnet-stm32/tree/master/reference)
-directory also holds a synthetic test recording and, for each released bundle,
-the value of every intermediate stage on it.
+directory also holds the same frontend in portable C
+([`reference/c/`](https://github.com/birdnet-team/birdnet-stm32/tree/master/reference/c):
+windows, peak normalization, and the hybrid STFT through CMSIS-DSP, ready to
+drop into a firmware), a synthetic test recording and, for each released
+bundle, the value of every intermediate stage on it.
 
 ```bash
 # Run a bundle on a recording; --explain prints each stage's shape and range
@@ -22,6 +25,12 @@ python reference/birdnet_tiny_reference.py --bundle <bundle-dir> \
 
 # Keep every intermediate as .npy, to compare with your own
 python reference/birdnet_tiny_reference.py --bundle <bundle-dir> --audio recording.wav --dump stages/
+
+# The C frontend: build on a host, run on the test signal, check every stage
+make -C reference/c
+reference/c/frontend_cli reference/vectors/test_signal.wav hybrid 2.5 512 384 sqrt > stages.jsonl
+python reference/birdnet_tiny_reference.py \
+    --check-vectors reference/vectors/BirdNET_Tiny_N6_USNE_90_V1.5_Hybrid.json --stages stages.jsonl
 ```
 
 A bundle directory is the unpacked release zip; the script reads its
@@ -152,6 +161,9 @@ released bundle, `reference/vectors/<bundle>.json` records every window's stages
 Each array is summarized as its shape, sum, minimum, maximum and first eight
 values in row-major order — enough to find the first stage where a port
 diverges, in any language. `pooled` holds the recording's pooled probabilities.
+A frontend port that prints its stages as JSON lines in this format, as
+`reference/c/frontend_cli` does, is checked with `--check-vectors <vectors>
+--stages <file>` — no model or TFLite needed.
 
 A faithful port agrees to about 1e-4 relative on every input stage (float32, a
 different FFT library) and within one or two INT8 output steps on the model
@@ -173,5 +185,7 @@ own evaluation path over 60 windows of a 10-minute recording:
 That is the tolerance the project accepts between host and board
 (`board-test` flags differences above 0.05). The test suite keeps the pieces in
 step: `tests/test_reference_implementation.py` checks that the reference and the
-training package build identical model inputs, and `tests/test_firmware_stft.py`
-compiles the firmware's STFT natively and checks it against the host.
+training package build identical model inputs, `tests/test_reference_c.py`
+builds the C frontend and checks it against the vectors, and
+`tests/test_firmware_stft.py` compiles the firmware's STFT natively and checks
+it against the host.

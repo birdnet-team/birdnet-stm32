@@ -447,6 +447,42 @@ def check_vectors(bundle: Path, vectors: Path, audio_path: Path | None = None) -
     return ok
 
 
+def _squeezed(shape: list[int]) -> list[int]:
+    """A shape without trailing 1s: ``[60000, 1]`` and ``[60000]`` are the same tensor."""
+    shape = list(shape)
+    while len(shape) > 1 and shape[-1] == 1:
+        shape.pop()
+    return shape
+
+
+def check_stages(vectors: Path, stages: Path) -> bool:
+    """Compare a frontend port's stage summaries with recorded vectors, no model needed.
+
+    ``stages`` holds one JSON object per window, in the format the vectors use
+    (``start_sample`` plus ``window``, ``stft_magnitude``, ``compressed``,
+    ``model_input`` summaries) -- what ``reference/c/frontend_cli`` prints.
+    Stages the file does not carry are skipped.
+    """
+    doc = json.loads(vectors.read_text())
+    mine = [json.loads(line) for line in stages.read_text().splitlines() if line.strip()]
+    ok = len(mine) == len(doc["windows"])
+    print(f"{stages.name} against {vectors.name}:")
+    print(f"  {'ok ' if ok else 'BAD'} {'windows':14} {len(mine)} (expected {len(doc['windows'])})")
+    starts = [m["start_sample"] for m in mine] == [w["start_sample"] for w in doc["windows"]]
+    print(f"  {'ok ' if starts else 'BAD'} {'window starts':14} {[m['start_sample'] for m in mine]}")
+    ok &= starts
+    for stage in ("window", "stft_magnitude", "compressed", "model_input"):
+        pairs = [(m[stage], w[stage]) for m, w in zip(mine, doc["windows"], strict=False) if stage in m and stage in w]
+        if not pairs:
+            continue
+        worst = max(abs(a["sum"] - b["sum"]) / max(1.0, abs(b["sum"])) for a, b in pairs)
+        shapes = all(_squeezed(a["shape"]) == _squeezed(b["shape"]) for a, b in pairs)
+        good = worst < 1e-4 and shapes
+        ok &= good
+        print(f"  {'ok ' if good else 'BAD'} {stage:14} worst relative sum difference {worst:.2e}")
+    return ok
+
+
 def output_step(bundle: Path) -> float:
     """The INT8 model's output grid step, read from its final dequantize."""
     interpreter, _, _, _ = load_bundle(bundle)
@@ -472,6 +508,12 @@ def main() -> None:
     parser.add_argument("--explain", action="store_true", help="Print every step's shapes and ranges")
     parser.add_argument("--dump", type=Path, help="Write every stage as .npy files into this directory")
     parser.add_argument("--check-vectors", type=Path, help="Compare against a vectors JSON")
+    parser.add_argument(
+        "--stages",
+        type=Path,
+        help="With --check-vectors: compare these stage summaries (JSON lines, e.g. from reference/c) "
+        "instead of running this implementation; no bundle needed",
+    )
     parser.add_argument("--write-vectors", type=Path, help="Record a vectors JSON for --bundle and --audio")
     parser.add_argument("--make-test-signal", action="store_true", help="(Re)write vectors/test_signal.wav")
     args = parser.parse_args()
@@ -481,6 +523,8 @@ def main() -> None:
         sf.write(str(TEST_SIGNAL), make_test_signal(), 24000, subtype="PCM_16")
         print(f"wrote {TEST_SIGNAL}")
         return
+    if args.check_vectors and args.stages:
+        raise SystemExit(0 if check_stages(args.check_vectors, args.stages) else 1)
     if args.bundle is None:
         parser.error("--bundle is required")
     if args.check_vectors:

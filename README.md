@@ -29,8 +29,8 @@ file on the board including the SD-card read), with CPU and NPU at 400 MHz.
 
 **[`reference/`](reference/)** is the specification of the audio processing a
 model needs — windows, normalization, the hybrid STFT, logits, pooling — as
-one readable Python file with no dependency on this package, so it can be
-ported to C, Rust or a phone. It comes with a synthetic test recording and the
+one readable Python file with no dependency on this package, plus the same
+frontend in portable C with CMSIS-DSP's FFT, ready to drop into a firmware. It comes with a synthetic test recording and the
 value of every intermediate stage on it for each released model, so a port can
 be checked step by step:
 
