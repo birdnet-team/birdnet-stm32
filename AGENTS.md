@@ -18,10 +18,13 @@ Public model families use this exact basename:
   computation; the INT8 TFLite model still has float32 audio I/O.
 - Split deployment artifacts append `_backbone` or `_classifier` after the
   precision token, such as `BirdNET_Tiny_N6_USNE_30_V1.0_INT8_backbone.tflite`
-  and `..._INT8_classifier.tflite`. The classifier keeps its own
-  `_classifier_labels.txt`, since it is the half that defines the class set and
-  the half that is distributed on its own. Compressed copies append `.gz` to
-  the full artifact name.
+  and `..._INT8_classifier.tflite`. The classifier's outputs follow the family's
+  `_labels.txt`.
+- From 1.6 on, a published bundle and its zip are lean: the model files, the
+  labels, the config, the model card and the two license files. Compressed
+  copies (`.gz`), the backbone fingerprint, the compiler report and the
+  classifier's own labels are still produced and validated, but stay in the
+  bundle's `_audit` record.
 - Shared sidecars append `_model_config.json` or `_labels.txt` to the family
   basename. Precision-specific validation data and reports append the precision
   before their descriptive suffix, such as `_INT8_validation_data.npz`.

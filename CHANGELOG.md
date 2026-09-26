@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.6.0] - 2026-09-26
 
-One new model ships: `BirdNET_Tiny_N6_USNE_90_V1.6_Raw`. The v1.5 Hybrid stays
-current; its weights are unchanged, and the firmware now computes its input in
-half the time. Alongside the model, 1.6 publishes a reference implementation of
-the audio processing, in Python and C, with test vectors.
+Two models ship: `BirdNET_Tiny_N6_USNE_90_V1.6_Raw`, a new model, and
+`..._V1.6_Hybrid`, the v1.5 Hybrid weights re-issued unchanged — its INT8 model
+is byte-identical — with a 1.6 model card and re-validated on the 1.6 firmware,
+which computes its input in half the time. Alongside the models, 1.6 publishes a
+reference implementation of the audio processing, in Python and C, with test
+vectors, and slims the bundles to the files a user needs.
 
 ### Model performance
 
@@ -24,7 +26,8 @@ test split, on the INT8 model that gets flashed:
 |---|---:|---:|---:|---:|---:|
 | v1.5 Raw | 0.248 | 0.258 | 0.342 | 0.7110 | 15 ms |
 | **v1.6 Raw** | **0.255** | **0.269** | **0.352** | **0.7134** | 16 ms |
-| v1.5 Hybrid (current) | 0.361 | 0.376 | 0.461 | 0.7574 | 19 ms + 33 ms STFT |
+| v1.5 Hybrid | 0.361 | 0.376 | 0.461 | 0.7574 | 19 ms + 69 ms STFT |
+| **v1.6 Hybrid** (same weights) | 0.361 | 0.376 | 0.461 | 0.7574 | 19 ms + **33 ms** STFT |
 
 v1.6 Raw is better than v1.5 Raw on every field metric at the same catalog
 accuracy (+0.002, within noise), from one change to how its filterbank is cut
@@ -88,6 +91,11 @@ software), on-target validation (cos 0.99979), the operational gate and a
 
 ### Removed
 
+- **Leaner release bundles.** A bundle and its zip now hold the model files,
+  labels, config, model card and license files only. The `.gz` copies, the
+  backbone fingerprint, the compiler report and the classifier's own labels
+  (identical to the model's) are still produced and validated, but no longer
+  published; `convert --split_head` still writes them for your own models.
 - Training options that were measured and lost, so the CLI only offers what a
   model is actually trained with: `--raw_time_masks` / `--raw_time_mask_ms`
   (waveform time masking for `raw`), `--crop_policy uniform`, and

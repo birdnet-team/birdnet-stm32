@@ -127,13 +127,13 @@ frontends:
 | `<basename>_FP32.keras` | Host inference, fine-tuning, re-conversion |
 | `<basename>_original_FP32.keras` | Pre-QAT checkpoint, for retraining from an untouched state |
 | `<basename>_FP32.onnx` | Host and interchange inference |
-| `<basename>_INT8_stedgeai_report.txt` | Memory footprint and NPU operator coverage |
 | `<basename>_model_card.md` | Contract, provenance, measured accuracy, and on-board timing |
 
 A bundle whose model was exported split also carries
-`<basename>_INT8_backbone.tflite` and `<basename>_INT8_classifier.tflite` (each
-with a `.gz`, plus the backbone's `.fingerprint.json` and the head's own
-labels). The firmware runs a single network, so `_INT8.tflite` is still what you
+`<basename>_INT8_backbone.tflite` and `<basename>_INT8_classifier.tflite`; the
+classifier's outputs follow `_labels.txt`. (Bundles up to 1.5 also carried
+`.gz` copies, the backbone's fingerprint, the head's own labels and the compiler
+report; from 1.6 a bundle holds only what the table lists.) The firmware runs a single network, so `_INT8.tflite` is still what you
 flash; the pair exists so a species-list change can be pushed as a few kilobytes
 instead of the whole model. See the
 [conversion guide](https://birdnet-team.github.io/birdnet-stm32/conversion/#backbone-and-classifier-split).
@@ -209,7 +209,7 @@ five northeastern sites, 44 of its species inside the 90-output list. Every figu
 | Model | Event recall @0.5 | Window cMAP | Window AUPRC | Params | Compute per 2.5 s chunk |
 |---|---:|---:|---:|---:|---:|
 | `BirdNET_Tiny_N6_USNE_90_V1.6_Raw_INT8` | 0.255 | 0.269 | 0.352 | 987 k | **16 ms** (all NPU) |
-| `BirdNET_Tiny_N6_USNE_90_V1.5_Hybrid_INT8` | 0.361 | 0.376 | 0.461 | 946 k | 52 ms (33 ms STFT on the M55) |
+| `BirdNET_Tiny_N6_USNE_90_V1.6_Hybrid_INT8` | 0.361 | 0.376 | 0.461 | 946 k | 52 ms (33 ms STFT on the M55) |
 | BirdNET+ V3.0 preview 3.1, the teacher | 0.656 | 0.517 | 0.617 | 135 M | does not run on this hardware |
 
 Timings are measured on an STM32N6570-DK for one chunk, excluding the audio
