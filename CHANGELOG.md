@@ -36,6 +36,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through QAT it gains 0.007 catalog cMAP with better field recall. Checkpoints
   from 1.5 and earlier load with the split they were trained with.
 
+### Fixed
+
+- **Device timings were published with the wrong clock.** The firmware runs
+  ST's all-400 MHz profile (CPU, NPU and buses, nominal core voltage), and every
+  timing in the docs was measured there, but they were labelled "at 1 GHz", and
+  the firmware pages described 600 MHz CPU / 800 MHz NPU as the default, a
+  combination the generated firmware never selects because the NPU is out of
+  specification at 800 MHz without overdrive. Timing tables are updated to the
+  current firmware; the README's benchmark windows are 2.5 s, not 3 s.
+
 ### Removed
 
 - Training options that were measured and lost, so the CLI only offers what a

@@ -39,7 +39,7 @@ specs:
 
 | Feature | Detail |
 |---|---|
-| **MCU** | STM32N657X0H3QU — Arm Cortex-M55 @ 600 MHz (800 MHz with overdrive) |
+| **MCU** | STM32N657X0H3QU — Arm Cortex-M55 with Helium, up to 800 MHz (overdrive); this firmware runs CPU and NPU at 400 MHz |
 | **NPU** | ST Neural-ART accelerator, 1.2 TOPS (INT8) |
 | **Internal SRAM** | 4.2 MB total (cpuRAM1/2/3, npuRAM1–6, flexRAM) |
 | **External RAM** | 256 Mbit octal HyperRAM (XSPI port 1) |
@@ -264,8 +264,8 @@ frontend buffer → memcpy to NPU input → SCB_CleanDCache → LL_ATON_RT_Main(
 4. `system_init_post()` — post-reset cleanup (clear pending interrupts, etc.).
 5. `SCB_EnableICache()` / `SCB_EnableDCache()` — enable CPU caches.
 6. **Clock configuration** — selected at compile time by `USE_OVERDRIVE`:
-   - `USE_OVERDRIVE=0` (default): `SystemClock_Config_HSI_no_overdrive()` —
-     CPU @ 600 MHz, NPU @ 800 MHz. No VDD core upscaling needed.
+   - `USE_OVERDRIVE=0` with `NO_OVD_CLK400` (default): `SystemClock_Config_HSI_400()` —
+     CPU, NIC, NOC and NPU all @ 400 MHz. No VDD core upscaling needed.
    - `USE_OVERDRIVE=1`: `upscale_vddcore_level()` + `SystemClock_Config_HSI_overdrive()`
      — CPU @ 800 MHz, NPU @ 1 GHz. Requires higher VDD core voltage.
 7. `fuse_vddio()` — configure IO voltage rails for external memory interfaces.
@@ -492,14 +492,16 @@ constants that **must match** the values in the model config:
 Set in the Makefile via `-DUSE_OVERDRIVE=0` (default) or `-DUSE_OVERDRIVE=1`.
 Controls which clock configuration is used at startup:
 
-| `USE_OVERDRIVE` | CPU Clock | NPU Clock | NPU RAM Clock | VDD Core |
+| `USE_OVERDRIVE` | `NO_OVD_CLK400` | CPU Clock | NPU Clock | VDD Core |
 |---|---|---|---|---|
-| `0` (default) | 600 MHz | 800 MHz | 800 MHz | Nominal |
-| `1` | 800 MHz | 1 GHz | 900 MHz | Upscaled via SMPS/I2C |
+| `0` (default) | defined (default) | 400 MHz | 400 MHz | Nominal |
+| `1` | ignored | 800 MHz | 1 GHz | Upscaled via SMPS/I2C |
 
 Overdrive mode provides maximum throughput but draws more power and requires
-VDD core upscaling (`upscale_vddcore_level()`). The default non-overdrive
-configuration is sufficient for real-time inference and is more conservative.
+VDD core upscaling (`upscale_vddcore_level()`). The default 400 MHz profile is
+sufficient for real-time inference and is the one every published timing uses.
+See the clock and core-voltage contract above for why no-overdrive must not run
+the NPU at 800 MHz.
 
 ### `app_labels.h` — Class Label Array
 
@@ -583,12 +585,10 @@ Benchmark: read=568ms stft=0ms npu=102ms total=670ms (avg read=71ms stft=0ms npu
 
 Each stage is timed using `HAL_GetTick()` (1 ms resolution from SysTick):
 
-| Stage | Typical Time | Notes |
-|---|---|---|
 | Frontend | SD read | STFT/mel | NPU | Total |
 |---|---:|---:|---:|---:|
-| Raw, 24 kHz × 2.5 s | 71 ms | 0 ms | 12–13 ms | 84 ms |
-| Hybrid, 24 kHz × 3 s | 86 ms | 58 ms | 15 ms | 159 ms |
+| Raw, 24 kHz × 2.5 s (1.5 model) | 59 ms | 0 ms | 15 ms | 75 ms |
+| Hybrid, 24 kHz × 2.5 s, 256 × 384 (1.5 model) | 59 ms | 33 ms | 19 ms | 113 ms |
 
 These are measurements from the current board-test models, not universal
 benchmarks. Model topology, SD card, clock configuration, and audio parameters

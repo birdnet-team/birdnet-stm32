@@ -101,16 +101,18 @@ Per site, for the current release (event recall @0.5 / window AUPRC):
 
 ## Cost on the device
 
-Measured on an STM32N6570-DK at 1 GHz, for **one 2.5-second chunk** — the
-firmware reads exactly one chunk per file, computes one frontend and runs one
-inference:
+Measured on an STM32N6570-DK in the firmware's clock profile — CPU, NPU and
+buses all at **400 MHz**, no overdrive, which is ST's profile for nominal core
+voltage — for **one 2.5-second chunk**: the firmware reads exactly one chunk per
+file, computes one frontend and runs one inference. Hybrid rows use the 1.6
+firmware's STFT (33 ms); the firmware of 1.5 and earlier took 69 ms for it.
 
 | Model | Parameters | MACs | NPU | Frontend (M55) | Compute per chunk | NPU epochs |
 |---|---:|---:|---:|---:|---:|---:|
 | `..._90_V1.4_Raw_INT8` | 987,156 | 81.34 M | 15 ms | 0 ms | 15 ms | 58 (3 sw) |
-| `..._90_V1.4_Hybrid_INT8` | 946,196 | 104.83 M | 19 ms | 69 ms | 88 ms | 40 (4 sw) |
+| `..._90_V1.4_Hybrid_INT8` | 946,196 | 104.83 M | 19 ms | 33 ms | 52 ms | 40 (4 sw) |
 | **`..._90_V1.5_Raw_INT8`** | 987,156 | 81.25 M | **15 ms** | 0 ms | **15 ms** | 53 (3 sw) |
-| **`..._90_V1.5_Hybrid_INT8`** | 946,196 | 104.83 M | 19 ms | 69 ms | 88 ms | 40 (4 sw) |
+| **`..._90_V1.5_Hybrid_INT8`** | 946,196 | 104.83 M | 19 ms | 33 ms | 52 ms | 40 (4 sw) |
 | BirdNET+ V3.0 preview 3.1 | 135,228,889 | — | — | — | — | — |
 
 The teacher is listed for scale only: **137x the parameters** of either model here,
@@ -119,12 +121,12 @@ not run on this class of hardware at all.
 
 - **Raw is the cheap one and that is its whole purpose.** Its learned filterbank
   runs on the NPU, so a chunk costs 15 ms of compute. Hybrid computes a 512-point
-  STFT on the Cortex-M55 first, which costs 69 ms — more than three times the
-  inference it feeds — for the accuracy in the table above.
+  STFT on the Cortex-M55 first, which costs 33 ms with CMSIS-DSP's Helium FFT —
+  more than the inference it feeds — for the accuracy in the table above.
 - **Compute per chunk excludes reading the audio.** The board test also reports
   59 ms of SD-card read per chunk, which a deployment does not pay: a recorder's
   audio arrives from the microphone over DMA, already in RAM. Including it, the
-  test harness measures 75 ms (raw) and 148 ms per file (hybrid).
+  test harness measures 75 ms (raw) and 113 ms per file (hybrid).
 - **NPU epochs** are the compiler's scheduling units; the software ones are the
   input quantize and output dequantize, which have run on the M55 in every
   release. A shorter raw frontend in 1.5 took raw from 58 epochs to 53.

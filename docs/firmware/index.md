@@ -19,8 +19,8 @@ reports bird species detections over UART.
 | Language | C11 (ARM GCC 13+) |
 | RTOS | None (bare-metal, single-threaded `while(1)` loop) |
 | Board | STM32N6570-DK |
-| CPU | Arm Cortex-M55 @ 600 MHz by default (800 MHz overdrive) |
-| NPU | ST Neural-ART @ 800 MHz by default (1 GHz overdrive) |
+| CPU | Arm Cortex-M55 with Helium @ 400 MHz by default (800 MHz overdrive) |
+| NPU | ST Neural-ART @ 400 MHz by default (1 GHz overdrive) |
 | Build system | Overlay on ST's NPU_Validation Makefile |
 | Flash method | GDB via `n6_loader.py` (part of X-CUBE-AI) |
 
@@ -49,12 +49,15 @@ For each `.wav` file on the SD card:
 
 ## Typical Performance
 
-| Stage | Hybrid (24 kHz, 3.0 s) | Raw (24 kHz, 2.5 s) | Notes |
+Measured with the 1.5 models at the default 400 MHz clock profile, 24 kHz, one
+2.5 s chunk per file:
+
+| Stage | Hybrid (256 × 384 input) | Raw | Notes |
 |---|---|---|---|
-| SD read | ~86 ms | ~71 ms | Depends on card and chunk length |
-| STFT | ~58 ms | **0 ms** | Raw skips the FFT path |
-| NPU inference | ~15 ms | ~12–13 ms | Model-dependent |
-| **Total** | **~159 ms** | **~84 ms** | Both comfortably faster than real time |
+| SD read | 59 ms | 59 ms | Depends on the card; a recorder streaming from its microphone does not pay it |
+| STFT | 33 ms | **0 ms** | CMSIS-DSP Helium FFT; raw computes its filterbank on the NPU |
+| NPU inference | 19 ms | 15 ms | Model-dependent |
+| **Total** | **113 ms** | **75 ms** | Both far faster than real time |
 
 ## Source Layout
 
@@ -74,10 +77,10 @@ firmware/
 │   ├── audio_mel.h
 │   └── sd_handler.h
 ├── Drivers/
+│   ├── CMSIS-DSP/       # Vendored CMSIS-DSP subset: real FFT + magnitude (Helium)
 │   ├── HAL_SD/          # HAL SD card driver sources
 │   ├── FatFs/           # FatFs R0.15 filesystem
 │   └── stm32n6570_discovery_sd.*  # BSP SD driver
-│   ├── CMSIS-DSP/       # Vendored CMSIS-DSP subset: real FFT + magnitude (Helium)
 └── README.md            # Standalone firmware reference
 ```
 

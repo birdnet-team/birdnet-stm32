@@ -21,10 +21,9 @@ Bird sound classification for edge deployment on the [STM32N6570-DK](https://www
 A compact DS-CNN trained on raw waveforms or spectral features, quantized to
 INT8 with post-training quantization or quantization-aware fine-tuning, and
 deployed using ST's X-CUBE-AI toolchain. The standalone firmware supports raw
-waveform, hybrid STFT, and precomputed-mel deployment paths. In a verified
-24 kHz, 2.5-second raw configuration, inference takes **12–13 ms on the NPU**
-and about **84 ms total** including SD-card input; exact timing depends on the
-model and SD card.
+waveform, hybrid STFT, and precomputed-mel deployment paths. A released raw
+model scores a 2.5-second window at 24 kHz in **15 ms on the NPU** (75 ms per
+file on the board including the SD-card read), with CPU and NPU at 400 MHz.
 
 ## Quick start
 
@@ -97,7 +96,7 @@ frontends:
 - **`_Raw`** takes 2.5 s of audio; the whole pipeline runs on the NPU (75 ms per
   file on the board). This is the reference release model.
 - **`_Hybrid`** takes a spectrogram the firmware computes on the Cortex-M55; it
-  has the better INT8 accuracy, at 148 ms per file. On any other device, compute
+  has the better INT8 accuracy, at 113 ms per file. On any other device, compute
   its input exactly as specified in
   [Spectrogram Input](https://birdnet-team.github.io/birdnet-stm32/dev/spectrogram-input/).
 
@@ -187,18 +186,19 @@ for toolchain setup and troubleshooting.
 
 Published models are scored on **WABAD** ([Zenodo 14191524](https://zenodo.org/records/14191524)),
 a public passive acoustic monitoring benchmark — 3,794 annotated calls across
-five northeastern sites, 44 of its species inside the 90-output list. Every figure is from the INT8 model that gets flashed, on 3 s windows at a 1.25 s hop, pooled over all five sites.
+five northeastern sites, 44 of its species inside the 90-output list. Every figure is from the INT8 model that gets flashed, on 2.5 s windows at a 1.25 s hop, pooled over all five sites.
 
 | Model | Event recall @0.5 | Window cMAP | Window AUPRC | Params | Compute per 2.5 s chunk |
 |---|---:|---:|---:|---:|---:|
 | `BirdNET_Tiny_N6_USNE_90_V1.5_Raw_INT8` | 0.248 | 0.258 | 0.342 | 987 k | **15 ms** (all NPU) |
-| `BirdNET_Tiny_N6_USNE_90_V1.5_Hybrid_INT8` | 0.361 | 0.376 | 0.461 | 946 k | 88 ms (69 ms STFT on the M55) |
+| `BirdNET_Tiny_N6_USNE_90_V1.5_Hybrid_INT8` | 0.361 | 0.376 | 0.461 | 946 k | 52 ms (33 ms STFT on the M55) |
 | BirdNET+ V3.0 preview 3.1, the teacher | 0.656 | 0.517 | 0.617 | 135 M | does not run on this hardware |
 
-Timings are measured on an STM32N6570-DK at 1 GHz for one chunk, excluding the
-audio read. Raw runs its learned filterbank on the NPU, which is why it costs a
-sixth of hybrid's compute; hybrid buys its accuracy with a 512-point STFT on the
-Cortex-M55.
+Timings are measured on an STM32N6570-DK for one chunk, excluding the audio
+read, with CPU, NPU and buses at 400 MHz (the firmware's clock profile, no
+overdrive). Raw runs its learned filterbank on the NPU, which is why it costs
+under a third of hybrid's compute; hybrid buys its accuracy with a 512-point
+STFT on the Cortex-M55.
 
 Per-version history and what each metric means:
 [Pre-trained Models](https://birdnet-team.github.io/birdnet-stm32/pretrained-models/#benchmark-results).

@@ -7,7 +7,7 @@ is ST's first discovery kit with a hardware Neural Processing Unit (NPU).
 
 | Feature | Detail |
 |---|---|
-| **MCU** | STM32N657X0H3QU — Arm Cortex-M55 @ 600 MHz by default (800 MHz overdrive) |
+| **MCU** | STM32N657X0H3QU — Arm Cortex-M55 with Helium, up to 800 MHz (overdrive); this firmware runs CPU and NPU at 400 MHz |
 | **NPU** | ST Neural-ART accelerator, 1.2 TOPS (INT8) |
 | **Internal SRAM** | 4.2 MB total (cpuRAM1/2/3, npuRAM1–6, flexRAM) |
 | **External RAM** | 256 Mbit octal HyperRAM (XSPI port 1) |
