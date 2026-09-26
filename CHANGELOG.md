@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Raw models cut their filterbank along the kernel.** The NPU needs the
+  filterbank split into four partial convolutions; each partial used to take a
+  group of the folded input channels, which in time is a comb of short pieces
+  that aliases every frequency into every band, so on broadband field audio the
+  partials cancel in their sum and the band signal is lost to their INT8
+  rounding. Each partial is now one contiguous segment of the filter. Same
+  function, operations and cost, validated on the NPU; trained and taken
+  through QAT it gains 0.007 catalog cMAP with better field recall. Checkpoints
+  from 1.5 and earlier load with the split they were trained with.
+
 ### Removed
 
 - Training options that were measured and lost, so the CLI only offers what a

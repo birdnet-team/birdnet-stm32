@@ -123,6 +123,26 @@ Two invariants the geometry guarantees, both covered by tests:
     8 is no better than 4; what remains at 4 is the INT8 requantization of the
     sum, not the defect.
 
+    **How the filterbank is cut matters for INT8, even though it cannot matter
+    in float.** Up to 1.5 each partial convolution took an equal group of the
+    folded channels, which in time is four scattered 28-sample pieces of every
+    frame: a comb that aliases all frequencies into every band. On broadband
+    field audio (rain, insect chorus, dense dawn song) each partial is then
+    large, the four cancel in the sum, and the band signal survives only as a
+    small difference of coarsely quantized partials. Keeping those three sums
+    in float recovered half of raw's INT8 loss on dense field recordings, and
+    a tenth of it on the catalog. From 1.6 the split runs along the kernel
+    instead (`raw_split_axis="taps"`): partial *k* is kernel row *k*, a 1 × 1
+    stride-2 convolution over all 112 folded channels of the input shifted by
+    *k* frames, i.e. one contiguous 112-sample segment of the filter, which
+    stays band-selective. Same function, same taps per convolution (the
+    NPU-safe length), same op count; `stedgeai validate --mode target` gives
+    cos 0.9999 on trained weights. Trained into a model and taken through QAT
+    it gained 0.007 catalog cMAP with better field recall. Checkpoints from
+    1.5 and earlier keep loading with the channel split they were trained
+    with; the two splits compute the same function, so either can be rebuilt
+    into the other.
+
     **2. `ABS` ignores its input's zero-point.** An isolated `ABS` on a tensor
     with zero-point -9 returns every element short by `|zp| * scale`: mean
     error -0.1543 against a mean absolute error of 0.1543, i.e. pure bias

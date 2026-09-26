@@ -20,6 +20,7 @@ from birdnet_stm32.models.blocks import _make_divisible
 from birdnet_stm32.models.frontend import (
     RELEASE_RAW_BANK,
     RELEASE_RAW_MAGNITUDE,
+    RELEASE_RAW_SPLIT_AXIS,
     AudioFrontendLayer,
     hybrid_fft_bins,
     normalize_frontend_name,
@@ -124,6 +125,7 @@ def build_dscnn_model(
     raw_magnitude: str = RELEASE_RAW_MAGNITUDE,
     raw_overlap: int = 2,
     raw_bank: str = RELEASE_RAW_BANK,
+    raw_split_axis: str = RELEASE_RAW_SPLIT_AXIS,
     frontend_trainable: bool = False,
     dropout_rate: float = 0.5,
     weight_decay: float = 1e-4,
@@ -150,6 +152,9 @@ def build_dscnn_model(
         raw_overlap: Raw analysis window as a multiple of its hop; raw only.
         raw_bank: 'pair' or 'fused' quadrature filterbank; raw only. Defaults
             to the release layout, as raw_magnitude does.
+        raw_split_axis: 'channels' or 'taps': how the raw filterbank is cut
+            into partial convolutions; raw only. Defaults to the release
+            layout.
         frontend_trainable: Make frontend sub-layers trainable.
         dropout_rate: Dropout rate before the classifier head.
         weight_decay: L2 regularization weight for DS-CNN blocks.
@@ -228,6 +233,7 @@ def build_dscnn_model(
             raw_magnitude=raw_magnitude,
             raw_overlap=raw_overlap,
             raw_bank=raw_bank,
+            raw_split_axis=raw_split_axis,
             is_trainable=frontend_trainable,
             name="audio_frontend",
         )(inputs)
