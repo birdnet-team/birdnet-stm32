@@ -38,6 +38,10 @@ class ModelConfig:
             as every model up to 1.4) or 'fused' (one bank of 2*num_mels
             filters, sliced into the two components). Identical arithmetic,
             half the convolutions and summations; raw only.
+        raw_exposure_gain: Gain of the raw filterbank's second, clamped exposure;
+            1 means one exposure (every release). Experimental; raw only.
+        raw_exposure_mode: 'channels' (both exposures to the backbone) or
+            'compress' (mixed per band into a knee compressor). Experimental.
         output_activation: What the converted model emits: 'sigmoid'
             probabilities (default) or raw 'logit' scores. A logit model leaves
             the sigmoid to the caller, which keeps the output off the INT8
@@ -67,6 +71,8 @@ class ModelConfig:
     raw_magnitude: str = "alpha_max"
     raw_overlap: int = 2
     raw_bank: str = "pair"
+    raw_exposure_gain: float = 1.0
+    raw_exposure_mode: str = "channels"
     output_activation: str = "sigmoid"
 
     # Model architecture
@@ -126,6 +132,12 @@ class ModelConfig:
             raise ValueError(f"raw_bank '{self.raw_bank}' not in {sorted(self._VALID_RAW_BANKS)}")
         if self.raw_bank != "pair" and self.audio_frontend != "raw":
             raise ValueError("raw_bank applies to the raw filterbank only")
+        if self.raw_exposure_gain < 1.0:
+            raise ValueError(f"raw_exposure_gain must be >= 1, got {self.raw_exposure_gain}")
+        if self.raw_exposure_gain > 1.0 and (self.audio_frontend != "raw" or self.raw_bank != "fused"):
+            raise ValueError("raw_exposure_gain needs the raw frontend with a fused bank")
+        if self.raw_exposure_mode not in ("channels", "compress"):
+            raise ValueError(f"raw_exposure_mode '{self.raw_exposure_mode}' not in ['channels', 'compress']")
         if self.output_activation not in self._VALID_OUTPUT_ACTIVATIONS:
             raise ValueError(
                 f"output_activation '{self.output_activation}' not in {sorted(self._VALID_OUTPUT_ACTIVATIONS)}"

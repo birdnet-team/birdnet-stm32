@@ -126,6 +126,8 @@ def build_dscnn_model(
     raw_overlap: int = 2,
     raw_bank: str = RELEASE_RAW_BANK,
     raw_split_axis: str = RELEASE_RAW_SPLIT_AXIS,
+    raw_exposure_gain: float = 1.0,
+    raw_exposure_mode: str = "channels",
     frontend_trainable: bool = False,
     dropout_rate: float = 0.5,
     weight_decay: float = 1e-4,
@@ -155,6 +157,11 @@ def build_dscnn_model(
         raw_split_axis: 'channels' or 'taps': how the raw filterbank is cut
             into partial convolutions; raw only. Defaults to the release
             layout.
+        raw_exposure_gain: Gain G of a second filterbank exposure (> 1 enables
+            it; experimental, fused bank and tap split only).
+        raw_exposure_mode: 'channels' (the frontend emits both exposures and the
+            stem takes both) or 'compress' (mixed per band into one knee-compressed
+            channel before band_bn).
         frontend_trainable: Make frontend sub-layers trainable.
         dropout_rate: Dropout rate before the classifier head.
         weight_decay: L2 regularization weight for DS-CNN blocks.
@@ -234,6 +241,8 @@ def build_dscnn_model(
             raw_overlap=raw_overlap,
             raw_bank=raw_bank,
             raw_split_axis=raw_split_axis,
+            raw_exposure_gain=raw_exposure_gain,
+            raw_exposure_mode=raw_exposure_mode,
             is_trainable=frontend_trainable,
             name="audio_frontend",
         )(inputs)

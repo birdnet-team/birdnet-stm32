@@ -179,6 +179,10 @@ QAT_LEARNING_RATE = 2e-5
 PROBE_LEARNING_RATE = 1e-3
 
 
+# Training windows that set a two-exposure bank's per-band normalization.
+_EXPOSURE_NORM_SAMPLES = 512
+
+
 def get_args() -> argparse.Namespace:
     """Parse command-line arguments for training.
 
@@ -274,6 +278,18 @@ def get_args() -> argparse.Namespace:
         help="Base output channels of the four stages, before --alpha",
     )
     parser.add_argument("--frontend_trainable", action="store_true", default=False)
+    parser.add_argument(
+        "--raw_exposure_gain",
+        type=float,
+        default=1.0,
+        help="Experimental: gain of a second, clamped raw filterbank exposure (> 1 enables it; raw only)",
+    )
+    parser.add_argument(
+        "--raw_exposure_mode",
+        choices=("channels", "compress"),
+        default="channels",
+        help="Experimental: hand both exposures to the backbone, or mix them per band into a knee compressor",
+    )
 
     # -- Augmentation ---------------------------------------------------------
     parser.add_argument("--no_spec_augment", action="store_true", default=False, help="Disable SpecAugment")
@@ -670,6 +686,8 @@ def main():
         mag_scale=args.mag_scale,
         raw_magnitude=RELEASE_RAW_MAGNITUDE,
         raw_bank=RELEASE_RAW_BANK,
+        raw_exposure_gain=args.raw_exposure_gain,
+        raw_exposure_mode=args.raw_exposure_mode,
         frontend_trainable=args.frontend_trainable,
         dropout_rate=args.dropout,
     )
@@ -698,9 +716,21 @@ def main():
         stage_widths=list(args.stage_widths),
         num_classes=len(classes),
         class_names=classes,
+        raw_exposure_gain=args.raw_exposure_gain,
+        raw_exposure_mode=args.raw_exposure_mode,
         frontend_trainable=args.frontend_trainable,
         dropout_rate=args.dropout,
     )
+    if args.raw_exposure_gain > 1.0 and not args.resume:
+        # The low exposure must span +-1 per band before training: the clamps
+        # are in the graph from the first step, and the filterbank is frozen, so
+        # this normalization holds for the whole run.
+        from birdnet_stm32.conversion.equalize import normalize_exposure_bank
+        from birdnet_stm32.conversion.quantize import representative_data_gen, stratified_sample_paths
+
+        norm_paths = stratified_sample_paths(train_paths, _EXPOSURE_NORM_SAMPLES, seed=42)
+        tensors = [item[0] for item in representative_data_gen(norm_paths, cfg.to_dict(), num_samples=len(norm_paths))]
+        print(f"[exposure] normalized on {len(tensors)} windows: {normalize_exposure_bank(model, tensors)}")
     cfg_path = os.path.splitext(args.checkpoint_path)[0] + "_model_config.json"
     cfg.save(cfg_path)
     print(f"Saved model config to '{cfg_path}'")

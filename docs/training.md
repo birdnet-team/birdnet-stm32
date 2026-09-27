@@ -321,6 +321,8 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--dw_kernel_size` | 3 | Depthwise kernel in stages 2–4: `3` or `5` (experimental) |
 | `--stage_widths` | 32 64 128 256 | Base channels of the four stages, before `--alpha` (experimental) |
 | `--frontend_trainable` | False | Make frontend weights trainable |
+| `--raw_exposure_gain` | 1.0 | Gain of a second, clamped exposure of the raw filterbank; > 1 enables it (experimental, raw only) |
+| `--raw_exposure_mode` | channels | With a second exposure: `channels` hands both to the backbone, `compress` mixes them per band into a knee compressor (experimental) |
 | `--mixup_alpha` | 0.2 | Mixup alpha (0 disables) |
 | `--mixup_probability` | 0.25 | Fraction of batch to mix |
 | `--no_spec_augment` | False | Disable SpecAugment masking (on by default) |

@@ -99,7 +99,8 @@ def equalize_raw_frontend(
         stages: Subset of ``STAGES``.
 
     Raises:
-        ValueError: The model is not a raw PWL frontend, or a stage is unknown.
+        ValueError: The model is not a raw frontend, or a stage is unknown. Without a
+            PWL only the ``fb`` stage applies; the others are dropped and reported.
         RuntimeError: The float output moved by more than ``MAX_OUTPUT_DIFF``;
             the weights are then already modified and must be discarded.
     """
@@ -107,8 +108,13 @@ def equalize_raw_frontend(
     if not stages or not stages <= set(STAGES):
         raise ValueError(f"stages must be a non-empty subset of {STAGES}, got {sorted(stages)}")
     fe = model.get_layer("audio_frontend")
-    if fe.mode != "raw" or fe.mag_scale != "pwl":
-        raise ValueError("Equalization is written for the raw frontend with a PWL magnitude")
+    if fe.mode != "raw":
+        raise ValueError("Equalization is written for the raw frontend")
+    dropped = sorted(stages - {"fb"}) if fe.mag_scale != "pwl" else []
+    if dropped:
+        # Without a PWL the band stage's output is the frontend's output, which
+        # feeds the backbone as spatial rows: no per-band gain is free there.
+        stages = stages & {"fb"}
 
     mag = fe.mag_layer
     n = fe.name
@@ -117,18 +123,18 @@ def equalize_raw_frontend(
     reference = np.concatenate([model(x, training=False).numpy() for x in check])
     before = band_percentiles(model, fe, tensors, watch)
     report: dict = {"before": {k: spread(v) for k, v in before.items()}, "stages": sorted(stages)}
+    if dropped:
+        report["stages_dropped_without_pwl"] = dropped
 
-    eps = float(fe.band_bn.epsilon)
-    if "fb" in stages:
+    if "fb" in stages and fe.exposures > 1:
+        # The clamps make a filterbank gain non-linear, and the bank is already
+        # equalized: normalize_exposure_bank puts every band's low copy at +-1.
+        report["fb_skipped"] = "two-exposure bank: normalized by normalize_exposure_bank"
+    elif "fb" in stages:
         # One gain per band for both quadrature banks, so the magnitude stays meaningful.
         s = gains(np.maximum(before[f"{n}_fb_re"], before[f"{n}_fb_im"]))
         fe.scale_filterbank_bands(s)
-        gamma, beta, mean, var = fe.band_bn.get_weights()
-        new_var = var * s**2
-        gamma = gamma * np.sqrt(new_var + eps) / (s * np.sqrt(var + eps))
-        fe.band_bn.set_weights(
-            [gamma.astype(np.float32), beta, (mean * s).astype(np.float32), new_var.astype(np.float32)]
-        )
+        _rescale_band_bn(fe.band_bn, s)
         report["fb_gain_range"] = [float(s.min()), float(s.max())]
 
     if "pwl_in" in stages:
@@ -162,3 +168,60 @@ def equalize_raw_frontend(
             f"Equalization changed the float model (max output diff {report['max_abs_output_diff']:.2e})"
         )
     return report
+
+
+def _rescale_band_bn(bn, s: np.ndarray) -> None:
+    """Absorb a per-channel input scale ``s`` into a BatchNormalization exactly (epsilon included)."""
+    eps = float(bn.epsilon)
+    gamma, beta, mean, var = bn.get_weights()
+    new_var = var * s**2
+    gamma = gamma * np.sqrt(new_var + eps) / (s * np.sqrt(var + eps))
+    bn.set_weights([gamma.astype(np.float32), beta, (mean * s).astype(np.float32), new_var.astype(np.float32)])
+
+
+def normalize_exposure_bank(model: tf.keras.Model, tensors: Sequence[np.ndarray]) -> dict:
+    """Scale a two-exposure raw bank so every band's low copy spans exactly +-1.
+
+    The low copy must fill the shared [-1, 1] grid without clipping, band by
+    band: this is the filterbank equalization of a two-exposure model, and what
+    lets the high copy (always ``raw_exposure_gain`` times the low one) saturate
+    at 1/G of the band's range. ``R_b`` is band b's largest ``|value|`` over
+    every partial convolution and partial sum of either quadrature component,
+    measured with the clamps off. Both copies are divided by ``R_b`` and
+    ``band_bn`` absorbs it, so the low path's function is unchanged wherever it
+    stays below the clamp; the high path's saturation point moves with it.
+
+    Args:
+        model: Float Keras model with a two-exposure raw ``audio_frontend``.
+        tensors: Calibration inputs (with batch dimension).
+
+    Returns:
+        Report with the range of ``R_b``.
+    """
+    fe = model.get_layer("audio_frontend")
+    if fe.exposures != 2:
+        raise ValueError("normalize_exposure_bank needs a two-exposure raw frontend")
+    n, m = fe.name, int(fe.mel_bins)
+    names = {f"{n}_fb_part_{i}" for i in range(fe.split)} | {f"{n}_fb_sum_{j}" for j in range(1, fe.split)}
+    fe._exposure_clamp = False  # noqa: SLF001
+    try:
+        collector = _Collector(names)
+        fe.set_quantization_hook(collector)
+        probe = tf.keras.Model(model.inputs, fe.output)
+        try:
+            for x in tensors:
+                probe(x, training=False)
+        finally:
+            fe.set_quantization_hook(None)
+    finally:
+        fe._exposure_clamp = True  # noqa: SLF001
+    peak = np.max([np.max(np.abs(np.concatenate(v)), axis=0) for v in collector.values.values()], axis=0)
+    # Channel layout [low re, high re, low im, high im], m each.
+    r = np.maximum(peak[:m], peak[2 * m : 3 * m])
+    r = np.where(r > 1e-9, r, 1.0)
+    fe.scale_filterbank_bands((1.0 / r).astype(np.float32))
+    # band_bn sees both copies as channels, or (compress) their per-band mix,
+    # which is linear in the bank and so scales by 1/R_b as well.
+    per_bn = 1.0 / r if fe.calib_channels == m else np.concatenate([1.0 / r, 1.0 / r])
+    _rescale_band_bn(fe.band_bn, per_bn)
+    return {"exposure_norm_range": [float(r.min()), float(r.max())], "exposure_gain": fe.raw_exposure_gain}
