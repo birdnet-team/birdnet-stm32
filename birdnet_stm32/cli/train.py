@@ -369,6 +369,13 @@ def get_args() -> argparse.Namespace:
         "--mixed_precision", action="store_true", default=False, help="Enable FP16 mixed precision training"
     )
     parser.add_argument("--resume", action="store_true", default=False, help="Resume training from checkpoint")
+    parser.add_argument(
+        "--init_checkpoint",
+        type=str,
+        default="",
+        help="Start from this model's weights at epoch 0 (e.g. the output of add-exposure); its frontend must "
+        "match the architecture flags",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed for deterministic training")
 
     parser.add_argument(
@@ -721,7 +728,23 @@ def main():
         frontend_trainable=args.frontend_trainable,
         dropout_rate=args.dropout,
     )
-    if args.raw_exposure_gain > 1.0 and not args.resume:
+    if args.init_checkpoint:
+        if args.resume:
+            raise SystemExit("--init_checkpoint starts a new run; it cannot be combined with --resume")
+        from birdnet_stm32.models.runners import load_keras_model
+
+        start = load_keras_model(args.init_checkpoint)
+        got, want = start.get_layer("audio_frontend"), model.get_layer("audio_frontend")
+        for key in ("mode", "raw_exposure_gain", "raw_exposure_mode", "mel_bins", "spec_width"):
+            if getattr(got, key) != getattr(want, key):
+                raise SystemExit(
+                    f"--init_checkpoint {key}={getattr(got, key)!r} but the flags say {getattr(want, key)!r}"
+                )
+        if start.count_params() != model.count_params():
+            raise SystemExit("--init_checkpoint does not match the architecture flags")
+        model = start
+        print(f"Starting from {args.init_checkpoint} (epoch 0)")
+    elif args.raw_exposure_gain > 1.0 and not args.resume:
         # The low exposure must span +-1 per band before training: the clamps
         # are in the graph from the first step, and the filterbank is frozen, so
         # this normalization holds for the whole run.

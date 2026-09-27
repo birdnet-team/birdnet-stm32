@@ -174,3 +174,29 @@ def test_equalize_without_pwl_keeps_only_the_bank_stage():
     report = equalize_raw_frontend(model, [x[i : i + 1] for i in range(4)], [x[4:5]])
     assert report["stages"] == ["fb"] and report["stages_dropped_without_pwl"] == ["hinge", "pwl_in"]
     assert report["max_abs_output_diff"] < 1e-3
+
+
+def test_add_exposure_switches_a_trained_model_to_the_compressor(tmp_path):
+    from birdnet_stm32.conversion.exposure import add_exposure
+    from birdnet_stm32.models.runners import load_keras_model
+
+    src = _model(gain=1.0)
+    cfg = {"embeddings_size": 16, "alpha": 0.25, "dw_kernel_size": 3, "dropout_rate": 0.5}
+    x = _audio(5, 4)
+    new, report = add_exposure(src, cfg, [x[i : i + 1] for i in range(4)], gain=G)
+    fe, sfe = new.get_layer("audio_frontend"), src.get_layer("audio_frontend")
+    assert (fe.exposures, fe.raw_exposure_mode, fe.out_channels) == (2, "compress", 1)
+    assert report["layers_copied"] > 5 and report["gain"] == G
+    # The low copy is the source bank up to the per-band normalization.
+    (lo_re, _), (src_re, _) = fe.full_filterbank(), sfe.full_filterbank()
+    lo, ref = lo_re.reshape(-1, lo_re.shape[-1]), src_re.reshape(-1, src_re.shape[-1])
+    scale = (lo * ref).sum(axis=0) / (ref * ref).sum(axis=0)
+    assert np.all(scale > 0) and np.allclose(lo, ref * scale, atol=1e-6)
+    for name in ("stem_conv", "emb_conv"):
+        for a, b in zip(new.get_layer(name).get_weights(), src.get_layer(name).get_weights(), strict=True):
+            assert np.array_equal(a, b)
+    path = tmp_path / "m.keras"
+    new.save(path)
+    assert np.allclose(load_keras_model(str(path))(x, training=False), new(x, training=False), atol=1e-5)
+    with pytest.raises(ValueError, match="one-exposure"):
+        add_exposure(new, cfg, [x[:1]], gain=G)
