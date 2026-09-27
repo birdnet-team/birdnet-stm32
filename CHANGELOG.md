@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A second, clamped exposure of the raw filterbank** (`raw_exposure_gain`,
+  `raw_exposure_mode`; `train --raw_exposure_gain/--raw_exposure_mode`). The
+  fused bank carries every filter twice, the second time at gain G, and every
+  partial convolution and partial sum is clamped to ±1 — a clamp the converter
+  folds into the operation itself, so the whole frontend stays on the NPU.
+  Below the clamp the high copy holds each INT32 sum at log2(G) more bits. In
+  `compress` mode the two copies are mixed per band before the band stage into
+  a knee compressor, so every INT8 grid after it carries a compressed envelope.
+  Off by default; existing checkpoints load unchanged.
+- `add-exposure`: switch a trained raw model to the compressing two-exposure
+  frontend (the 1.7 raw recipe: train on the linear envelope, then switch and
+  fine-tune — trained from scratch with the compressor, a model loses float
+  accuracy). `train --init_checkpoint` fine-tunes the result from epoch 0.
+
+### Changed
+
+- `equalize` accepts a raw model without a PWL magnitude (only its filterbank
+  stage applies) and leaves a two-exposure filterbank alone, which is already
+  normalized per band.
+
 ## [1.6.0] - 2026-09-26
 
 Two models ship: `BirdNET_Tiny_N6_USNE_90_V1.6_Raw`, a new model, and

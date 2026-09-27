@@ -135,6 +135,54 @@ changes addressed it:
 All three are in the package: `python -m birdnet_stm32 equalize`, and the
 simulation fixes plus `--qat_range_refresh` (on by default) in every QAT run.
 
+### Raw: a second exposure, and compression inside the NPU (1.7)
+
+By 1.6 the raw model lost its INT8 accuracy mostly on field audio, and most on
+the densest and the sparsest windows, while hybrid lost almost nothing. The
+cause is level starvation: every frontend tensor carries linear amplitude on
+one per-tensor INT8 scale, so a quiet band sits in the bottom few levels of
+each grid (86% of frontend values within two levels of zero). In a simulation
+of the INT8 graph, widening only the frontend's grids to 12 bits recovered
+about three quarters of the field loss; 16 bits added nothing more.
+
+The NPU has no wider activations, but every convolution sums in INT32 and only
+the requantization scale decides how much of that sum survives. So the fused
+filterbank carries every filter twice, the second time at gain 16, and each
+partial convolution and partial sum is clamped to ±1. The converter folds the
+clamp into the CONV_2D or ADD (a fused `RELU_N1_TO_1`), which the NPU runs
+correctly: on the target, the frontend alone matches the host at cosine 0.998.
+Below the clamp, the high copy holds the sum at four more bits.
+
+Handing both copies to the backbone recovered little: the band stage's batch
+normalization brings every channel to a similar spread, and from there on both
+copies of a quiet band share the low copy's resolution. What works is mixing
+them per band before the band stage, `low + a · high` with a learned `a`: a knee
+compressor at 1/16 of each band's range, so every grid after the mix carries a
+compressed envelope. That is hybrid's recipe — compress before the grids — as
+far forward as the NPU allows. With it, QAT stops mattering much (its own
+checkpoint selection picks epoch 0–2), as it never did for hybrid.
+
+Order matters. Trained from scratch with the compressor, a model loses about
+0.016 float window AUPRC on field audio; a model trained on the linear
+envelope and then switched (`add-exposure`, then a 20-epoch fine-tune) keeps
+its float accuracy and gains the INT8 robustness. On the 1.6 raw model:
+
+| INT8 | WABAD event recall @0.5 | Window AUPRC (pooled) | Catalog cMAP |
+|---|---:|---:|---:|
+| 1.6 raw | 0.255 | 0.352 | 0.7134 |
+| the same fine-tune without the second exposure | 0.255 | 0.347 | 0.7062 |
+| **with the second exposure** | **0.309** | **0.390** | **0.7208** |
+
+The field INT8 loss (float → INT8 window AUPRC) falls from 0.080 to 0.034. The
+cost: twice the filterbank MACs (about 98 M in total), an arena of 533 kB
+instead of 342 kB, the same three software epochs.
+
+Measured along the way and not adopted: running the whole model at several
+input gains and taking the maximum (it helps the sparsest windows in INT8, but
+clipping ruins dense ones, and a deployment runs one pass); a knee at 1/64
+(more compression, more float lost); a 10-epoch fine-tune at a quarter of the
+learning rate (below the 20-epoch recipe in the field).
+
 ## Settled: do not retry
 
 | idea | result |
