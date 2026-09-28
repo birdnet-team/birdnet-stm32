@@ -73,6 +73,16 @@ def test_unknown_stages_are_rejected(stages):
         equalize_raw_frontend(_raw_model(), _inputs(0, 2), _inputs(1, 1), stages=stages)
 
 
-def test_requires_a_raw_pwl_frontend():
+def test_requires_a_raw_frontend():
+    inputs = tf.keras.Input((256, 8, 1))
+    frontend = AudioFrontendLayer(
+        mode="hybrid", mel_bins=8, spec_width=8, sample_rate=8000, chunk_duration=0.25, name="audio_frontend"
+    )
+    model = tf.keras.Model(inputs, frontend(inputs))
     with pytest.raises(ValueError, match="raw frontend"):
-        equalize_raw_frontend(_raw_model(mag_scale="none"), _inputs(0, 2), _inputs(1, 1))
+        equalize_raw_frontend(model, [], [])
+
+
+def test_without_pwl_only_the_bank_is_equalized():
+    report = equalize_raw_frontend(_raw_model(mag_scale="none"), _inputs(0, 2), _inputs(1, 1))
+    assert report["stages"] == ["fb"] and "fb_gain_range" in report

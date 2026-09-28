@@ -247,6 +247,37 @@ For `hybrid` and `librosa` with `--input_compression`, skip QAT: it scored
 below plain post-training quantization at every epoch. Convert the trained
 checkpoint directly.
 
+### Two-exposure raw frontend (the 1.7 raw recipe)
+
+The raw frontend carries linear amplitude through its INT8 grids, so quiet and
+dense field audio lands in their bottom few levels. From 1.7 the raw model adds
+a second exposure of its filterbank: the same filters at gain 16, clamped to
+±1 at the convolution's own requantization, and mixed with the first per band
+into a knee compressor before the band stage. Every grid after the mix then
+carries a compressed envelope, much as `hybrid` compresses its spectrogram
+before its first INT8 tensor, and all of it stays on the NPU. On the 1.6 raw
+model it cut the field INT8 loss by more than half (WABAD INT8 recall 0.255 →
+0.309).
+
+Train on the linear envelope first and switch afterwards: trained from scratch
+with the compressor, the model loses float accuracy. Between steps 1 and 2 above:
+
+```bash
+# Step 1b: switch to the two-exposure frontend
+python -m birdnet_stm32 add-exposure --checkpoint_path checkpoints/model.keras \
+  --data_path_train data/train --gain 16 --output_path checkpoints/model_e2.keras
+
+# Step 1c: fine-tune it (same data and labels as step 1)
+python -m birdnet_stm32 train --data_path_train data/train \
+  --data_path_val data/validation --classes_file data/labels.txt \
+  --init_checkpoint checkpoints/model_e2.keras \
+  --raw_exposure_gain 16 --raw_exposure_mode compress \
+  --epochs 20 --learning_rate 0.0002 --checkpoint_path checkpoints/model_ft.keras
+```
+
+Then equalize, QAT and convert `model_ft.keras` as in steps 2–4. `equalize`
+leaves the two-exposure filterbank alone (it is already normalized per band).
+
 ### Linear probing
 
 Use `--linear_probe` to freeze a pretrained backbone and train only a new
@@ -321,6 +352,8 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--dw_kernel_size` | 3 | Depthwise kernel in stages 2–4: `3` or `5` (experimental) |
 | `--stage_widths` | 32 64 128 256 | Base channels of the four stages, before `--alpha` (experimental) |
 | `--frontend_trainable` | False | Make frontend weights trainable |
+| `--raw_exposure_gain` | 1.0 | Gain of a second, clamped exposure of the raw filterbank; > 1 enables it (experimental, raw only) |
+| `--raw_exposure_mode` | channels | With a second exposure: `channels` hands both to the backbone, `compress` mixes them per band into a knee compressor (experimental) |
 | `--mixup_alpha` | 0.2 | Mixup alpha (0 disables) |
 | `--mixup_probability` | 0.25 | Fraction of batch to mix |
 | `--no_spec_augment` | False | Disable SpecAugment masking (on by default) |
@@ -335,6 +368,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--grad_clip` | 1.0 | Max gradient norm for clipping (0 = disabled) |
 | `--mixed_precision` | False | Enable FP16 mixed precision training |
 | `--resume` | False | Resume training from checkpoint |
+| `--init_checkpoint` | — | Start from this model's weights at epoch 0, e.g. the output of `add-exposure`; its frontend must match the architecture flags. Checkpoint selection and early stopping start after the learning-rate warm-up |
 | `--seed` | 42 | Random seed |
 | `--batch_size` | 32 | Batch size |
 | `--num_workers` | 8 | Parallel data loading workers (0 = sequential) |

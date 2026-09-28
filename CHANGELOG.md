@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-28
+
+Two models ship: `BirdNET_Tiny_N6_USNE_90_V1.7_Raw`, a new model, and
+`..._V1.7_Hybrid`, the v1.5 Hybrid weights re-issued a second time — its INT8
+model is byte-identical — under a 1.7 model card. The new raw model reads 384
+frames per chunk (v1.6: 256) and computes its filterbank twice, the second time
+at 16x gain, compressing the two into one envelope inside the NPU, so quiet and
+dense field audio keeps its resolution through the INT8 frontend. It closes two
+thirds of the field recall gap to hybrid while staying a single NPU model with no
+CPU frontend.
+
+### Model performance
+
+Scored on [WABAD](https://zenodo.org/records/14191524) (3,794 annotated calls,
+five northeastern sites, 44 species inside the output list) and on the catalog
+test split, on the INT8 model that gets flashed:
+
+| Model | Event recall @0.5 | Window cMAP | Window AUPRC | Catalog cMAP | Compute per 2.5 s |
+|---|---:|---:|---:|---:|---:|
+| v1.6 Raw | 0.255 | 0.269 | 0.352 | 0.7134 | 16 ms (NPU) |
+| **v1.7 Raw** | **0.325** | **0.325** | **0.414** | **0.7349** | 21 ms (NPU) |
+| v1.7 Hybrid (the v1.5 weights) | 0.361 | 0.376 | 0.461 | 0.7574 | 19 ms NPU + 33 ms STFT |
+
+v1.7 Raw finds 27% more annotated calls than v1.6 Raw, is better at every WABAD
+site and on the catalog (+0.022), and its float-to-INT8 loss in the field fell by
+more than half. It passed the release gates: Keras/TFLite
+parity, ONNX validation, STM32N6 compilation (54 epochs, 3 in software),
+on-target validation (cos 0.99981), the operational gate and a 25-file board
+test with host parity (25/25 same top-1).
+
+### Added
+
+- **A second, clamped exposure of the raw filterbank** (`raw_exposure_gain`,
+  `raw_exposure_mode`; `train --raw_exposure_gain/--raw_exposure_mode`). The
+  fused bank carries every filter twice, the second time at gain G, and every
+  partial convolution and partial sum is clamped to ±1 — a clamp the converter
+  folds into the operation itself, so the whole frontend stays on the NPU.
+  Below the clamp the high copy holds each INT32 sum at log2(G) more bits. In
+  `compress` mode the two copies are mixed per band before the band stage into
+  a knee compressor, so every INT8 grid after it carries a compressed envelope.
+  Off by default; existing checkpoints load unchanged.
+- `add-exposure`: switch a trained raw model to the compressing two-exposure
+  frontend (the 1.7 raw recipe: train on the linear envelope, then switch and
+  fine-tune — trained from scratch with the compressor, a model loses float
+  accuracy). `train --init_checkpoint` fine-tunes the result from epoch 0;
+  checkpoint selection and early stopping start after the learning-rate warm-up,
+  whose first epoch still validates close to the starting model.
+
+### Changed
+
+- `equalize` accepts a raw model without a PWL magnitude (only its filterbank
+  stage applies) and leaves a two-exposure filterbank alone, which is already
+  normalized per band.
+
 ## [1.6.0] - 2026-09-26
 
 Two models ship: `BirdNET_Tiny_N6_USNE_90_V1.6_Raw`, a new model, and

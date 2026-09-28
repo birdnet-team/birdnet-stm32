@@ -89,6 +89,36 @@ RELEASE_RAW_MAGNITUDE = "l1"
 RELEASE_RAW_BANK = "fused"
 RELEASE_RAW_SPLIT_AXIS = "taps"
 
+# A second exposure of the filterbank (``raw_exposure_gain`` G > 1, experimental).
+# Every frontend grid carries linear amplitude on one per-tensor INT8 scale, so
+# quiet and dense field audio lands in the bottom few levels of each grid; in
+# simulation, 12-bit frontend grids recover ~3/4 of raw's field INT8 loss. The
+# NPU has no wider activations, but its convolutions accumulate in INT32 and the
+# requantization scale decides how much of that sum survives. So the fused bank
+# carries every filter twice, [low re, high re, low im, high im]: the low copy
+# normalized so its range is +-1, the high copy the same filter times G. Each
+# partial convolution and partial sum is clamped to +-1, which the converter
+# folds into the op itself (RELU_N1_TO_1, still on the NPU), so both copies share
+# one [-1, 1] grid: the high copy saturates on loud content and, below that,
+# holds the sum at log2(G) more bits. Everything after the filterbank runs on
+# both copies as 2 * mel_bins channels, and the frontend emits them as two
+# channels, [B, mel_bins, spec_width, 2]. The low copy's normalization is data
+# dependent: see ``conversion.equalize.normalize_exposure_bank``.
+EXPOSURE_CLAMP = 1.0
+# What happens to the two exposures after their magnitudes. ``channels`` keeps
+# them apart through the band stage and hands both to the backbone -- but
+# band_bn brings every channel back to a similar spread, so from there on a
+# quiet band sits at the low copy's resolution in both (measured: the bits
+# survive only up to band_bn). ``compress`` mixes them per band before
+# band_bn, y = low + a * high (a learned 1x1 convolution, initialized to
+# ``EXPOSURE_MIX_INIT``): below the high copy's saturation the band is amplified
+# 1 + G*a times, above it once -- a knee compressor built from the clamp, so
+# every grid from the mix on carries a compressed envelope, the way hybrid's
+# sqrt compresses before its first INT8 tensor. The frontend then emits one
+# channel.
+VALID_EXPOSURE_MODES = ("channels", "compress")
+EXPOSURE_MIX_INIT = 0.5
+
 # Default overlap factor of the raw analysis window: window = overlap * hop.
 # ``--raw_overlap 1`` halves the window, which halves the filterbank's MACs and
 # emits half as many partial convolutions (see the note on the split below), at
@@ -340,6 +370,8 @@ class AudioFrontendLayer(layers.Layer):
         raw_overlap: int = RAW_OVERLAP,
         raw_bank: str = "pair",
         raw_split_axis: str = "channels",
+        raw_exposure_gain: float = 1.0,
+        raw_exposure_mode: str = "channels",
         name: str = "audio_frontend",
         is_trainable: bool = False,
         activation_bounds: dict | None = None,
@@ -356,6 +388,12 @@ class AudioFrontendLayer(layers.Layer):
             raise ValueError(f"raw_bank '{raw_bank}' not in {VALID_RAW_BANKS}")
         if raw_split_axis not in VALID_RAW_SPLIT_AXES:
             raise ValueError(f"raw_split_axis '{raw_split_axis}' not in {VALID_RAW_SPLIT_AXES}")
+        if float(raw_exposure_gain) < 1.0:
+            raise ValueError(f"raw_exposure_gain must be >= 1 (1 = one exposure), got {raw_exposure_gain}")
+        if float(raw_exposure_gain) > 1.0 and (mode != "raw" or raw_bank != "fused" or raw_split_axis != "taps"):
+            raise ValueError("raw_exposure_gain needs the raw frontend with a fused bank and a tap split")
+        if raw_exposure_mode not in VALID_EXPOSURE_MODES:
+            raise ValueError(f"raw_exposure_mode '{raw_exposure_mode}' not in {VALID_EXPOSURE_MODES}")
         self.mode = mode
         self.mel_bins = int(mel_bins)
         self.spec_width = int(spec_width)
@@ -371,6 +409,17 @@ class AudioFrontendLayer(layers.Layer):
         self.raw_overlap = int(raw_overlap)
         self.raw_bank = raw_bank
         self.raw_split_axis = raw_split_axis
+        self.raw_exposure_gain = float(raw_exposure_gain)
+        self.exposures = 2 if self.raw_exposure_gain > 1.0 else 1
+        self.raw_exposure_mode = raw_exposure_mode
+        compress = self.exposures == 2 and raw_exposure_mode == "compress"
+        # Channels of the band-wise tensors from the filterbank to the smoother,
+        # of those from band_bn on, and of the frontend output.
+        self.band_channels = int(mel_bins) * self.exposures
+        self.calib_channels = int(mel_bins) if compress else self.band_channels
+        self.out_channels = 1 if compress else self.exposures
+        # Normalizing the low exposure needs the unclamped filterbank; never serialized.
+        self._exposure_clamp = True
         self.is_trainable = bool(is_trainable)
         reject_activation_bounds(activation_bounds)
         # Training may install a duck-typed quantization hook that simulates
@@ -426,10 +475,21 @@ class AudioFrontendLayer(layers.Layer):
         # an upper clip would emit a MINIMUM op that the N6 runs in software.
         self.band_relu = layers.ReLU(name=f"{name}_band_relu")
 
+        # Two-exposure knee compressor (see VALID_EXPOSURE_MODES): band b of the
+        # output mixes low band b and high band b. Trainable like the band stage.
+        self.exposure_mix = None
+        if compress:
+            self.exposure_mix = layers.Conv2D(
+                filters=int(self.mel_bins),
+                kernel_size=(1, 1),
+                use_bias=False,
+                name=f"{name}_exposure_mix",
+            )
+
         # Magnitude scaling (composable layer)
         self.mag_layer = MagnitudeScalingLayer(
             method=self.mag_scale,
-            channels=self.mel_bins,
+            channels=self.calib_channels,
             is_trainable=True,
             name=f"{name}_mag",
         )
@@ -460,7 +520,7 @@ class AudioFrontendLayer(layers.Layer):
         )
         if self.raw_bank == "fused":
             self.fb = [
-                layers.Conv2D(filters=2 * int(self.mel_bins), name=f"{name}_fb_{i}", **conv_kwargs)
+                layers.Conv2D(filters=2 * self.band_channels, name=f"{name}_fb_{i}", **conv_kwargs)
                 for i in range(self.split)
             ]
         else:
@@ -481,12 +541,14 @@ class AudioFrontendLayer(layers.Layer):
         """Multiply band ``c``'s filters by ``gains[c]``, both components.
 
         Equalization's only handle on the filterbank, written once here because
-        a fused bank carries the two components in one kernel.
+        a fused bank carries the two components in one kernel (and, with a
+        second exposure, both exposures of each: they scale together, so the
+        high copy stays exactly ``raw_exposure_gain`` times the low one).
         """
         s = np.asarray(gains, dtype=np.float32)
         if s.shape != (int(self.mel_bins),):
             raise ValueError(f"expected one gain per band ({self.mel_bins}), got {s.shape}")
-        per_kernel = np.concatenate([s, s]) if self.raw_bank == "fused" else s
+        per_kernel = np.concatenate([s] * (2 * self.exposures)) if self.raw_bank == "fused" else s
         for conv in self.filterbank_convs():
             (kernel,) = conv.get_weights()
             conv.set_weights([(kernel * per_kernel[None, None, None, :]).astype(np.float32)])
@@ -504,12 +566,20 @@ class AudioFrontendLayer(layers.Layer):
                 conv.build(folded)
             self._seed_gabor_weights()
 
-        band_shape = tf.TensorShape([None, 1, int(self.spec_width), int(self.mel_bins)])
+        band_shape = tf.TensorShape([None, 1, int(self.spec_width), self.band_channels])
+        calib_shape = tf.TensorShape([None, 1, int(self.spec_width), self.calib_channels])
         if self.mode != "precomputed":
             if not self.band_smooth.built:
                 self.band_smooth.build(band_shape)
+            if self.exposure_mix is not None and not self.exposure_mix.built:
+                self.exposure_mix.build(band_shape)
+                m = int(self.mel_bins)
+                w = np.zeros((1, 1, 2 * m, m), dtype=np.float32)
+                w[0, 0, np.arange(m), np.arange(m)] = 1.0
+                w[0, 0, m + np.arange(m), np.arange(m)] = EXPOSURE_MIX_INIT
+                self.exposure_mix.set_weights([w])
             if not self.band_bn.built:
-                self.band_bn.build(band_shape)
+                self.band_bn.build(calib_shape)
         self._build_mag_layer()
         super().build(input_shape)
 
@@ -546,11 +616,16 @@ class AudioFrontendLayer(layers.Layer):
         return full[:, :, i * group : (i + 1) * group, :]
 
     def full_filterbank(self) -> tuple[np.ndarray, np.ndarray]:
-        """Reassemble the full folded kernels ``[1, kernel, fold, M]`` (real, imag)."""
+        """Reassemble the full folded kernels ``[1, kernel, fold, M]`` (real, imag).
+
+        With a second exposure this is the low copy; the high copy is always it
+        times ``raw_exposure_gain``.
+        """
         g = self.geom
+        m, e = int(self.mel_bins), self.exposures
         halves = []
         for convs, part in (
-            ((self.fb, slice(0, self.mel_bins)), (self.fb, slice(self.mel_bins, None)))
+            ((self.fb, slice(0, m)), (self.fb, slice(e * m, e * m + m)))
             if self.raw_bank == "fused"
             else ((self.fb_re, slice(None)), (self.fb_im, slice(None)))
         ):
@@ -566,10 +641,17 @@ class AudioFrontendLayer(layers.Layer):
         return halves[0], halves[1]
 
     def set_full_filterbank(self, re_kernel: np.ndarray, im_kernel: np.ndarray) -> None:
-        """Load full folded kernels ``[1, kernel, fold, M]`` into the partial convolutions."""
+        """Load full folded kernels ``[1, kernel, fold, M]`` into the partial convolutions.
+
+        With a second exposure they are the low copy; the high copy is set to
+        them times ``raw_exposure_gain``.
+        """
+        g = self.raw_exposure_gain
         for i in range(self.split):
             if self.raw_bank == "fused":
-                w = np.concatenate([self.partial_kernel(re_kernel, i), self.partial_kernel(im_kernel, i)], axis=-1)
+                re_i, im_i = self.partial_kernel(re_kernel, i), self.partial_kernel(im_kernel, i)
+                parts = [re_i, g * re_i, im_i, g * im_i] if self.exposures == 2 else [re_i, im_i]
+                w = np.concatenate(parts, axis=-1).astype(np.float32)
                 self.fb[i].set_weights([w])
             else:
                 self.fb_re[i].set_weights([self.partial_kernel(re_kernel, i)])
@@ -589,7 +671,7 @@ class AudioFrontendLayer(layers.Layer):
 
     def _build_mag_layer(self):
         """Ensure the magnitude scaling layer is built."""
-        post_mel_shape = tf.TensorShape([None, 1, None, int(self.mel_bins)])
+        post_mel_shape = tf.TensorShape([None, 1, None, self.calib_channels])
         if not self.mag_layer.built:
             self.mag_layer.build(post_mel_shape)
 
@@ -634,6 +716,11 @@ class AudioFrontendLayer(layers.Layer):
         """Optional temporal lowpass, then per-band normalization and scaling."""
         if smooth:
             y = self._quantized_call(self.band_smooth, y)
+        if self.exposure_mix is not None:
+            # The smoother's output is its own INT8 tensor here (a convolution
+            # follows), and the mix folds band_bn and band_relu into itself.
+            y = self._quantized_activation(f"{self.name}_band_smooth", y)
+            y = self._quantized_call(self.exposure_mix, y)
         y = self.band_bn(y, training=training)
         y = self.band_relu(y)
         y = self._quantized_activation(self.band_relu.name, y)
@@ -688,12 +775,12 @@ class AudioFrontendLayer(layers.Layer):
             # cMAP against 0.6229 converted, and 0.6432 with the filterbank kept
             # in float.
             parts = [
-                self._quantized_activation(f"{tag}_part_{i}", self._quantized_call(conv, _part(i)))
+                self._quantized_activation(f"{tag}_part_{i}", self._exposure_clip(self._quantized_call(conv, _part(i))))
                 for i, conv in enumerate(convs)
             ]
             total = parts[0]
             for j, part in enumerate(parts[1:], start=1):
-                total = self._quantized_activation(f"{tag}_sum_{j}", total + part)
+                total = self._quantized_activation(f"{tag}_sum_{j}", self._exposure_clip(total + part))
             return total
 
         # Named for the bank, not for one of its partial convolutions: this is
@@ -702,9 +789,11 @@ class AudioFrontendLayer(layers.Layer):
         if self.raw_bank == "fused":
             # One bank of 2*mel_bins filters; the components are its two halves.
             # Slicing a channel range is data movement, not arithmetic: the
-            # halves inherit the bank's scale rather than crossing a grid.
+            # halves inherit the bank's scale rather than crossing a grid. With
+            # a second exposure each half is [low, high], so every band-wise
+            # tensor after this carries both exposures as channels.
             z = _bank(self.fb, f"{self.name}_fb")
-            m = int(self.mel_bins)
+            m = self.band_channels
             re = self._quantized_activation(f"{self.name}_fb_re", z[:, :, :, :m])
             im = self._quantized_activation(f"{self.name}_fb_im", z[:, :, :, m:])
         else:
@@ -715,7 +804,23 @@ class AudioFrontendLayer(layers.Layer):
 
         mag = self._calibrate(mag, training, smooth=True)
         mag = mag[:, :, : self.spec_width, :]
-        return tf.transpose(mag, [0, 3, 2, 1])  # [B,mel,W,1]
+        if self.out_channels == 1:
+            return tf.transpose(mag, [0, 3, 2, 1])  # [B,mel,W,1]
+        # [B,1,W,(exposure, band)] -> [B,mel,W,exposure]: the reshape only
+        # regroups contiguous channels; the one transpose is the one above.
+        mag = tf.reshape(mag, [-1, int(self.spec_width), self.exposures, int(self.mel_bins)])
+        return tf.transpose(mag, [0, 3, 1, 2])
+
+    def _exposure_clip(self, x):
+        """Clamp a filterbank tensor to the shared [-1, 1] grid of a two-exposure bank.
+
+        The converter folds this into the producing CONV_2D or ADD, so it adds no
+        op; it is what makes the high exposure saturate at its own requantization
+        instead of widening the grid for both. A no-op with one exposure.
+        """
+        if self.exposures == 1 or not self._exposure_clamp:
+            return x
+        return tf.clip_by_value(x, -EXPOSURE_CLAMP, EXPOSURE_CLAMP)
 
     def _band_envelope(self, re, im):
         """Combine the quadrature pair into a non-negative band envelope.
@@ -768,8 +873,8 @@ class AudioFrontendLayer(layers.Layer):
         )
 
     def compute_output_shape(self, input_shape):
-        """Return static output shape: (batch, mel_bins, spec_width, 1)."""
-        return (input_shape[0], int(self.mel_bins), int(self.spec_width), 1)
+        """Return static output shape: (batch, mel_bins, spec_width, out_channels)."""
+        return (input_shape[0], int(self.mel_bins), int(self.spec_width), self.out_channels)
 
     # Constructor arguments retired in 1.2.0 along with the features behind
     # them. Checkpoints saved before that still carry them in their serialized
@@ -800,6 +905,8 @@ class AudioFrontendLayer(layers.Layer):
             "raw_overlap": self.raw_overlap,
             "raw_bank": self.raw_bank,
             "raw_split_axis": self.raw_split_axis,
+            "raw_exposure_gain": self.raw_exposure_gain,
+            "raw_exposure_mode": self.raw_exposure_mode,
             "name": self.name,
             "is_trainable": self.is_trainable,
         }

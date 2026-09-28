@@ -20,7 +20,7 @@ from birdnet_stm32.models.dscnn import DW_KERNEL_SIZES, STAGE_WIDTHS, build_dscn
 from birdnet_stm32.models.frontend import RELEASE_RAW_BANK, RELEASE_RAW_MAGNITUDE, normalize_frontend_name
 from birdnet_stm32.models.profiler import print_profile
 from birdnet_stm32.training.config import ModelConfig
-from birdnet_stm32.training.trainer import compute_hop_length, train_model
+from birdnet_stm32.training.trainer import _WARMUP_EPOCHS, compute_hop_length, train_model
 
 
 def _read_meminfo_gb() -> tuple[float, float]:
@@ -179,6 +179,10 @@ QAT_LEARNING_RATE = 2e-5
 PROBE_LEARNING_RATE = 1e-3
 
 
+# Training windows that set a two-exposure bank's per-band normalization.
+_EXPOSURE_NORM_SAMPLES = 512
+
+
 def get_args() -> argparse.Namespace:
     """Parse command-line arguments for training.
 
@@ -274,6 +278,18 @@ def get_args() -> argparse.Namespace:
         help="Base output channels of the four stages, before --alpha",
     )
     parser.add_argument("--frontend_trainable", action="store_true", default=False)
+    parser.add_argument(
+        "--raw_exposure_gain",
+        type=float,
+        default=1.0,
+        help="Experimental: gain of a second, clamped raw filterbank exposure (> 1 enables it; raw only)",
+    )
+    parser.add_argument(
+        "--raw_exposure_mode",
+        choices=("channels", "compress"),
+        default="channels",
+        help="Experimental: hand both exposures to the backbone, or mix them per band into a knee compressor",
+    )
 
     # -- Augmentation ---------------------------------------------------------
     parser.add_argument("--no_spec_augment", action="store_true", default=False, help="Disable SpecAugment")
@@ -353,6 +369,13 @@ def get_args() -> argparse.Namespace:
         "--mixed_precision", action="store_true", default=False, help="Enable FP16 mixed precision training"
     )
     parser.add_argument("--resume", action="store_true", default=False, help="Resume training from checkpoint")
+    parser.add_argument(
+        "--init_checkpoint",
+        type=str,
+        default="",
+        help="Start from this model's weights at epoch 0 (e.g. the output of add-exposure); its frontend must "
+        "match the architecture flags",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed for deterministic training")
 
     parser.add_argument(
@@ -670,6 +693,8 @@ def main():
         mag_scale=args.mag_scale,
         raw_magnitude=RELEASE_RAW_MAGNITUDE,
         raw_bank=RELEASE_RAW_BANK,
+        raw_exposure_gain=args.raw_exposure_gain,
+        raw_exposure_mode=args.raw_exposure_mode,
         frontend_trainable=args.frontend_trainable,
         dropout_rate=args.dropout,
     )
@@ -698,9 +723,37 @@ def main():
         stage_widths=list(args.stage_widths),
         num_classes=len(classes),
         class_names=classes,
+        raw_exposure_gain=args.raw_exposure_gain,
+        raw_exposure_mode=args.raw_exposure_mode,
         frontend_trainable=args.frontend_trainable,
         dropout_rate=args.dropout,
     )
+    if args.init_checkpoint:
+        if args.resume:
+            raise SystemExit("--init_checkpoint starts a new run; it cannot be combined with --resume")
+        from birdnet_stm32.models.runners import load_keras_model
+
+        start = load_keras_model(args.init_checkpoint)
+        got, want = start.get_layer("audio_frontend"), model.get_layer("audio_frontend")
+        for key in ("mode", "raw_exposure_gain", "raw_exposure_mode", "mel_bins", "spec_width"):
+            if getattr(got, key) != getattr(want, key):
+                raise SystemExit(
+                    f"--init_checkpoint {key}={getattr(got, key)!r} but the flags say {getattr(want, key)!r}"
+                )
+        if start.count_params() != model.count_params():
+            raise SystemExit("--init_checkpoint does not match the architecture flags")
+        model = start
+        print(f"Starting from {args.init_checkpoint} (epoch 0)")
+    elif args.raw_exposure_gain > 1.0 and not args.resume:
+        # The low exposure must span +-1 per band before training: the clamps
+        # are in the graph from the first step, and the filterbank is frozen, so
+        # this normalization holds for the whole run.
+        from birdnet_stm32.conversion.equalize import normalize_exposure_bank
+        from birdnet_stm32.conversion.quantize import representative_data_gen, stratified_sample_paths
+
+        norm_paths = stratified_sample_paths(train_paths, _EXPOSURE_NORM_SAMPLES, seed=42)
+        tensors = [item[0] for item in representative_data_gen(norm_paths, cfg.to_dict(), num_samples=len(norm_paths))]
+        print(f"[exposure] normalized on {len(tensors)} windows: {normalize_exposure_bank(model, tensors)}")
     cfg_path = os.path.splitext(args.checkpoint_path)[0] + "_model_config.json"
     cfg.save(cfg_path)
     print(f"Saved model config to '{cfg_path}'")
@@ -744,6 +797,12 @@ def main():
             gradient_clip_norm=args.grad_clip,
             resume=args.resume,
             extra_callbacks=extra_callbacks,
+            # A run from --init_checkpoint starts near a trained model: its first
+            # epoch, still at warm-up learning rates, validates high, and the
+            # full-rate epochs after it take a while to pass it. Selecting and
+            # early-stopping from epoch 1 kept that barely adapted checkpoint once
+            # (a 20-epoch fine-tune stopped at epoch 11 and shipped epoch 1).
+            checkpoint_start_epoch=_WARMUP_EPOCHS if args.init_checkpoint else 0,
         )
         print(f"Training complete. Best model saved to '{args.checkpoint_path}'.")
     except KeyboardInterrupt:
