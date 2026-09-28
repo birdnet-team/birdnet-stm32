@@ -368,7 +368,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--grad_clip` | 1.0 | Max gradient norm for clipping (0 = disabled) |
 | `--mixed_precision` | False | Enable FP16 mixed precision training |
 | `--resume` | False | Resume training from checkpoint |
-| `--init_checkpoint` | — | Start from this model's weights at epoch 0, e.g. the output of `add-exposure`; its frontend must match the architecture flags |
+| `--init_checkpoint` | — | Start from this model's weights at epoch 0, e.g. the output of `add-exposure`; its frontend must match the architecture flags. Checkpoint selection and early stopping start after the learning-rate warm-up |
 | `--seed` | 42 | Random seed |
 | `--batch_size` | 32 | Batch size |
 | `--num_workers` | 8 | Parallel data loading workers (0 = sequential) |

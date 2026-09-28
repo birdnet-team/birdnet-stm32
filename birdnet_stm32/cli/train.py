@@ -20,7 +20,7 @@ from birdnet_stm32.models.dscnn import DW_KERNEL_SIZES, STAGE_WIDTHS, build_dscn
 from birdnet_stm32.models.frontend import RELEASE_RAW_BANK, RELEASE_RAW_MAGNITUDE, normalize_frontend_name
 from birdnet_stm32.models.profiler import print_profile
 from birdnet_stm32.training.config import ModelConfig
-from birdnet_stm32.training.trainer import compute_hop_length, train_model
+from birdnet_stm32.training.trainer import _WARMUP_EPOCHS, compute_hop_length, train_model
 
 
 def _read_meminfo_gb() -> tuple[float, float]:
@@ -797,6 +797,12 @@ def main():
             gradient_clip_norm=args.grad_clip,
             resume=args.resume,
             extra_callbacks=extra_callbacks,
+            # A run from --init_checkpoint starts near a trained model: its first
+            # epoch, still at warm-up learning rates, validates high, and the
+            # full-rate epochs after it take a while to pass it. Selecting and
+            # early-stopping from epoch 1 kept that barely adapted checkpoint once
+            # (a 20-epoch fine-tune stopped at epoch 11 and shipped epoch 1).
+            checkpoint_start_epoch=_WARMUP_EPOCHS if args.init_checkpoint else 0,
         )
         print(f"Training complete. Best model saved to '{args.checkpoint_path}'.")
     except KeyboardInterrupt:
