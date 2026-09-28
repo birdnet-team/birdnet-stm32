@@ -32,7 +32,11 @@ BN_BATCH = 256
 
 
 def add_exposure(
-    model: tf.keras.Model, config: dict, tensors: Sequence[np.ndarray], gain: float = 16.0
+    model: tf.keras.Model,
+    config: dict,
+    tensors: Sequence[np.ndarray],
+    gain: float = 16.0,
+    mag_scale: str | None = None,
 ) -> tuple[tf.keras.Model, dict]:
     """Return a compressing two-exposure copy of a trained one-exposure raw model.
 
@@ -41,6 +45,9 @@ def add_exposure(
         config: Its model config dict (architecture fields).
         tensors: Calibration inputs, each ``[1, samples, 1]`` (peak-normalized).
         gain: The high exposure's gain G (> 1).
+        mag_scale: The new model's magnitude scaling, default the source's. With
+            the knee compressor in place the PWL is dead weight ('none' tied it on
+            the field benchmarks with 8 fewer NPU epochs); 'none' drops it.
 
     Returns:
         The new model and a report.
@@ -64,7 +71,7 @@ def add_exposure(
         alpha=float(config["alpha"]),
         depth_multiplier=int(config.get("depth_multiplier", 1)),
         fft_length=int(src.fft_length),
-        mag_scale=src.mag_scale,
+        mag_scale=mag_scale or src.mag_scale,
         raw_magnitude=src.raw_magnitude,
         raw_overlap=int(src.raw_overlap),
         raw_bank=src.raw_bank,
@@ -82,7 +89,8 @@ def add_exposure(
     (smooth,) = src.band_smooth.get_weights()
     fe.band_smooth.set_weights([np.concatenate([smooth, smooth], axis=2)])
     fe.band_bn.set_weights(src.band_bn.get_weights())
-    fe.mag_layer.set_weights(src.mag_layer.get_weights())
+    if fe.mag_scale == src.mag_scale:
+        fe.mag_layer.set_weights(src.mag_layer.get_weights())
     copied = 0
     for layer in model.layers:
         if layer.name == "audio_frontend" or not layer.weights:
@@ -90,7 +98,7 @@ def add_exposure(
         new.get_layer(layer.name).set_weights(layer.get_weights())
         copied += 1
 
-    report = {"gain": float(gain), "layers_copied": copied}
+    report = {"gain": float(gain), "mag_scale": fe.mag_scale, "layers_copied": copied}
     report.update(normalize_exposure_bank(new, tensors))
     probe = tf.keras.Model(new.inputs, fe.output)
     momentum = fe.band_bn.momentum

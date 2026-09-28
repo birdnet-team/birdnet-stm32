@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `add-exposure --mag_scale none` drops the PWL magnitude scaling while it
+  switches a raw model to the two-exposure compressor: with the knee compressor
+  in place the PWL tied on the field benchmarks and cost 8 NPU epochs.
+
 ## [1.7.0] - 2026-09-28
 
 Two models ship: `BirdNET_Tiny_N6_USNE_90_V1.7_Raw`, a new model, and

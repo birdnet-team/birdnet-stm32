@@ -25,6 +25,12 @@ def get_args() -> argparse.Namespace:
         "--gain", type=float, default=16.0, help="Gain of the second exposure (the knee sits at 1/gain)"
     )
     parser.add_argument(
+        "--mag_scale",
+        choices=("pwl", "none"),
+        default=None,
+        help="Magnitude scaling of the result (default: the source's); 'none' drops the PWL",
+    )
+    parser.add_argument(
         "--num_samples", type=int, default=512, help="Stratified training windows that normalize the bank (seed 42)"
     )
     return parser.parse_args()
@@ -45,14 +51,16 @@ def main():
     if not tensors:
         raise RuntimeError("No calibration windows")
 
-    model, report = add_exposure(load_keras_model(args.checkpoint_path), cfg, tensors, gain=args.gain)
+    model, report = add_exposure(
+        load_keras_model(args.checkpoint_path), cfg, tensors, gain=args.gain, mag_scale=args.mag_scale
+    )
     report.update(checkpoint=os.path.abspath(args.checkpoint_path), num_samples=len(tensors))
     print(json.dumps(report, indent=2))
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output_path)), exist_ok=True)
     model.save(args.output_path)
     stem = os.path.splitext(args.output_path)[0]
-    cfg.update(raw_exposure_gain=float(args.gain), raw_exposure_mode="compress")
+    cfg.update(raw_exposure_gain=float(args.gain), raw_exposure_mode="compress", mag_scale=report["mag_scale"])
     ModelConfig.from_dict(cfg).save(stem + "_model_config.json")
     labels = args.model_config.replace("_model_config.json", "_labels.txt")
     if labels != args.model_config and os.path.isfile(labels):
