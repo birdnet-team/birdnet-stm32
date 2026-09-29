@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-09-29
+
+Two models ship: `BirdNET_Tiny_N6_USNE_90_V1.8_Raw`, a new model, and
+`..._V1.8_Hybrid`, the v1.5 Hybrid weights re-issued a third time — its INT8
+model is byte-identical — under a 1.8 model card. The new raw model is the v1.7
+two-exposure design at 448 frames per chunk (v1.7: 384) and comes within 0.013
+event recall of the hybrid model on WABAD, as a single NPU model with no CPU
+frontend.
+
+### Model performance
+
+Scored on [WABAD](https://zenodo.org/records/14191524) (3,794 annotated calls,
+five northeastern sites, 44 species inside the output list) and on the catalog
+test split, on the INT8 model that gets flashed:
+
+| Model | Event recall @0.5 | Window cMAP | Window AUPRC | Catalog cMAP | Compute per 2.5 s |
+|---|---:|---:|---:|---:|---:|
+| v1.7 Raw | 0.325 | 0.325 | 0.414 | 0.7349 | 21 ms (NPU) |
+| **v1.8 Raw** | **0.348** | **0.329** | **0.421** | **0.7412** | 22 ms (NPU) |
+| v1.8 Hybrid (the v1.5 weights) | 0.361 | 0.376 | 0.461 | 0.7574 | 19 ms NPU + 33 ms STFT |
+
+v1.8 Raw finds 7% more annotated calls than v1.7 Raw (36% more than v1.6 Raw)
+and is better on every pooled WABAD metric and on the catalog; per site it gains
+at four of five and gives some back at the second smallest (SD). A second
+training seed confirms the gain over v1.7. Its activations span three NPU memory
+banks (about 1 MB); it passed the release gates: Keras/TFLite parity, ONNX
+validation, STM32N6 compilation (51 epochs, 3 in software), on-target validation
+(cos 0.99986), the operational gate and a 25-file board test with host parity
+(25/25 same top-1).
+
+### Added
+
+- `add-exposure --mag_scale none` drops the PWL magnitude scaling while it
+  switches a raw model to the two-exposure compressor. At 384 frames the PWL was
+  dead weight (a tie on the field benchmarks, 8 NPU epochs); at 448 it still
+  earns its place, so v1.8 Raw keeps it.
+
 ## [1.7.0] - 2026-09-28
 
 Two models ship: `BirdNET_Tiny_N6_USNE_90_V1.7_Raw`, a new model, and

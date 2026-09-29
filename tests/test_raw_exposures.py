@@ -200,3 +200,14 @@ def test_add_exposure_switches_a_trained_model_to_the_compressor(tmp_path):
     assert np.allclose(load_keras_model(str(path))(x, training=False), new(x, training=False), atol=1e-5)
     with pytest.raises(ValueError, match="one-exposure"):
         add_exposure(new, cfg, [x[:1]], gain=G)
+
+
+def test_add_exposure_can_drop_the_pwl():
+    from birdnet_stm32.conversion.exposure import add_exposure
+
+    src = _model(gain=1.0)
+    cfg = {"embeddings_size": 16, "alpha": 0.25, "dw_kernel_size": 3, "dropout_rate": 0.5}
+    x = _audio(6, 3)
+    new, report = add_exposure(src, cfg, [x[i : i + 1] for i in range(3)], gain=G, mag_scale="none")
+    assert report["mag_scale"] == "none" and new.get_layer("audio_frontend").mag_scale == "none"
+    assert new(x, training=False).shape == (3, 3)

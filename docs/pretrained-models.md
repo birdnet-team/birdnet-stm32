@@ -79,8 +79,10 @@ scored on 2.5-second windows at a 1.25 s hop (the teacher on its native
 | `..._90_V1.5_Hybrid_INT8` | 0.464 | 0.361 | 0.339 | 0.376 | 0.461 |
 | `..._90_V1.6_Raw_INT8` | 0.343 | 0.255 | 0.219 | 0.269 | 0.352 |
 | `..._90_V1.6_Hybrid_INT8` | 0.464 | 0.361 | 0.339 | 0.376 | 0.461 |
-| **`..._90_V1.7_Raw_INT8`** | **0.414** | **0.325** | **0.286** | **0.325** | **0.414** |
-| **`..._90_V1.7_Hybrid_INT8`** | **0.464** | **0.361** | **0.339** | **0.376** | **0.461** |
+| `..._90_V1.7_Raw_INT8` | 0.414 | 0.325 | 0.286 | 0.325 | 0.414 |
+| `..._90_V1.7_Hybrid_INT8` | 0.464 | 0.361 | 0.339 | 0.376 | 0.461 |
+| **`..._90_V1.8_Raw_INT8`** | **0.438** | **0.348** | **0.314** | **0.329** | **0.421** |
+| **`..._90_V1.8_Hybrid_INT8`** | **0.464** | **0.361** | **0.339** | **0.376** | **0.461** |
 | BirdNET+ V3.0 preview 3.1 | 0.766 | 0.656 | 0.607 | 0.517 | 0.617 |
 
 The last row is the server-class teacher these models are distilled from, scored
@@ -90,22 +92,23 @@ as an alternative.
 
 Per site, for the current release (event recall @0.5 / window AUPRC):
 
-| Site | Calls | Species | v1.7 Raw | v1.6 Raw | v1.7 Hybrid |
-|---|---:|---:|---|---|---|
-| MABI (Vermont) | 584 | 22 | 0.550 / 0.633 | 0.389 / 0.549 | 0.632 / 0.690 |
-| CB | 730 | 21 | 0.336 / 0.398 | 0.255 / 0.347 | 0.319 / 0.393 |
-| SD | 237 | 9 | 0.295 / 0.510 | 0.152 / 0.386 | 0.321 / 0.564 |
-| NL | 170 | 6 | 0.341 / 0.428 | 0.259 / 0.398 | 0.424 / 0.484 |
-| FEU (boreal) | 2,073 | 18 | 0.260 / 0.536 | 0.229 / 0.485 | 0.300 / 0.581 |
+| Site | Calls | Species | v1.8 Raw | v1.7 Raw | v1.6 Raw | v1.8 Hybrid |
+|---|---:|---:|---|---|---|---|
+| MABI (Vermont) | 584 | 22 | 0.582 / 0.645 | 0.550 / 0.633 | 0.389 / 0.549 | 0.632 / 0.690 |
+| CB | 730 | 21 | 0.381 / 0.413 | 0.336 / 0.398 | 0.255 / 0.347 | 0.319 / 0.393 |
+| SD | 237 | 9 | 0.241 / 0.465 | 0.295 / 0.510 | 0.152 / 0.386 | 0.321 / 0.564 |
+| NL | 170 | 6 | 0.406 / 0.462 | 0.341 / 0.428 | 0.259 / 0.398 | 0.424 / 0.484 |
+| FEU (boreal) | 2,073 | 18 | 0.277 / 0.538 | 0.260 / 0.536 | 0.229 / 0.485 | 0.300 / 0.581 |
 
-v1.7 ships a new Raw model. v1.7 Hybrid is the v1.5 Hybrid re-issued a second
-time: the same INT8 model byte for byte, so the same scores. v1.7 Raw gains at
-every site, most at MABI, SD and NL, and at CB it now finds more calls than
-hybrid. Two changes carry it: the filterbank reads 384 frames per chunk (hybrid's
-time resolution; v1.6: 256), and it is computed twice, the second time at 16x
-gain, and the two copies compressed into one envelope inside the NPU, so quiet
-calls keep their resolution through the INT8 frontend. (v1.6 had changed only how
-the filterbank is cut for the NPU, which helped the densest sites.)
+v1.8 ships a new Raw model; v1.8 Hybrid is the v1.5 Hybrid re-issued a third
+time, the same INT8 model byte for byte. v1.7 Raw brought two changes: the
+filterbank reads more frames per chunk (384; v1.6: 256), and it is computed
+twice, the second time at 16x gain, with the two copies compressed into one
+envelope inside the NPU, so quiet calls keep their resolution through the INT8
+frontend. v1.8 Raw is the same design at 448 frames. It gains at four of the five
+sites and gives some back at SD, the second smallest; pooled it finds 7% more
+calls than v1.7 Raw, and at CB it finds more than hybrid. (v1.6 had changed only
+how the filterbank is cut for the NPU, which helped the densest sites.)
 
 - **Event recall** is the share of annotated calls whose overlapping window
   scored above the threshold — what a recorder set to that threshold would log.
@@ -131,8 +134,10 @@ firmware's STFT (33 ms); the firmware of 1.5 and earlier took 69 ms for it.
 | `..._90_V1.5_Hybrid_INT8` | 946,196 | 104.83 M | 19 ms | 33 ms | 52 ms | 40 (4 sw) |
 | `..._90_V1.6_Hybrid_INT8` | 946,196 | 104.83 M | 19 ms | 33 ms | 52 ms | 40 (4 sw) |
 | `..._90_V1.6_Raw_INT8` | 987,156 | 81.25 M | 16 ms | 0 ms | 16 ms | 52 (3 sw) |
-| **`..._90_V1.7_Hybrid_INT8`** | 946,196 | 104.83 M | 19 ms | 33 ms | 52 ms | 40 (4 sw) |
-| **`..._90_V1.7_Raw_INT8`** | 1,012,052 | 134.88 M | **21 ms** | 0 ms | **21 ms** | 54 (3 sw) |
+| `..._90_V1.7_Hybrid_INT8` | 946,196 | 104.83 M | 19 ms | 33 ms | 52 ms | 40 (4 sw) |
+| `..._90_V1.7_Raw_INT8` | 1,012,052 | 134.88 M | 21 ms | 0 ms | 21 ms | 54 (3 sw) |
+| **`..._90_V1.8_Hybrid_INT8`** | 946,196 | 104.83 M | 19 ms | 33 ms | 52 ms | 40 (4 sw) |
+| **`..._90_V1.8_Raw_INT8`** | 1,003,860 | 151.97 M | **22 ms** | 0 ms | **22 ms** | 51 (3 sw) |
 | BirdNET+ V3.0 preview 3.1 | 135,228,889 | — | — | — | — | — |
 
 The teacher is listed for scale only: **137x the parameters** of either model here,
@@ -140,8 +145,8 @@ The teacher is listed for scale only: **137x the parameters** of either model he
 not run on this class of hardware at all.
 
 - **Raw is the cheap one and that is its whole purpose.** Its learned filterbank
-  runs on the NPU, so a chunk costs 21 ms of compute (16 ms before 1.7 moved to
-  384 frames and computed the filterbank twice). Hybrid computes a 512-point
+  runs on the NPU, so a chunk costs 22 ms of compute (16 ms before 1.7 computed
+  the filterbank twice and raw moved to 384, then 448 frames). Hybrid computes a 512-point
   STFT on the Cortex-M55 first, which costs 33 ms with CMSIS-DSP's Helium FFT —
   more than the inference it feeds — for the accuracy in the table above.
 - **Compute per chunk excludes reading the audio.** The board test also reports
@@ -151,8 +156,9 @@ not run on this class of hardware at all.
 - **NPU epochs** are the compiler's scheduling units; the software ones are the
   input quantize and output dequantize, which have run on the M55 in every
   release. A shorter raw frontend in 1.5 took raw from 58 epochs to 53, 1.6's
-  kernel split to 52, and 1.7's second exposure and 384 frames to 54.
-- At 21 ms per 2.5 s chunk, raw is **119x faster than real time**, so duty cycle
+  kernel split to 52, 1.7's second exposure and 384 frames to 54, and 1.8's 448
+  frames to 51.
+- At 22 ms per 2.5 s chunk, raw is **114x faster than real time**, so duty cycle
   rather than throughput sets a recorder's power budget.
 
 ## Running a bundle on the board
