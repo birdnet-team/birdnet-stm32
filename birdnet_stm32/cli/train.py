@@ -15,7 +15,7 @@ from birdnet_stm32.data.dataset import (
     load_file_paths_from_directory,
     upsample_minority_classes,
 )
-from birdnet_stm32.data.generator import estimate_samples_per_epoch, load_dataset
+from birdnet_stm32.data.generator import estimate_samples_per_epoch, load_dataset, sample_chunks
 from birdnet_stm32.models.dscnn import DW_KERNEL_SIZES, STAGE_WIDTHS, build_dscnn_model
 from birdnet_stm32.models.frontend import RELEASE_RAW_BANK, RELEASE_RAW_MAGNITUDE, normalize_frontend_name
 from birdnet_stm32.models.profiler import print_profile
@@ -174,6 +174,10 @@ _LOADER_TARGET_FREE_GB = 8.0
 # models (docs/dev/int8-parity-plan.md).
 TRAIN_EPOCHS = 50
 TRAIN_LEARNING_RATE = 5e-4
+# Cosine loss to the teacher's embedding, against a BCE of ~0.06: at 0.2 the two
+# terms are about equal. From scratch it raised the float field window AUPRC by
+# 0.033 and the INT8 catalog cMAP by 0.016 (448 frames, 50 epochs).
+TEACHER_EMBEDDING_WEIGHT = 0.2
 QAT_EPOCHS = 8
 QAT_LEARNING_RATE = 2e-5
 PROBE_LEARNING_RATE = 1e-3
@@ -181,6 +185,10 @@ PROBE_LEARNING_RATE = 1e-3
 
 # Training windows that set a two-exposure bank's per-band normalization.
 _EXPOSURE_NORM_SAMPLES = 512
+# Training files the teacher-embedding projector is fitted on when a run starts
+# from trained weights (--init_checkpoint or --resume): one chunk each, drawn as
+# training draws them, for a 1024 -> 1280 ridge regression.
+_PROJECTOR_FIT_FILES = 6144
 
 
 def get_args() -> argparse.Namespace:
@@ -323,6 +331,17 @@ def get_args() -> argparse.Namespace:
         type=float,
         default=0.0,
         help="Teacher share of the training target in [0, 1] (0 = hard labels only)",
+    )
+    parser.add_argument(
+        "--teacher_embedding_weight",
+        type=float,
+        default=None,
+        help=(
+            "Weight of a cosine loss between the student's embedding (through a training-only "
+            "projector) and the teacher's embedding of the same window. Default: "
+            f"{TEACHER_EMBEDDING_WEIGHT} when --teacher_cache holds emb.npy, otherwise off. "
+            "0 disables it. The deployed model is unchanged."
+        ),
     )
     parser.add_argument("--mixup_alpha", type=float, default=0.2, help="Mixup alpha")
     parser.add_argument("--mixup_probability", type=float, default=0.25, help="Mixup batch fraction")
@@ -469,6 +488,17 @@ def get_args() -> argparse.Namespace:
         parser.error(f"--teacher_weight must be in [0, 1], got {args.teacher_weight}")
     if args.teacher_weight > 0 and not args.teacher_cache:
         parser.error("--teacher_weight > 0 needs --teacher_cache")
+    has_embeddings = bool(args.teacher_cache) and os.path.isfile(os.path.join(args.teacher_cache, "emb.npy"))
+    if args.teacher_embedding_weight is None:
+        # On wherever the cache can feed it: float training with teacher embeddings.
+        float_training = not (args.qat or args.linear_probe)
+        args.teacher_embedding_weight = TEACHER_EMBEDDING_WEIGHT if has_embeddings and float_training else 0.0
+    if args.teacher_embedding_weight < 0:
+        parser.error(f"--teacher_embedding_weight must be >= 0, got {args.teacher_embedding_weight}")
+    if args.teacher_embedding_weight > 0 and not has_embeddings:
+        parser.error("--teacher_embedding_weight > 0 needs a --teacher_cache that holds emb.npy")
+    if args.teacher_embedding_weight > 0 and (args.qat or args.linear_probe):
+        parser.error("--teacher_embedding_weight applies to float training only (not --qat or --linear_probe)")
     if args.crop_policy == "teacher" and not args.teacher_cache:
         parser.error("--crop_policy teacher needs --teacher_cache")
     args.deterministic = True  # always deterministic
@@ -612,28 +642,26 @@ def main():
         train_kwargs["loader_control"] = train_loader_control
 
     val_kwargs = dict(common_kwargs)
-    if args.teacher_cache and (args.teacher_weight > 0 or args.crop_policy == "teacher"):
+    embed = args.teacher_embedding_weight > 0
+    if args.teacher_cache and (args.teacher_weight > 0 or args.crop_policy == "teacher" or embed):
         # Fail here, in the main process, rather than inside every loader worker.
         from pathlib import Path
 
         from birdnet_stm32.data.teacher import TeacherTargets
 
-        teacher = TeacherTargets(args.teacher_cache, classes)
+        teacher = TeacherTargets(args.teacher_cache, classes, embeddings=embed)
         covered = sum(Path(p).stem in teacher for p in train_paths)
         print(
             f"Teacher targets: {covered}/{len(train_paths)} training files covered, "
             f"{int(teacher.mask.sum())}/{len(classes)} classes, weight {args.teacher_weight}, "
             f"crop policy {args.crop_policy}"
+            + (f", embeddings {teacher.embedding_dim}-d at weight {args.teacher_embedding_weight}" if embed else "")
         )
-    train_dataset = load_dataset(
-        train_paths,
-        classes,
+    # How a training chunk is drawn and labelled; shared with the projector fit below.
+    chunk_kwargs = dict(
         audio_frontend=args.audio_frontend,
-        batch_size=args.batch_size,
         num_workers=args.num_workers,
         max_chunks_per_file=args.max_chunks_per_file,
-        mixup_alpha=args.mixup_alpha,
-        mixup_probability=args.mixup_probability,
         random_offset=True,
         snr_threshold=0.1,
         spec_augment=args.spec_augment,
@@ -642,6 +670,15 @@ def main():
         crop_policy=args.crop_policy,
         teacher_cache=args.teacher_cache,
         teacher_weight=args.teacher_weight,
+        teacher_embeddings=embed,
+    )
+    train_dataset = load_dataset(
+        train_paths,
+        classes,
+        batch_size=args.batch_size,
+        mixup_alpha=args.mixup_alpha,
+        mixup_probability=args.mixup_probability,
+        **chunk_kwargs,
         **train_kwargs,
     )
     from birdnet_stm32.training.validation import VALIDATION_SUBSET_SEED, FileCmap, stratified_validation_subset
@@ -779,6 +816,36 @@ def main():
         )
     )
 
+    training_wrapper = None
+    if embed:
+        from birdnet_stm32.training.embedding_distillation import EmbeddingDistilledModel, fit_projector
+
+        # From trained weights, a random projector would open with the largest
+        # possible loss and push its gradients into a converged backbone; fit it
+        # to the student as it is instead. From scratch there is nothing to fit.
+        from_trained = bool(args.init_checkpoint) or (args.resume and os.path.isfile(args.checkpoint_path))
+
+        def training_wrapper(student):
+            wrapped = EmbeddingDistilledModel(student, teacher.embedding_dim, args.teacher_embedding_weight)
+            if from_trained:
+                rng = random.Random(args.seed)
+                files = rng.sample(train_paths, min(_PROJECTOR_FIT_FILES, len(train_paths)))
+                chunks = sample_chunks(files, classes, **chunk_kwargs, **common_kwargs)
+                batches = [
+                    (
+                        np.stack([c[0] for c in chunks[i : i + 64]]),
+                        (
+                            None,
+                            np.stack([c[2] for c in chunks[i : i + 64]]),
+                            np.stack([c[3] for c in chunks[i : i + 64]]),
+                        ),
+                    )
+                    for i in range(0, len(chunks), 64)
+                ]
+                fit = fit_projector(wrapped, batches)
+                print(f"[teacher embeddings] projector fitted by ridge regression on {len(files)} files: {fit}")
+            return wrapped
+
     # Train
     print("Starting training...")
     try:
@@ -803,6 +870,7 @@ def main():
             # early-stopping from epoch 1 kept that barely adapted checkpoint once
             # (a 20-epoch fine-tune stopped at epoch 11 and shipped epoch 1).
             checkpoint_start_epoch=_WARMUP_EPOCHS if args.init_checkpoint else 0,
+            training_wrapper=training_wrapper,
         )
         print(f"Training complete. Best model saved to '{args.checkpoint_path}'.")
     except KeyboardInterrupt:

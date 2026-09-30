@@ -55,8 +55,9 @@ def _init_worker(cfg: dict) -> None:
     _worker_cfg = cfg
     # Memory-mapped, so every worker shares one copy through the page cache.
     cache = cfg.get("teacher_cache")
-    needed = cfg.get("teacher_weight", 0.0) > 0 or cfg.get("crop_policy") == "teacher"
-    _teacher = TeacherTargets(cache, cfg["classes"]) if cache and needed else None
+    embeddings = bool(cfg.get("teacher_embeddings", False))
+    needed = cfg.get("teacher_weight", 0.0) > 0 or cfg.get("crop_policy") == "teacher" or embeddings
+    _teacher = TeacherTargets(cache, cfg["classes"], embeddings=embeddings) if cache and needed else None
 
 
 def _process_file(path: str):
@@ -65,6 +66,11 @@ def _process_file(path: str):
     Returns a **list** of ``(sample, label)`` tuples (one per salient chunk),
     or ``None`` on failure / unknown class.  The number of chunks per file is
     controlled by ``max_chunks_per_file`` in the worker config.
+
+    With ``teacher_embeddings`` set, each tuple is ``(sample, label, embedding,
+    valid)``: the teacher's float16 embedding of the chunk's nearest window, and
+    ``valid`` 1.0 when there is one (zeros and 0.0 when the recording is not
+    cached or the window is non-finite).
     """
     cfg = _worker_cfg
     label_str = path.split("/")[-2]
@@ -207,6 +213,7 @@ def _process_file(path: str):
     selected = [(model_input[id(ranked)], start_of[id(ranked)]) for ranked in pool[:max_chunks]]
 
     blend = _teacher is not None and cfg.get("teacher_weight", 0.0) > 0
+    embed = _teacher is not None and bool(cfg.get("teacher_embeddings", False))
     results = []
     for item, start in selected:
         target = label
@@ -214,6 +221,10 @@ def _process_file(path: str):
             teacher = _teacher.lookup(sample_id, window_offset_s + start / sr, cd)
             if teacher is not None:
                 target = blend_targets(label, teacher, _teacher.mask, cfg["teacher_weight"])
+        if embed:
+            vector = _teacher.embedding(sample_id, window_offset_s + start / sr, cd)
+            valid = np.float32(vector is not None)
+            vector = np.zeros(_teacher.embedding_dim, np.float16) if vector is None else vector.astype(np.float16)
         if audio_frontend == "raw":
             x = item[:T]
             if x.shape[0] < T:
@@ -226,6 +237,6 @@ def _process_file(path: str):
             sample = apply_spec_augment(sample, freq_mask_max=freq_mask_max, time_mask_max=time_mask_max)
 
         sample = np.expand_dims(sample, axis=-1).astype(np.float32)
-        results.append((sample, target))
+        results.append((sample, target, vector, valid) if embed else (sample, target))
 
     return results if results else None
