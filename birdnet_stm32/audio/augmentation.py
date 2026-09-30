@@ -12,7 +12,8 @@ def apply_mixup(
     batch_labels: np.ndarray,
     alpha: float = 0.2,
     probability: float = 0.25,
-) -> tuple[np.ndarray, np.ndarray]:
+    return_mixed: bool = False,
+) -> tuple[np.ndarray, ...]:
     """Apply realistic multi-source mixup to a batch of samples and labels.
 
         Emulates natural soundscapes with multiple birds vocalizing at the same
@@ -30,17 +31,18 @@ def apply_mixup(
             mixing (all sources contribute equally).  ``alpha=0.5`` is a
             good default for bird soundscape emulation.
         probability: Fraction of the batch to apply mixup to.
+        return_mixed: Also return a bool ``[B]`` marking the samples that were
+            mixed.
 
     Returns:
-        Tuple of (mixed_samples, mixed_labels) with same shapes as inputs.
+        Tuple of (mixed_samples, mixed_labels) with same shapes as inputs, and
+        the ``[B]`` mixed mask when ``return_mixed`` is set.
     """
-    if alpha <= 0 or probability <= 0:
-        return batch_samples, batch_labels
-
     B = batch_samples.shape[0]
-    num_mix = int(B * probability)
+    mixed = np.zeros(B, dtype=bool)
+    num_mix = int(B * probability) if alpha > 0 and probability > 0 else 0
     if num_mix <= 0:
-        return batch_samples, batch_labels
+        return (batch_samples, batch_labels, mixed) if return_mixed else (batch_samples, batch_labels)
 
     mix_indices = np.random.choice(B, size=num_mix, replace=False)
 
@@ -58,8 +60,9 @@ def apply_mixup(
         batch_samples[idx] = np.sum(gains_shaped * batch_samples[source_indices], axis=0)
 
         batch_labels[idx] = np.maximum.reduce(batch_labels[source_indices])
+        mixed[idx] = True
 
-    return batch_samples, batch_labels
+    return (batch_samples, batch_labels, mixed) if return_mixed else (batch_samples, batch_labels)
 
 
 def apply_spec_augment(

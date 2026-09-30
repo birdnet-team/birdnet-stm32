@@ -103,41 +103,19 @@ def _compute_reservoir_limits(
     return int(high), int(low)
 
 
-def load_dataset(
-    file_paths: list[str],
+def _worker_config(
     classes: list[str],
-    audio_frontend: str = "hybrid",
-    batch_size: int = 32,
-    spec_width: int = 256,
-    mel_bins: int = 64,
-    num_workers: int = 8,
-    max_chunks_per_file: int = 1,
+    audio_frontend: str,
+    spec_width: int,
+    mel_bins: int,
+    max_chunks_per_file: int,
     **kwargs: Any,
-) -> tf.data.Dataset:
-    """Build a high-throughput tf.data pipeline with multiprocessing workers.
-
-    Uses ``multiprocessing.Pool`` so FLAC decode, resampling, smart-crop,
-    and spectrogram computation run in **separate processes**, bypassing the
-    GIL entirely.
-
-    When ``max_chunks_per_file > 1``, each file open extracts up to that many
-    salient chunks, which are buffered in a shuffled in-memory reservoir.
-    This dramatically reduces redundant I/O for long recordings (e.g. a 60 s
-    file decoded once yields 3 usable chunks instead of 1).
-
-    Args:
-        file_paths: Audio file paths.
-        classes: Ordered class names.
-        audio_frontend: 'librosa' | 'hybrid' | 'raw'.
-        batch_size: Batch size.
-        spec_width: Target spectrogram width.
-        mel_bins: Number of mel bins.
-        num_workers: Number of worker processes (0 = single-process fallback).
-        max_chunks_per_file: Max salient chunks to extract per file open.
-        **kwargs: Forwarded to loading logic (sample_rate, chunk_duration, etc.).
+) -> tuple[dict, tuple[int, ...]]:
+    """The per-file processing a loader worker runs, and the shape of one sample.
 
     Returns:
-        Infinite tf.data.Dataset of (inputs, labels) with prefetching.
+        ``(worker_cfg, sample_shape)``: the picklable config handed to every
+        worker (see ``birdnet_stm32.data.worker``) and one sample's shape.
     """
     audio_frontend = normalize_frontend_name(audio_frontend)
     sr = kwargs.get("sample_rate", 24000)
@@ -155,16 +133,9 @@ def load_dataset(
     crop_policy = kwargs.get("crop_policy", "energy")
     teacher_cache = kwargs.get("teacher_cache")
     teacher_weight = float(kwargs.get("teacher_weight", 0.0))
-    mixup_alpha = kwargs.get("mixup_alpha", 0.2)
-    mixup_probability = kwargs.get("mixup_probability", 0.25)
-    # Keep prefetch bounded to avoid RAM spikes with large raw batches.
-    prefetch_batches = int(kwargs.get("prefetch_batches", 2))
-    loader_buffer_mb = float(kwargs.get("loader_buffer_mb", _DEFAULT_BUFFER_MB))
-    # Bound in-flight multiprocessing tasks so result queues cannot grow
-    # unbounded during long epochs.
-    max_inflight_files = int(kwargs.get("max_inflight_files", max(256, num_workers * 64)))
-    loader_control = kwargs.get("loader_control")
-    file_task_timeout_s = float(kwargs.get("file_task_timeout_s", max(120.0, cd * 10.0)))
+    teacher_embeddings = bool(kwargs.get("teacher_embeddings", False))
+    if teacher_embeddings and not teacher_cache:
+        raise ValueError("teacher_embeddings needs a teacher_cache")
     candidate_chunks_per_file = int(kwargs.get("candidate_chunks_per_file", min(8, max(4, max_chunks_per_file * 2))))
     if random_offset:
         load_duration = max(cd, cd * candidate_chunks_per_file)
@@ -212,7 +183,106 @@ def load_dataset(
         "classes": list(classes),
         "teacher_cache": str(teacher_cache) if teacher_cache else None,
         "teacher_weight": teacher_weight,
+        "teacher_embeddings": teacher_embeddings,
     }
+
+    return worker_cfg, sample_shape
+
+
+def sample_chunks(
+    file_paths: list[str],
+    classes: list[str],
+    audio_frontend: str = "hybrid",
+    spec_width: int = 256,
+    mel_bins: int = 64,
+    num_workers: int = 8,
+    max_chunks_per_file: int = 1,
+    **kwargs: Any,
+) -> list[tuple[np.ndarray, ...]]:
+    """Process each file once, exactly as a training loader would, and return the chunks.
+
+    A finite draw with the loader's own worker processing (crop policy, teacher
+    targets and embeddings) but no ``tf.data``, reservoir or mixup: for
+    one-off statistics such as fitting a training-only head before training.
+    A second ``tf.data`` iterator over the infinite training loader would have to
+    be torn down mid-stream, and tearing down its worker pool can hang.
+
+    Returns:
+        The worker's tuples, in file order; files that fail to load are skipped.
+    """
+    worker_cfg, _ = _worker_config(classes, audio_frontend, spec_width, mel_bins, max_chunks_per_file, **kwargs)
+    if num_workers <= 0:
+        _init_worker(worker_cfg)
+        results = [_process_file(path) for path in file_paths]
+    else:
+        pool = _create_worker_pool(num_workers, worker_cfg)
+        try:
+            results = pool.map(_process_file, list(file_paths), chunksize=16)
+        finally:
+            _terminate_worker_pool(pool)
+    return [item for result in results if result for item in result]
+
+
+def load_dataset(
+    file_paths: list[str],
+    classes: list[str],
+    audio_frontend: str = "hybrid",
+    batch_size: int = 32,
+    spec_width: int = 256,
+    mel_bins: int = 64,
+    num_workers: int = 8,
+    max_chunks_per_file: int = 1,
+    **kwargs: Any,
+) -> tf.data.Dataset:
+    """Build a high-throughput tf.data pipeline with multiprocessing workers.
+
+    Uses ``multiprocessing.Pool`` so FLAC decode, resampling, smart-crop,
+    and spectrogram computation run in **separate processes**, bypassing the
+    GIL entirely.
+
+    When ``max_chunks_per_file > 1``, each file open extracts up to that many
+    salient chunks, which are buffered in a shuffled in-memory reservoir.
+    This dramatically reduces redundant I/O for long recordings (e.g. a 60 s
+    file decoded once yields 3 usable chunks instead of 1).
+
+    Args:
+        file_paths: Audio file paths.
+        classes: Ordered class names.
+        audio_frontend: 'librosa' | 'hybrid' | 'raw'.
+        batch_size: Batch size.
+        spec_width: Target spectrogram width.
+        mel_bins: Number of mel bins.
+        num_workers: Number of worker processes (0 = single-process fallback).
+        max_chunks_per_file: Max salient chunks to extract per file open.
+        **kwargs: Forwarded to loading logic (sample_rate, chunk_duration, etc.).
+
+    Returns:
+        Infinite tf.data.Dataset of (inputs, labels) with prefetching. With
+        ``teacher_embeddings=True`` (needs a ``teacher_cache`` holding
+        ``emb.npy``) the labels are ``(labels, teacher_embedding, valid)``:
+        float32 ``[B, D]`` embeddings and a float32 ``[B]`` flag that is 0 for
+        chunks with no usable teacher window and for chunks mixup mixed, whose
+        audio the cached embedding no longer describes.
+    """
+    worker_cfg, sample_shape = _worker_config(
+        classes, audio_frontend, spec_width, mel_bins, max_chunks_per_file, **kwargs
+    )
+    cd = worker_cfg["cd"]
+    num_classes = worker_cfg["num_classes"]
+    teacher_embeddings = worker_cfg["teacher_embeddings"]
+    embedding_dim = 0
+    if teacher_embeddings:
+        embedding_dim = int(np.load(f"{worker_cfg['teacher_cache']}/emb.npy", mmap_mode="r").shape[1])
+    mixup_alpha = kwargs.get("mixup_alpha", 0.2)
+    mixup_probability = kwargs.get("mixup_probability", 0.25)
+    # Keep prefetch bounded to avoid RAM spikes with large raw batches.
+    prefetch_batches = int(kwargs.get("prefetch_batches", 2))
+    loader_buffer_mb = float(kwargs.get("loader_buffer_mb", _DEFAULT_BUFFER_MB))
+    # Bound in-flight multiprocessing tasks so result queues cannot grow
+    # unbounded during long epochs.
+    max_inflight_files = int(kwargs.get("max_inflight_files", max(256, num_workers * 64)))
+    loader_control = kwargs.get("loader_control")
+    file_task_timeout_s = float(kwargs.get("file_task_timeout_s", max(120.0, cd * 10.0)))
 
     use_mp = num_workers > 0
 
@@ -343,34 +413,49 @@ def load_dataset(
         batch carries over to the next pass, as ``batch(drop_remainder=True)``
         on the infinite generator did.
         """
-        xs: list[np.ndarray] = []
-        ys: list[np.ndarray] = []
-        for x, y in _generator():
-            xs.append(x)
-            ys.append(y)
-            if len(xs) == batch_size:
-                yield np.stack(xs), np.stack(ys)
-                xs, ys = [], []
+        batch: list[tuple[np.ndarray, ...]] = []
+        for item in _generator():
+            batch.append(item)
+            if len(batch) == batch_size:
+                columns = [np.stack(column) for column in zip(*batch, strict=True)]
+                if teacher_embeddings:
+                    x, y, emb, valid = columns
+                    yield x, (y, emb.astype(np.float32), valid)
+                else:
+                    yield columns[0], columns[1]
+                batch = []
 
-    output_sig = (
-        tf.TensorSpec(shape=(batch_size, *sample_shape), dtype=tf.float32),
-        tf.TensorSpec(shape=(batch_size, num_classes), dtype=tf.float32),
-    )
+    label_sig = tf.TensorSpec(shape=(batch_size, num_classes), dtype=tf.float32)
+    if teacher_embeddings:
+        label_sig = (
+            label_sig,
+            tf.TensorSpec(shape=(batch_size, embedding_dim), dtype=tf.float32),
+            tf.TensorSpec(shape=(batch_size,), dtype=tf.float32),
+        )
+    output_sig = (tf.TensorSpec(shape=(batch_size, *sample_shape), dtype=tf.float32), label_sig)
 
     dataset = tf.data.Dataset.from_generator(_batched, output_signature=output_sig)
 
     # Mixup on batches
     if mixup_alpha > 0 and mixup_probability > 0:
 
-        def _apply_batch_mixup(samples, labels):
-            mixed_s, mixed_l = tf.py_function(
-                lambda s, lb: apply_mixup(s.numpy(), lb.numpy(), alpha=mixup_alpha, probability=mixup_probability),
-                [samples, labels],
-                [tf.float32, tf.float32],
+        def _mix(s, lb):
+            mixed_s, mixed_l, mixed = apply_mixup(
+                s.numpy(), lb.numpy(), alpha=mixup_alpha, probability=mixup_probability, return_mixed=True
             )
+            return mixed_s, mixed_l, mixed.astype(np.float32)
+
+        def _apply_batch_mixup(samples, labels):
+            if teacher_embeddings:
+                labels, emb, valid = labels
+            mixed_s, mixed_l, mixed = tf.py_function(_mix, [samples, labels], [tf.float32, tf.float32, tf.float32])
             mixed_s.set_shape(samples.shape)
             mixed_l.set_shape(labels.shape)
-            return mixed_s, mixed_l
+            if not teacher_embeddings:
+                return mixed_s, mixed_l
+            # A mixed chunk no longer sounds like the window its embedding came from.
+            mixed.set_shape(valid.shape)
+            return mixed_s, (mixed_l, emb, valid * (1.0 - mixed))
 
         dataset = dataset.map(_apply_batch_mixup, num_parallel_calls=1)
 

@@ -137,6 +137,7 @@ def train_model(
     checkpoint_mode: str = _MONITOR_MODE,
     checkpoint_start_epoch: int = 0,
     checkpoint_managed: bool = False,
+    training_wrapper: Callable[[tf.keras.Model], tf.keras.Model] | None = None,
 ) -> tf.keras.callbacks.History:
     """Train a model with cosine LR schedule, early stopping, and checkpointing.
 
@@ -179,6 +180,9 @@ def train_model(
             selection and early stopping. Compression schedules use this so a
             model that has not yet reached its target sparsity or quantization
             noise cannot win on the strength of the perturbation it is missing.
+        training_wrapper: Optional function that wraps the model for training
+            only (e.g. with a training-only loss head). It is applied after a
+            ``resume`` reload, and the unwrapped model becomes the checkpoint.
 
     Returns:
         Keras training history.
@@ -209,6 +213,12 @@ def train_model(
                 state = json.load(f)
             initial_epoch = state.get("epoch", 0)
             print(f"[resume] Resuming from epoch {initial_epoch}")
+
+    if training_wrapper is not None:
+        if checkpoint_model is not None:
+            raise ValueError("training_wrapper and checkpoint_model cannot be combined")
+        checkpoint_model = model
+        model = training_wrapper(model)
 
     warmup_steps = _WARMUP_EPOCHS * steps_per_epoch
     lr_schedule = WarmupCosineDecay(

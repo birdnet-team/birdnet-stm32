@@ -24,6 +24,8 @@ Cache format (a directory):
   start of the recording.
 - ``index.npz``: ``sample_id`` (recording file stem), ``row_offset`` and
   ``n_windows``, locating each recording's rows.
+- ``emb.npy`` (optional): float16 ``[n_windows, emb_dim]`` teacher embeddings,
+  row-aligned with ``mapped.npy``. Needed only for embedding distillation.
 
 The large arrays are memory-mapped, so every worker shares one copy through
 the page cache.
@@ -44,9 +46,10 @@ class TeacherTargets:
         cache_dir: Directory in the format described in the module docstring.
         classes: The training class order. Must equal the cache's, so a cache
             built for another schema cannot silently mislabel classes.
+        embeddings: Also memory-map ``emb.npy``, for :meth:`embedding`.
     """
 
-    def __init__(self, cache_dir: str | Path, classes: list[str]):
+    def __init__(self, cache_dir: str | Path, classes: list[str], embeddings: bool = False):
         root = Path(cache_dir)
         meta = json.loads((root / "meta.json").read_text())
         if list(meta["classes"]) != list(classes):
@@ -60,6 +63,13 @@ class TeacherTargets:
         self.window_s = float(meta["teacher_window_s"])
         self.mapped = np.load(root / "mapped.npy", mmap_mode="r")
         self.starts = np.load(root / "starts.npy", mmap_mode="r")
+        self.emb: np.ndarray | None = None
+        if embeddings:
+            if not (root / "emb.npy").is_file():
+                raise FileNotFoundError(f"teacher cache {root} has no emb.npy (build it with embeddings)")
+            self.emb = np.load(root / "emb.npy", mmap_mode="r")
+            if self.emb.shape[0] != self.mapped.shape[0]:
+                raise ValueError(f"emb.npy has {self.emb.shape[0]} rows, mapped.npy {self.mapped.shape[0]}")
         index = np.load(root / "index.npz")
         self.index: dict[str, tuple[int, int]] = {
             str(sid): (int(off), int(n))
@@ -68,6 +78,32 @@ class TeacherTargets:
 
     def __contains__(self, sample_id: str) -> bool:
         return sample_id in self.index
+
+    @property
+    def embedding_dim(self) -> int:
+        """Width of the teacher embedding (0 when embeddings are not loaded)."""
+        return 0 if self.emb is None else int(self.emb.shape[1])
+
+    def _nearest(self, sample_id: str, chunk_start_s: float, chunk_duration_s: float) -> int | None:
+        """Cache row of the window whose centre is nearest the chunk's, or ``None``.
+
+        ``None`` when the recording is not cached or no window centre lies
+        within one window length of the chunk's centre. Windows sit on a 1.25 s
+        grid, so the nearest 3 s window still covers most of a 2.5 s chunk.
+        """
+        entry = self.index.get(sample_id)
+        if entry is None:
+            return None
+        offset, n = entry
+        if n <= 0:
+            return None
+        centres = np.asarray(self.starts[offset : offset + n], dtype=np.float64) + self.window_s / 2.0
+        chunk_centre = chunk_start_s + chunk_duration_s / 2.0
+        distance = np.abs(centres - chunk_centre)
+        i = int(np.argmin(distance))
+        if distance[i] > self.window_s:
+            return None
+        return offset + i
 
     def lookup(self, sample_id: str, chunk_start_s: float, chunk_duration_s: float) -> np.ndarray | None:
         """Teacher scores for the window whose centre is nearest the chunk's.
@@ -89,22 +125,34 @@ class TeacherTargets:
         by zero. Reading that as "no species present" would be wrong, and a
         single NaN target is enough to turn every weight non-finite.
         """
-        entry = self.index.get(sample_id)
-        if entry is None:
+        row = self._nearest(sample_id, chunk_start_s, chunk_duration_s)
+        if row is None:
             return None
-        offset, n = entry
-        if n <= 0:
-            return None
-        centres = np.asarray(self.starts[offset : offset + n], dtype=np.float64) + self.window_s / 2.0
-        chunk_centre = chunk_start_s + chunk_duration_s / 2.0
-        distance = np.abs(centres - chunk_centre)
-        i = int(np.argmin(distance))
-        if distance[i] > self.window_s:
-            return None
-        scores = np.asarray(self.mapped[offset + i], dtype=np.float32)
+        scores = np.asarray(self.mapped[row], dtype=np.float32)
         if not np.isfinite(scores).all():
             return None
         return scores
+
+    def embedding(self, sample_id: str, chunk_start_s: float, chunk_duration_s: float) -> np.ndarray | None:
+        """Teacher embedding for the window nearest the chunk, as :meth:`lookup`.
+
+        Returns:
+            float32 ``[embedding_dim]``, or ``None`` under the same conditions as
+            :meth:`lookup` (a non-finite row included); the caller then leaves
+            the chunk out of the embedding loss.
+
+        Raises:
+            RuntimeError: If the cache was opened without ``embeddings=True``.
+        """
+        if self.emb is None:
+            raise RuntimeError("teacher embeddings were not loaded (embeddings=False)")
+        row = self._nearest(sample_id, chunk_start_s, chunk_duration_s)
+        if row is None:
+            return None
+        vector = np.asarray(self.emb[row], dtype=np.float32)
+        if not np.isfinite(vector).all():
+            return None
+        return vector
 
 
 def blend_targets(hard: np.ndarray, teacher: np.ndarray, mask: np.ndarray, weight: float) -> np.ndarray:

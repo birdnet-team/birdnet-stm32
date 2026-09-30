@@ -110,6 +110,19 @@ Two options change the backbone shape:
   for, and recordings missing from the cache, keep their hard label.
   Validation and checkpoint selection always use hard labels. The cache format
   is documented in `birdnet_stm32/data/teacher.py`.
+- **Teacher embeddings**: when the cache also holds the teacher's embedding of
+  each window (`emb.npy`), training adds a cosine loss between the student's
+  pooled embedding, mapped through a training-only linear projector, and that
+  embedding. It is on by default at `--teacher_embedding_weight 0.2` whenever
+  the cache has embeddings; `0` turns it off. The embedding carries what the teacher hears
+  beyond our classes, and a signal for the non-bird classes and noise
+  recordings, which get no teacher scores. Mixed chunks and chunks without a
+  teacher window are left out of it. The projector never reaches the
+  checkpoint, so the deployed model is unchanged. A run that starts from
+  trained weights (`--init_checkpoint`, `--resume`) fits the projector to them
+  by ridge regression first. Trained from scratch at 448 frames, it raised the
+  float window AUPRC on WABAD from 0.442 to 0.475 and the INT8 catalog cMAP
+  from 0.712 to 0.728.
 - **Smart crop**: long recordings (> 2 chunks) are automatically cropped to
   salient regions using short-time energy (STE) analysis, reducing label
   noise from silent or irrelevant segments. Energy ranking selects the loudest
@@ -359,8 +372,9 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--no_spec_augment` | False | Disable SpecAugment masking (on by default) |
 | `--freq_mask_max` | 8 | Max frequency mask width (bins) |
 | `--time_mask_max` | 25 | Max time mask width (frames) |
-| `--teacher_cache` | None | Directory of cached per-window teacher scores (experimental) |
+| `--teacher_cache` | None | Directory of cached per-window teacher scores, and optionally embeddings |
 | `--teacher_weight` | 0.0 | Teacher share of the training target in [0, 1] (0 = hard labels only) |
+| `--teacher_embedding_weight` | 0.2 with embeddings | Weight of a cosine loss to the teacher's embedding of each chunk; on when `--teacher_cache` holds `emb.npy`, 0 disables |
 | `--crop_policy` | energy | How training chunks are chosen: `energy` or `teacher` (needs `--teacher_cache`) |
 | `--dropout` | 0.5 | Dropout rate before classifier head |
 | `--optimizer` | adam | `adam`, `sgd`, or `adamw` |

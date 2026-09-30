@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Teacher embedding distillation in training.** When `--teacher_cache` also
+  holds the teacher's embedding of each window (`emb.npy`), `train` adds a
+  cosine loss between the student's pooled embedding, through a training-only
+  linear projector, and the teacher's. It is on by default at
+  `--teacher_embedding_weight 0.2` for such a cache; `0` disables it. Mixed
+  chunks and chunks with no usable teacher window are left out of the loss, and
+  a run from trained weights (`--init_checkpoint`, `--resume`) first fits the
+  projector to them by ridge regression. The projector never reaches a
+  checkpoint, so exported models are unchanged. Trained from scratch on the
+  raw frontend at 448 frames, it raised the float window AUPRC on WABAD from
+  0.442 to 0.475 and the INT8 catalog cMAP from 0.712 to 0.728.
+- `birdnet_stm32.data.generator.sample_chunks`: one finite pass of training
+  chunks through the loader's own workers, without `tf.data`.
+- `train_model(training_wrapper=...)`: wrap the model for training only; the
+  unwrapped model is what gets checkpointed.
+
 ## [1.8.0] - 2026-09-29
 
 Two models ship: `BirdNET_Tiny_N6_USNE_90_V1.8_Raw`, a new model, and
