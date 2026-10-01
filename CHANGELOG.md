@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one pass over the training files, so a schedule's warm-up, cosine decay and
   validation cadence stay the same when the dataset grows.
 
+### Changed
+
+- **Loader workers are no longer recycled every 100 files.** Re-opening the
+  teacher cache on each respawn took ~0.5 s against ~5 ms per file, and the
+  pool spent most of its time starting workers: on the step-1 recipe (batch 32,
+  one chunk per file) the loader alone delivered 6.9 batches/s with 14 workers
+  and now delivers 16.6 (measured beside a running job). Worker private memory
+  stays flat; the RSS growth is the shared, memory-mapped teacher cache.
+
 ## [1.8.0] - 2026-09-29
 
 Two models ship: `BirdNET_Tiny_N6_USNE_90_V1.8_Raw`, a new model, and

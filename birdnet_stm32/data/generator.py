@@ -36,7 +36,7 @@ def _pool_context():
     every worker every 100 files, some runs lost most of their pool: measured,
     the same seeded run trained at 55 or at 390 ms/step with the GPU at 6%.
     The forkserver is single-threaded and preloads only the TF-free worker
-    module, so respawns stay cheap and cannot inherit a held lock.
+    module, so a replacement worker (after a timeout) cannot inherit a held lock.
     """
     ctx = mp.get_context("forkserver")
     ctx.set_forkserver_preload(["birdnet_stm32.data.worker"])
@@ -49,7 +49,12 @@ def _create_worker_pool(num_workers: int, worker_cfg: dict) -> mp.pool.Pool:
         num_workers,
         initializer=_init_worker,
         initargs=(worker_cfg,),
-        maxtasksperchild=100,
+        # Workers live for the whole run. Recycling them every 100 files cost more
+        # than the files did (~0.5 s to re-open the teacher cache against ~5 ms a
+        # file) and capped the loader at ~10 batches/s; a worker's private memory
+        # stays flat (measured over 4,000 files), the growth in its RSS is the
+        # shared, memory-mapped teacher cache.
+        maxtasksperchild=None,
     )
 
 
