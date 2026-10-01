@@ -184,3 +184,15 @@ class TestDocumentedArguments:
     def test_every_option_is_documented(self):
         undocumented = self.parser_options() - self.documented_options() - {"--help"}
         assert not undocumented, f"accepted by the parser but undocumented: {sorted(undocumented)}"
+
+
+def test_steps_per_epoch_defaults_to_one_pass(monkeypatch, tmp_path):
+    """0 (the default) keeps one pass over the training files per epoch; a value fixes it."""
+    import sys
+
+    from birdnet_stm32.cli import train
+
+    monkeypatch.setattr(sys, "argv", ["train", "--data_path_train", str(tmp_path)])
+    assert train.get_args().steps_per_epoch == 0
+    monkeypatch.setattr(sys, "argv", ["train", "--data_path_train", str(tmp_path), "--steps_per_epoch", "2850"])
+    assert train.get_args().steps_per_epoch == 2850

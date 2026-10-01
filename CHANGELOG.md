@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chunks through the loader's own workers, without `tf.data`.
 - `train_model(training_wrapper=...)`: wrap the model for training only; the
   unwrapped model is what gets checkpointed.
+- `train --steps_per_epoch N` (also for `--qat`): fix the steps per epoch instead of
+  one pass over the training files, so a schedule's warm-up, cosine decay and
+  validation cadence stay the same when the dataset grows.
 
 ## [1.8.0] - 2026-09-29
 
