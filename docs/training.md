@@ -334,7 +334,10 @@ on the device — see
 
 A two-epoch linear warmup reaches `--learning_rate` (default 0.001), followed
 by cosine decay to near-zero over `--epochs` (default 50). Best-checkpoint
-selection and early stopping maximize exact validation cMAP. Standard CLI
+selection and early stopping maximize exact validation cMAP. Early stopping
+(patience 10) only starts after 80% of `--epochs`, once the learning rate has
+come down: in the middle of a long schedule validation cMAP plateaus noisily,
+and stopping there ends the run before most of its gain. Standard CLI
 training evaluates files with the configured overlap and pooling. QAT selects
 on **converted INT8** file cMAP, including epoch zero, and saves the exact
 TFLite artifact that was scored alongside its matching Keras checkpoint.

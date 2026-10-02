@@ -113,3 +113,14 @@ class TestCheckpointStartEpoch:
 
     def test_checkpoint_written_when_every_epoch_is_eligible(self, tmp_path):
         assert os.path.isfile(self._run(tmp_path, start_epoch=0))
+
+    def test_early_stopping_waits_for_the_end_of_the_schedule(self, tmp_path):
+        """With patience 1, a run must still reach 80% of its epochs before it may stop."""
+        inputs = tf.keras.Input(shape=(4,))
+        model = tf.keras.Model(inputs, tf.keras.layers.Dense(2, activation="sigmoid")(inputs))
+        samples = np.random.default_rng(0).standard_normal((8, 4)).astype(np.float32)
+        labels = np.tile(np.array([[1, 0], [0, 1]], np.float32), (4, 1))
+        dataset = tf.data.Dataset.from_tensor_slices((samples, labels)).batch(4).repeat()
+        history = train_model(model, dataset, dataset, epochs=10, patience=1, learning_rate=1e-9,
+                              checkpoint_path=str(tmp_path / "model.keras"), steps_per_epoch=1, val_steps=1)
+        assert len(history.epoch) >= 8

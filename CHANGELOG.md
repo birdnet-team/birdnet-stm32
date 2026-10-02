@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Early stopping waits for the last 20% of the schedule.** With patience 10
+  from the first epoch, a 200-epoch run stopped at epoch 35: under the cosine
+  schedule the learning rate is still near its peak there and validation cMAP
+  plateaus noisily. Early stopping now starts at 80% of `--epochs`; checkpoint
+  selection still covers every epoch.
 - **Loader workers are no longer recycled every 100 files.** Re-opening the
   teacher cache on each respawn took ~0.5 s against ~5 ms per file, and the
   pool spent most of its time starting workers: on the step-1 recipe (batch 32,
