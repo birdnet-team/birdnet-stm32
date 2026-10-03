@@ -90,6 +90,19 @@ def _process_file(path: str):
     else:
         return None  # unknown class
 
+    # Per-file additions (see birdnet_stm32.data.sidecar): more classes present, or
+    # classes confirmed absent, which the teacher's soft target may then not raise.
+    negatives = None
+    extra = cfg.get("label_sidecar", {}).get(Path(path).stem)
+    if extra:
+        positives, absent = extra
+        if positives:
+            label[list(positives)] = 1.0
+        if absent:
+            label[list(absent)] = 0.0
+            negatives = np.zeros(num_classes, dtype=bool)
+            negatives[list(absent)] = True
+
     sr = cfg["sr"]
     cd = cfg["cd"]
     T = cfg["T"]
@@ -220,7 +233,8 @@ def _process_file(path: str):
         if blend:
             teacher = _teacher.lookup(sample_id, window_offset_s + start / sr, cd)
             if teacher is not None:
-                target = blend_targets(label, teacher, _teacher.mask, cfg["teacher_weight"])
+                mask = _teacher.mask if negatives is None else _teacher.mask & ~negatives
+                target = blend_targets(label, teacher, mask, cfg["teacher_weight"])
         if embed:
             vector = _teacher.embedding(sample_id, window_offset_s + start / sr, cd)
             valid = np.float32(vector is not None)

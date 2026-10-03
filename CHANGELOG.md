@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-file label additions (`train --label_sidecar`).** A CSV keyed by sample id adds
+  classes to a file's folder label (soundscape segments and field clips that hold several
+  species) and marks classes confirmed absent: their target stays 0 and the teacher's soft
+  target is not blended in for them. Files without an entry are unchanged.
+
 - **Teacher embedding distillation in training.** When `--teacher_cache` also
   holds the teacher's embedding of each window (`emb.npy`), `train` adds a
   cosine loss between the student's pooled embedding, through a training-only

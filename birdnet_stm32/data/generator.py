@@ -189,6 +189,7 @@ def _worker_config(
         "teacher_cache": str(teacher_cache) if teacher_cache else None,
         "teacher_weight": teacher_weight,
         "teacher_embeddings": teacher_embeddings,
+        "label_sidecar": kwargs.get("label_sidecar") or {},
     }
 
     return worker_cfg, sample_shape

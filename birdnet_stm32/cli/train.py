@@ -317,6 +317,17 @@ def get_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--label_sidecar",
+        type=str,
+        default=None,
+        help=(
+            "CSV of per-file label additions for training (sample_id, positives, negatives; "
+            "classes separated by ';'): positives join the folder's class in the hard label "
+            "(multi-species recordings); negatives are confirmed absent, held at 0 and never "
+            "raised by the teacher's soft target. See birdnet_stm32.data.sidecar."
+        ),
+    )
+    parser.add_argument(
         "--teacher_cache",
         type=str,
         default=None,
@@ -681,6 +692,13 @@ def main():
         teacher_weight=args.teacher_weight,
         teacher_embeddings=embed,
     )
+    if args.label_sidecar:
+        from birdnet_stm32.data.sidecar import load_label_sidecar
+
+        chunk_kwargs["label_sidecar"] = load_label_sidecar(args.label_sidecar, classes)
+        n_pos = sum(bool(p) for p, _ in chunk_kwargs["label_sidecar"].values())
+        n_neg = sum(bool(n) for _, n in chunk_kwargs["label_sidecar"].values())
+        print(f"Label sidecar: {n_pos} files with extra positives, {n_neg} with confirmed absences")
     train_dataset = load_dataset(
         train_paths,
         classes,
