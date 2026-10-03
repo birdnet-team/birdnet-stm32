@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   classes to a file's folder label (soundscape segments and field clips that hold several
   species) and marks classes confirmed absent: their target stays 0 and the teacher's soft
   target is not blended in for them. Files without an entry are unchanged.
+- **`train --warmup_epochs`**: the learning-rate warm-up in epochs, fractional allowed
+  (default 2, as before). With one epoch per pass over a large dataset, two epochs of
+  warm-up would be a sizeable share of the run.
 
 - **Teacher embedding distillation in training.** When `--teacher_cache` also
   holds the teacher's embedding of each window (`emb.npy`), `train` adds a

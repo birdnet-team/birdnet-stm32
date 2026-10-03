@@ -394,6 +394,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--prefetch_batches` | 2 | Loader prefetch depth in batches |
 | `--epochs` | 50 (8 with `--qat`) | Number of epochs |
 | `--steps_per_epoch` | 0 | Training steps per epoch; 0 = one pass over the training files. Fix it to keep a schedule unchanged when the dataset grows |
+| `--warmup_epochs` | 2 | Linear learning-rate warm-up before the cosine decay, in epochs; may be fractional (e.g. 0.5 when one epoch is a pass over a large dataset) |
 | `--learning_rate` | 5e-4 (2e-5 with `--qat`, 1e-3 with `--linear_probe`) | Initial learning rate |
 | `--val_split` | 0.2 | Validation split fraction when `--data_path_val` is not supplied |
 | `--checkpoint_path` | checkpoints/best_model.keras | Output path (.keras) |

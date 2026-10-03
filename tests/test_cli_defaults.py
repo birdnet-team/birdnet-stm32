@@ -196,3 +196,15 @@ def test_steps_per_epoch_defaults_to_one_pass(monkeypatch, tmp_path):
     assert train.get_args().steps_per_epoch == 0
     monkeypatch.setattr(sys, "argv", ["train", "--data_path_train", str(tmp_path), "--steps_per_epoch", "2850"])
     assert train.get_args().steps_per_epoch == 2850
+
+
+def test_warmup_epochs_defaults_to_two_and_may_be_fractional(monkeypatch, tmp_path):
+    """The default keeps the two-epoch warm-up; a long-epoch schedule can shorten it."""
+    import sys
+
+    from birdnet_stm32.cli import train
+
+    monkeypatch.setattr(sys, "argv", ["train", "--data_path_train", str(tmp_path)])
+    assert train.get_args().warmup_epochs == 2
+    monkeypatch.setattr(sys, "argv", ["train", "--data_path_train", str(tmp_path), "--warmup_epochs", "0.5"])
+    assert train.get_args().warmup_epochs == 0.5

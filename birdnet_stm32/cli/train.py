@@ -379,6 +379,15 @@ def get_args() -> argparse.Namespace:
         help=f"Number of epochs (default: {TRAIN_EPOCHS}; {QAT_EPOCHS} with --qat)",
     )
     parser.add_argument(
+        "--warmup_epochs",
+        type=float,
+        default=_WARMUP_EPOCHS,
+        help=(
+            f"Linear learning-rate warm-up before the cosine decay, in epochs (default {_WARMUP_EPOCHS}; "
+            "may be fractional, e.g. 0.5 when one epoch is a pass over a large dataset)."
+        ),
+    )
+    parser.add_argument(
         "--steps_per_epoch",
         type=int,
         default=0,
@@ -898,6 +907,7 @@ def main():
             # (a 20-epoch fine-tune stopped at epoch 11 and shipped epoch 1).
             checkpoint_start_epoch=_WARMUP_EPOCHS if args.init_checkpoint else 0,
             training_wrapper=training_wrapper,
+            warmup_epochs=args.warmup_epochs,
         )
         print(f"Training complete. Best model saved to '{args.checkpoint_path}'.")
     except KeyboardInterrupt:

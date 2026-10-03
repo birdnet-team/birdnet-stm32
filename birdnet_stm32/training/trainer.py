@@ -142,6 +142,7 @@ def train_model(
     checkpoint_start_epoch: int = 0,
     checkpoint_managed: bool = False,
     training_wrapper: Callable[[tf.keras.Model], tf.keras.Model] | None = None,
+    warmup_epochs: float = _WARMUP_EPOCHS,
 ) -> tf.keras.callbacks.History:
     """Train a model with cosine LR schedule, early stopping, and checkpointing.
 
@@ -191,6 +192,8 @@ def train_model(
         training_wrapper: Optional function that wraps the model for training
             only (e.g. with a training-only loss head). It is applied after a
             ``resume`` reload, and the unwrapped model becomes the checkpoint.
+        warmup_epochs: Length of the linear learning-rate warm-up, in epochs (may be
+            fractional: with one epoch per pass over a large dataset, half an epoch).
 
     Returns:
         Keras training history.
@@ -228,14 +231,14 @@ def train_model(
         checkpoint_model = model
         model = training_wrapper(model)
 
-    warmup_steps = _WARMUP_EPOCHS * steps_per_epoch
+    warmup_steps = int(round(max(0.0, warmup_epochs) * steps_per_epoch))
     lr_schedule = WarmupCosineDecay(
         initial_learning_rate=learning_rate,
         decay_steps=epochs * steps_per_epoch,
         warmup_steps=warmup_steps,
         offset_steps=initial_epoch * steps_per_epoch,
     )
-    print(f"LR schedule: {_WARMUP_EPOCHS} warmup epoch(s) -> cosine decay over {epochs} epochs.")
+    print(f"LR schedule: {warmup_epochs:g} warmup epoch(s) -> cosine decay over {epochs} epochs.")
 
     opt = _build_optimizer(optimizer, lr_schedule, weight_decay, gradient_clip_norm)
 
