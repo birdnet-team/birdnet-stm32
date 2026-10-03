@@ -317,6 +317,17 @@ def get_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--label_sidecar",
+        type=str,
+        default=None,
+        help=(
+            "CSV of per-file label additions for training (sample_id, positives, negatives; "
+            "classes separated by ';'): positives join the folder's class in the hard label "
+            "(multi-species recordings); negatives are confirmed absent, held at 0 and never "
+            "raised by the teacher's soft target. See birdnet_stm32.data.sidecar."
+        ),
+    )
+    parser.add_argument(
         "--teacher_cache",
         type=str,
         default=None,
@@ -366,6 +377,24 @@ def get_args() -> argparse.Namespace:
         type=int,
         default=None,
         help=f"Number of epochs (default: {TRAIN_EPOCHS}; {QAT_EPOCHS} with --qat)",
+    )
+    parser.add_argument(
+        "--warmup_epochs",
+        type=float,
+        default=_WARMUP_EPOCHS,
+        help=(
+            f"Linear learning-rate warm-up before the cosine decay, in epochs (default {_WARMUP_EPOCHS}; "
+            "may be fractional, e.g. 0.5 when one epoch is a pass over a large dataset)."
+        ),
+    )
+    parser.add_argument(
+        "--steps_per_epoch",
+        type=int,
+        default=0,
+        help=(
+            "Training steps per epoch (default 0: one pass over the training files). Fixing it keeps a "
+            "schedule (warm-up, cosine decay, validation cadence) the same when the dataset grows."
+        ),
     )
     parser.add_argument(
         "--learning_rate",
@@ -672,6 +701,13 @@ def main():
         teacher_weight=args.teacher_weight,
         teacher_embeddings=embed,
     )
+    if args.label_sidecar:
+        from birdnet_stm32.data.sidecar import load_label_sidecar
+
+        chunk_kwargs["label_sidecar"] = load_label_sidecar(args.label_sidecar, classes)
+        n_pos = sum(bool(p) for p, _ in chunk_kwargs["label_sidecar"].values())
+        n_neg = sum(bool(n) for _, n in chunk_kwargs["label_sidecar"].values())
+        print(f"Label sidecar: {n_pos} files with extra positives, {n_neg} with confirmed absences")
     train_dataset = load_dataset(
         train_paths,
         classes,
@@ -707,7 +743,7 @@ def main():
         **val_kwargs,
     )
 
-    steps_per_epoch = max(
+    steps_per_epoch = args.steps_per_epoch or max(
         1, math.ceil(estimate_samples_per_epoch(len(train_paths), args.max_chunks_per_file) / float(args.batch_size))
     )
     val_steps = max(1, math.ceil(len(selection_paths) / float(args.batch_size)))
@@ -871,6 +907,7 @@ def main():
             # (a 20-epoch fine-tune stopped at epoch 11 and shipped epoch 1).
             checkpoint_start_epoch=_WARMUP_EPOCHS if args.init_checkpoint else 0,
             training_wrapper=training_wrapper,
+            warmup_epochs=args.warmup_epochs,
         )
         print(f"Training complete. Best model saved to '{args.checkpoint_path}'.")
     except KeyboardInterrupt:

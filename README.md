@@ -208,7 +208,7 @@ five northeastern sites, 44 of its species inside the 90-output list. Every figu
 
 | Model | Event recall @0.5 | Window cMAP | Window AUPRC | Params | Compute per 2.5 s chunk |
 |---|---:|---:|---:|---:|---:|
-| `BirdNET_Tiny_N6_USNE_90_V1.8_Raw_INT8` | 0.348 | 0.329 | 0.421 | 1.00 M | **22 ms** (all NPU) |
+| `BirdNET_Tiny_N6_USNE_90_V1.9_Raw_INT8` | **0.370** | 0.351 | 0.430 | 1.01 M | **22 ms** (all NPU) |
 | `BirdNET_Tiny_N6_USNE_90_V1.8_Hybrid_INT8` | 0.361 | 0.376 | 0.461 | 946 k | 52 ms (33 ms STFT on the M55) |
 | BirdNET+ V3.0 preview 3.1, the teacher | 0.656 | 0.517 | 0.617 | 135 M | does not run on this hardware |
 
@@ -218,8 +218,10 @@ overdrive). Raw runs its learned filterbank on the NPU, which is why it costs
 about 40% of hybrid's compute; hybrid buys its accuracy with a 512-point STFT
 on the Cortex-M55. Since 1.7 raw computes its filterbank twice, the second time
 at 16x gain, compressing the two into one envelope so quiet field audio survives
-its INT8 grids; 1.8 reads 448 frames per chunk (1.7: 384) and finds calls within
-0.013 recall of hybrid.
+its INT8 grids; 1.8 reads 448 frames per chunk (1.7: 384). 1.9 trains the same raw
+design on about five times the audio and is the first raw model to find more calls
+than hybrid, at well under half its compute. The hybrid model is unchanged since 1.5
+and was not re-issued for 1.9.
 
 Per-version history and what each metric means:
 [Pre-trained Models](https://birdnet-team.github.io/birdnet-stm32/pretrained-models/#benchmark-results).

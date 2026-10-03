@@ -12,6 +12,10 @@ VALID_OPTIMIZERS = ("adam", "sgd", "adamw")
 _MONITOR = "val_cmap"
 _MONITOR_MODE = "max"
 
+# Early stopping watches only the last part of a run, when the cosine schedule has
+# brought the learning rate down; checkpoint selection still covers every epoch.
+EARLY_STOP_FROM = 0.8
+
 # Validation metrics where a larger value is better. Anything not listed is
 # treated as a loss and minimised. Deriving this from a name suffix is how a
 # checkpoint selector silently inverts when a new metric is added.
@@ -138,6 +142,7 @@ def train_model(
     checkpoint_start_epoch: int = 0,
     checkpoint_managed: bool = False,
     training_wrapper: Callable[[tf.keras.Model], tf.keras.Model] | None = None,
+    warmup_epochs: float = _WARMUP_EPOCHS,
 ) -> tf.keras.callbacks.History:
     """Train a model with cosine LR schedule, early stopping, and checkpointing.
 
@@ -155,7 +160,11 @@ def train_model(
         epochs: Number of epochs.
         learning_rate: Initial learning rate for cosine schedule.
         batch_size: Unused; kept for API symmetry with data loader.
-        patience: Early stopping patience (epochs).
+        patience: Early stopping patience (epochs). Early stopping only starts
+            after ``EARLY_STOP_FROM`` of ``epochs``: under a cosine schedule the
+            learning rate is still high in the middle of a long run and the
+            validation metric plateaus noisily there (a 200-epoch run stopped at
+            epoch 35 of 200 on a 10-epoch plateau).
         checkpoint_path: Path to save the best .keras model.
         steps_per_epoch: Training steps per epoch (> 0 required).
         val_steps: Validation steps per epoch (defaults to 1 if <= 0).
@@ -183,6 +192,8 @@ def train_model(
         training_wrapper: Optional function that wraps the model for training
             only (e.g. with a training-only loss head). It is applied after a
             ``resume`` reload, and the unwrapped model becomes the checkpoint.
+        warmup_epochs: Length of the linear learning-rate warm-up, in epochs (may be
+            fractional: with one epoch per pass over a large dataset, half an epoch).
 
     Returns:
         Keras training history.
@@ -220,14 +231,14 @@ def train_model(
         checkpoint_model = model
         model = training_wrapper(model)
 
-    warmup_steps = _WARMUP_EPOCHS * steps_per_epoch
+    warmup_steps = int(round(max(0.0, warmup_epochs) * steps_per_epoch))
     lr_schedule = WarmupCosineDecay(
         initial_learning_rate=learning_rate,
         decay_steps=epochs * steps_per_epoch,
         warmup_steps=warmup_steps,
         offset_steps=initial_epoch * steps_per_epoch,
     )
-    print(f"LR schedule: {_WARMUP_EPOCHS} warmup epoch(s) -> cosine decay over {epochs} epochs.")
+    print(f"LR schedule: {warmup_epochs:g} warmup epoch(s) -> cosine decay over {epochs} epochs.")
 
     opt = _build_optimizer(optimizer, lr_schedule, weight_decay, gradient_clip_norm)
 
@@ -354,7 +365,7 @@ def train_model(
             patience=patience,
             restore_best_weights=not checkpoint_managed,
             mode=checkpoint_mode,
-            start_from_epoch=checkpoint_start_epoch,
+            start_from_epoch=max(checkpoint_start_epoch, int(EARLY_STOP_FROM * epochs)),
         ),
         *([] if checkpoint_managed else [checkpoint_callback]),
         _SaveTrainState(),

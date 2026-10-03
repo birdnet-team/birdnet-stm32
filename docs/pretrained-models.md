@@ -81,8 +81,9 @@ scored on 2.5-second windows at a 1.25 s hop (the teacher on its native
 | `..._90_V1.6_Hybrid_INT8` | 0.464 | 0.361 | 0.339 | 0.376 | 0.461 |
 | `..._90_V1.7_Raw_INT8` | 0.414 | 0.325 | 0.286 | 0.325 | 0.414 |
 | `..._90_V1.7_Hybrid_INT8` | 0.464 | 0.361 | 0.339 | 0.376 | 0.461 |
-| **`..._90_V1.8_Raw_INT8`** | **0.438** | **0.348** | **0.314** | **0.329** | **0.421** |
-| **`..._90_V1.8_Hybrid_INT8`** | **0.464** | **0.361** | **0.339** | **0.376** | **0.461** |
+| `..._90_V1.8_Raw_INT8` | 0.438 | 0.348 | 0.314 | 0.329 | 0.421 |
+| `..._90_V1.8_Hybrid_INT8` | 0.464 | 0.361 | 0.339 | 0.376 | 0.461 |
+| **`..._90_V1.9_Raw_INT8`** | **0.441** | **0.370** | **0.369** | **0.351** | **0.430** |
 | BirdNET+ V3.0 preview 3.1 | 0.766 | 0.656 | 0.607 | 0.517 | 0.617 |
 
 The last row is the server-class teacher these models are distilled from, scored
@@ -92,16 +93,25 @@ as an alternative.
 
 Per site, for the current release (event recall @0.5 / window AUPRC):
 
-| Site | Calls | Species | v1.8 Raw | v1.7 Raw | v1.6 Raw | v1.8 Hybrid |
+| Site | Calls | Species | v1.9 Raw | v1.8 Raw | v1.7 Raw | v1.8 Hybrid |
 |---|---:|---:|---|---|---|---|
-| MABI (Vermont) | 584 | 22 | 0.582 / 0.645 | 0.550 / 0.633 | 0.389 / 0.549 | 0.632 / 0.690 |
-| CB | 730 | 21 | 0.381 / 0.413 | 0.336 / 0.398 | 0.255 / 0.347 | 0.319 / 0.393 |
-| SD | 237 | 9 | 0.241 / 0.465 | 0.295 / 0.510 | 0.152 / 0.386 | 0.321 / 0.564 |
-| NL | 170 | 6 | 0.406 / 0.462 | 0.341 / 0.428 | 0.259 / 0.398 | 0.424 / 0.484 |
-| FEU (boreal) | 2,073 | 18 | 0.277 / 0.538 | 0.260 / 0.536 | 0.229 / 0.485 | 0.300 / 0.581 |
+| MABI (Vermont) | 584 | 22 | 0.639 / 0.678 | 0.582 / 0.645 | 0.550 / 0.633 | 0.632 / 0.690 |
+| CB | 730 | 21 | 0.400 / 0.418 | 0.381 / 0.413 | 0.336 / 0.398 | 0.319 / 0.393 |
+| SD | 237 | 9 | 0.257 / 0.501 | 0.241 / 0.465 | 0.295 / 0.510 | 0.321 / 0.564 |
+| NL | 170 | 6 | 0.406 / 0.430 | 0.406 / 0.462 | 0.341 / 0.428 | 0.424 / 0.484 |
+| FEU (boreal) | 2,073 | 18 | 0.294 / 0.556 | 0.277 / 0.538 | 0.260 / 0.536 | 0.300 / 0.581 |
 
-v1.8 ships a new Raw model; v1.8 Hybrid is the v1.5 Hybrid re-issued a third
-time, the same INT8 model byte for byte. v1.7 Raw brought two changes: the
+v1.9 ships a new Raw model only; the hybrid model stays v1.8 Hybrid (the v1.5
+weights). v1.9 Raw is the v1.8 Raw design trained on about five times the audio
+for the same 90 species, picked to spread over recordists, places, call types and
+months, with four classes corrected to the intended taxon and a revised set of
+non-bird outputs (96 outputs, see the changelog). It gains at four of the five
+sites, holds NL's recall, and finds more calls than hybrid pooled (0.370 vs
+0.361) and at MABI and CB; its macro recall (0.369) shows the gain reaches the
+less common species, not only the frequent ones.
+
+v1.8 shipped a new Raw model and re-issued the v1.5 Hybrid a third time, the
+same INT8 model byte for byte. v1.7 Raw brought two changes: the
 filterbank reads more frames per chunk (384; v1.6: 256), and it is computed
 twice, the second time at 16x gain, with the two copies compressed into one
 envelope inside the NPU, so quiet calls keep their resolution through the INT8
@@ -137,7 +147,8 @@ firmware's STFT (33 ms); the firmware of 1.5 and earlier took 69 ms for it.
 | `..._90_V1.7_Hybrid_INT8` | 946,196 | 104.83 M | 19 ms | 33 ms | 52 ms | 40 (4 sw) |
 | `..._90_V1.7_Raw_INT8` | 1,012,052 | 134.88 M | 21 ms | 0 ms | 21 ms | 54 (3 sw) |
 | **`..._90_V1.8_Hybrid_INT8`** | 946,196 | 104.83 M | 19 ms | 33 ms | 52 ms | 40 (4 sw) |
-| **`..._90_V1.8_Raw_INT8`** | 1,003,860 | 151.97 M | **22 ms** | 0 ms | **22 ms** | 51 (3 sw) |
+| `..._90_V1.8_Raw_INT8` | 1,003,860 | 151.97 M | 22 ms | 0 ms | 22 ms | 51 (3 sw) |
+| **`..._90_V1.9_Raw_INT8`** | 1,006,256 | 151.97 M | **22 ms** | 0 ms | **22 ms** | 51 (3 sw) |
 | BirdNET+ V3.0 preview 3.1 | 135,228,889 | — | — | — | — | — |
 
 The teacher is listed for scale only: **137x the parameters** of either model here,

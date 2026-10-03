@@ -672,7 +672,9 @@ def run_qat(args: argparse.Namespace) -> None:
         batch_size=args.batch_size,
     )
     extra_callbacks.append(selector)
-    steps_per_epoch = max(1, math.ceil(len(train_paths) / float(args.batch_size)))
+    steps_per_epoch = getattr(args, "steps_per_epoch", 0) or max(
+        1, math.ceil(len(train_paths) / float(args.batch_size))
+    )
     val_steps = max(1, math.ceil(len(selection_paths) / float(args.batch_size)))
     print(f"[QAT] Training on {len(train_paths)} files, validating on {len(val_paths)} files")
     print(f"[QAT] Fine-tuning for {args.epochs} epochs at LR={args.learning_rate}")

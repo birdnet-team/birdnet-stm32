@@ -334,7 +334,10 @@ on the device — see
 
 A two-epoch linear warmup reaches `--learning_rate` (default 0.001), followed
 by cosine decay to near-zero over `--epochs` (default 50). Best-checkpoint
-selection and early stopping maximize exact validation cMAP. Standard CLI
+selection and early stopping maximize exact validation cMAP. Early stopping
+(patience 10) only starts after 80% of `--epochs`, once the learning rate has
+come down: in the middle of a long schedule validation cMAP plateaus noisily,
+and stopping there ends the run before most of its gain. Standard CLI
 training evaluates files with the configured overlap and pooling. QAT selects
 on **converted INT8** file cMAP, including epoch zero, and saves the exact
 TFLite artifact that was scored alongside its matching Keras checkpoint.
@@ -374,6 +377,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--time_mask_max` | 25 | Max time mask width (frames) |
 | `--teacher_cache` | None | Directory of cached per-window teacher scores, and optionally embeddings |
 | `--teacher_weight` | 0.0 | Teacher share of the training target in [0, 1] (0 = hard labels only) |
+| `--label_sidecar` | None | CSV of per-file label additions (`sample_id`, `positives`, `negatives`; classes separated by `;`): positives join the folder's class in the hard label (recordings with several species), negatives are confirmed absent, held at 0 and never raised by the teacher's soft target |
 | `--teacher_embedding_weight` | 0.2 with embeddings | Weight of a cosine loss to the teacher's embedding of each chunk; on when `--teacher_cache` holds `emb.npy`, 0 disables |
 | `--crop_policy` | energy | How training chunks are chosen: `energy` or `teacher` (needs `--teacher_cache`) |
 | `--dropout` | 0.5 | Dropout rate before classifier head |
@@ -389,6 +393,8 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--max_chunks_per_file` | 1 | Max salient chunks per file open (reduces redundant I/O) |
 | `--prefetch_batches` | 2 | Loader prefetch depth in batches |
 | `--epochs` | 50 (8 with `--qat`) | Number of epochs |
+| `--steps_per_epoch` | 0 | Training steps per epoch; 0 = one pass over the training files. Fix it to keep a schedule unchanged when the dataset grows |
+| `--warmup_epochs` | 2 | Linear learning-rate warm-up before the cosine decay, in epochs; may be fractional (e.g. 0.5 when one epoch is a pass over a large dataset) |
 | `--learning_rate` | 5e-4 (2e-5 with `--qat`, 1e-3 with `--linear_probe`) | Initial learning rate |
 | `--val_split` | 0.2 | Validation split fraction when `--data_path_val` is not supplied |
 | `--checkpoint_path` | checkpoints/best_model.keras | Output path (.keras) |
