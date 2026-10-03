@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-10-03
+
+One model ships: `BirdNET_Tiny_N6_USNE_90_V1.9_Raw`. It is the v1.8 Raw design
+trained on about five times the audio for the same 90 species, and the first raw
+model to find more annotated calls on WABAD than the hybrid model, at 22 ms on the
+NPU. The hybrid model is not re-issued; the current hybrid release stays v1.8
+Hybrid (the v1.5 weights).
+
+### Model performance
+
+Scored on [WABAD](https://zenodo.org/records/14191524) (3,794 annotated calls,
+five northeastern sites, 44 species inside the output list), on the INT8 model
+that gets flashed:
+
+| Model | Event recall @0.5 | Macro recall @0.5 | Window cMAP | Window AUPRC | Compute per 2.5 s |
+|---|---:|---:|---:|---:|---:|
+| v1.8 Raw | 0.348 | 0.314 | 0.329 | 0.421 | 22 ms (NPU) |
+| **v1.9 Raw** | **0.370** | **0.369** | **0.351** | **0.430** | 22 ms (NPU) |
+| v1.8 Hybrid (the v1.5 weights) | 0.361 | 0.339 | 0.376 | 0.461 | 19 ms NPU + 33 ms STFT |
+
+v1.9 Raw finds 6% more annotated calls than v1.8 Raw and 17% more per species
+(macro recall), gains at four of five sites and holds the fifth. On the catalog
+test, the 86 species whose test files are unchanged since v1.8 average 0.773 AP
+against 0.759. It passed the release gates: Keras/TFLite parity, ONNX validation,
+STM32N6 compilation (51 epochs, 3 in software), on-target validation (cos 0.9996),
+the operational gate and a 25-file board test (25/25 same top-1).
+
+**The training data (dataset v0.3.0):** up to 5,000 recordings per species
+instead of ~700, chosen to spread over recordists, places, call types and months
+rather than at random, with a cross-platform guard so no recordist of the test
+split trains on any platform.
+
+**The outputs changed (96, was 100):**
+
+- Four classes now hold the intended taxon: `american_yellow_warbler` (was
+  `mangrove_warbler`, whose training audio was largely Mangrove Yellow Warbler),
+  `american_herring_gull` (was `european_herring_gull`), and `green_winged_teal`
+  and `northern_house_wren`, each now the American taxon.
+- `chainsaw` is part of `power_tools`, `gun` includes fireworks, and `rain`,
+  `thunder` and `wind` are no longer outputs: their recordings train as
+  all-zero negatives. Code that maps outputs by index must use the bundle's
+  `_labels.txt`.
+
 ### Added
 
 - **Per-file label additions (`train --label_sidecar`).** A CSV keyed by sample id adds
@@ -16,7 +59,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`train --warmup_epochs`**: the learning-rate warm-up in epochs, fractional allowed
   (default 2, as before). With one epoch per pass over a large dataset, two epochs of
   warm-up would be a sizeable share of the run.
-
 - **Teacher embedding distillation in training.** When `--teacher_cache` also
   holds the teacher's embedding of each window (`emb.npy`), `train` adds a
   cosine loss between the student's pooled embedding, through a training-only
