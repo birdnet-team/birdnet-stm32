@@ -17,6 +17,7 @@ import numpy as np
 import tensorflow as tf
 
 from birdnet_stm32.audio.augmentation import apply_mixup
+from birdnet_stm32.data.dataset import NOISE_CLASSES
 from birdnet_stm32.data.worker import _init_worker, _process_file
 from birdnet_stm32.models.frontend import hybrid_fft_bins, normalize_frontend_name
 
@@ -229,6 +230,51 @@ def sample_chunks(
     return [item for result in results if result for item in result]
 
 
+class ClassCappedPasses:
+    """File lists for successive passes with at most ``cap`` files per class (the folder).
+
+    A class with more files than ``cap`` contributes a different ``cap`` of them each pass: it
+    walks through a shuffled order of all its files, continuing where the last pass stopped and
+    reshuffling once every file has been used, so over successive passes every file is drawn
+    and none is discarded. Smaller classes contribute all their files every pass. Nothing is
+    repeated within a pass. Noise-like folders (all-zero negatives) are not a class and are
+    never capped.
+    """
+
+    def __init__(self, file_paths: list[str], cap: int, rng: random.Random | None = None):
+        self.cap = int(cap)
+        self.rng = rng or random
+        groups: dict[str, list[str]] = {}
+        for p in file_paths:
+            groups.setdefault(p.replace("\\", "/").split("/")[-2], []).append(p)
+        self.groups = groups
+        self.order = {k: [] for k in groups}
+
+    def _cap(self, k: str) -> int:
+        return len(self.groups[k]) if k.lower() in NOISE_CLASSES else self.cap
+
+    def __len__(self) -> int:
+        return sum(min(len(v), self._cap(k)) for k, v in self.groups.items())
+
+    def next_pass(self) -> list[str]:
+        out: list[str] = []
+        for k, paths in self.groups.items():
+            if len(paths) <= self._cap(k):
+                out.extend(paths)
+                continue
+            take: list[str] = []
+            while len(take) < self.cap:
+                if not self.order[k]:
+                    self.order[k] = list(paths)
+                    self.rng.shuffle(self.order[k])
+                n = self.cap - len(take)
+                take.extend(self.order[k][:n])
+                self.order[k] = self.order[k][n:]
+            out.extend(take)
+        self.rng.shuffle(out)
+        return out
+
+
 def load_dataset(
     file_paths: list[str],
     classes: list[str],
@@ -299,6 +345,10 @@ def load_dataset(
         loader_buffer_mb=loader_buffer_mb,
     )
 
+    # Per-epoch class cap (train --class_cap_per_epoch): a balanced draw without repetition.
+    class_cap = int(kwargs.get("class_cap_per_epoch", 0) or 0)
+    capped = ClassCappedPasses(file_paths, class_cap) if class_cap > 0 else None
+
     def _generator():
         """Infinite generator with reservoir for multi-chunk file reuse."""
         pool = None
@@ -309,8 +359,11 @@ def load_dataset(
 
         try:
             while True:
-                shuffled = list(file_paths)
-                random.shuffle(shuffled)
+                if capped is not None:
+                    shuffled = capped.next_pass()
+                else:
+                    shuffled = list(file_paths)
+                    random.shuffle(shuffled)
 
                 reservoir: list[tuple[np.ndarray, np.ndarray]] = []
 

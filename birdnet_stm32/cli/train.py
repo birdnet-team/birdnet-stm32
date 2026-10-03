@@ -15,7 +15,7 @@ from birdnet_stm32.data.dataset import (
     load_file_paths_from_directory,
     upsample_minority_classes,
 )
-from birdnet_stm32.data.generator import estimate_samples_per_epoch, load_dataset, sample_chunks
+from birdnet_stm32.data.generator import ClassCappedPasses, estimate_samples_per_epoch, load_dataset, sample_chunks
 from birdnet_stm32.models.dscnn import DW_KERNEL_SIZES, STAGE_WIDTHS, build_dscnn_model
 from birdnet_stm32.models.frontend import RELEASE_RAW_BANK, RELEASE_RAW_MAGNITUDE, normalize_frontend_name
 from birdnet_stm32.models.profiler import print_profile
@@ -379,6 +379,17 @@ def get_args() -> argparse.Namespace:
         help=f"Number of epochs (default: {TRAIN_EPOCHS}; {QAT_EPOCHS} with --qat)",
     )
     parser.add_argument(
+        "--class_cap_per_epoch",
+        type=int,
+        default=0,
+        help=(
+            "At most this many training files per class (folder) in each epoch (default 0: off). A larger "
+            "class contributes a different subset each epoch, rotating through all its files, so the draw is "
+            "more balanced without repeating minority files or discarding majority ones. With "
+            "--steps_per_epoch 0 an epoch is one such capped pass."
+        ),
+    )
+    parser.add_argument(
         "--warmup_epochs",
         type=float,
         default=_WARMUP_EPOCHS,
@@ -667,6 +678,12 @@ def main():
         print(f"Loader auto-tuning enabled (initial max_inflight_files={initial_inflight}).")
 
     train_kwargs = dict(common_kwargs)
+    if args.class_cap_per_epoch > 0:
+        train_kwargs["class_cap_per_epoch"] = args.class_cap_per_epoch
+        print(
+            f"Per-epoch class cap {args.class_cap_per_epoch}: {len(ClassCappedPasses(train_paths, args.class_cap_per_epoch))} "
+            f"of {len(train_paths)} training files per epoch"
+        )
     if train_loader_control is not None:
         train_kwargs["loader_control"] = train_loader_control
 
@@ -743,8 +760,11 @@ def main():
         **val_kwargs,
     )
 
+    epoch_files = (
+        len(ClassCappedPasses(train_paths, args.class_cap_per_epoch)) if args.class_cap_per_epoch > 0 else len(train_paths)
+    )
     steps_per_epoch = args.steps_per_epoch or max(
-        1, math.ceil(estimate_samples_per_epoch(len(train_paths), args.max_chunks_per_file) / float(args.batch_size))
+        1, math.ceil(estimate_samples_per_epoch(epoch_files, args.max_chunks_per_file) / float(args.batch_size))
     )
     val_steps = max(1, math.ceil(len(selection_paths) / float(args.batch_size)))
 
