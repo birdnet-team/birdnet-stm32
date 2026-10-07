@@ -58,6 +58,24 @@ def get_classes_with_most_samples(
     return [cls for cls, _ in sorted_classes[:n_classes]]
 
 
+def _walk_local(directory: str):
+    """``os.walk``-like ``(root, dirs, files)`` for a local tree, without a stat per file.
+
+    Entries directly under ``directory`` (the class folders) are followed if they are
+    symlinks; below that an entry's type comes from the directory listing itself
+    (``is_dir(follow_symlinks=False)``), so a symlinked audio file costs no stat.
+    """
+    stack = [(directory, True)]
+    while stack:
+        root, top = stack.pop()
+        dirs, files = [], []
+        with os.scandir(root) as it:
+            for entry in it:
+                (dirs if entry.is_dir(follow_symlinks=top) else files).append(entry.name)
+        yield root, dirs, files
+        stack.extend((os.path.join(root, d), False) for d in reversed(dirs))
+
+
 def load_file_paths_from_directory(
     directory: str,
     classes: list[str] | None = None,
@@ -83,18 +101,21 @@ def load_file_paths_from_directory(
         are excluded from the class list but their files are still included.
     """
     per_class: dict[str, list[str]] = {}
+    wanted = None if classes is None else set(classes)
+    # Remote URLs keep gfile. A local tree walks with _walk_local, which does not stat files: training
+    # trees hold millions of symlinks, and following each to ask "directory?" took ~8 min on 2.96 M files.
+    if "://" in str(directory):
+        walk, join = tf.io.gfile.walk, tf.io.gfile.join
+    else:
+        walk, join = _walk_local, os.path.join
 
-    for root, _, files in tf.io.gfile.walk(directory):
+    for root, _, files in walk(directory):
+        parent_class = os.path.basename(os.path.normpath(root))
+        if wanted is not None and parent_class not in wanted and parent_class.lower() not in NOISE_CLASSES:
+            continue
         for fname in files:
-            if not fname.lower().endswith(exts):
-                continue
-            full_path = tf.io.gfile.join(root, fname)
-            parent_class = os.path.basename(os.path.dirname(full_path))
-
-            if classes is not None and parent_class not in classes and parent_class.lower() not in NOISE_CLASSES:
-                continue
-
-            per_class.setdefault(parent_class, []).append(full_path)
+            if fname.lower().endswith(exts):
+                per_class.setdefault(parent_class, []).append(join(root, fname))
 
     all_paths: list[str] = []
     for _cls, paths in per_class.items():

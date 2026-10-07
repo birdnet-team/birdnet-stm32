@@ -34,6 +34,26 @@ class TestLoadFilePaths:
         assert found_classes == ["class_b", "class_a"]
         assert len(paths) == 3
 
+    def test_symlinked_class_folders_and_files_are_found(self, tmp_path):
+        """Link trees symlink class folders and audio files; both must be listed, nested folders too."""
+        store = tmp_path / "store"
+        (store / "a").mkdir(parents=True)
+        (store / "a" / "x.flac").touch()
+        (store / "b.flac").touch()
+        root = tmp_path / "train"
+        (root / "class_b" / "deeper").mkdir(parents=True)
+        (root / "class_a").symlink_to(store / "a", target_is_directory=True)
+        (root / "class_b" / "y.flac").symlink_to(store / "b.flac")
+        (root / "class_b" / "deeper" / "z.wav").touch()
+        (root / "class_b" / "notes.txt").touch()
+        paths, found = load_file_paths_from_directory(str(root))
+        assert found == ["class_a", "class_b", "deeper"]
+        assert sorted(p.replace(str(root) + "/", "") for p in paths) == [
+            "class_a/x.flac",
+            "class_b/deeper/z.wav",
+            "class_b/y.flac",
+        ]
+
     def test_classes_file(self, tmp_path):
         """Class files preserve order and reject duplicate outputs."""
         labels = tmp_path / "labels.txt"
