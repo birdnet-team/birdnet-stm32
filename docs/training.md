@@ -175,6 +175,9 @@ large models or unstable training.
 
 Use `--mixed_precision` to enable FP16 compute with FP32 accumulation.
 Reduces memory usage and speeds up training on GPUs with Tensor Cores.
+Together with `--jit_compile` (XLA) the float training step of the raw 448
+model runs about 3x faster: the depthwise backbone is most of the step, and XLA
+fuses it far better than graph execution does. QAT stays in float32 without XLA.
 
 ### Resumable training
 
@@ -385,6 +388,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--weight_decay` | 0.0 | Weight decay (adamw only) |
 | `--grad_clip` | 1.0 | Max gradient norm for clipping (0 = disabled) |
 | `--mixed_precision` | False | Enable FP16 mixed precision training |
+| `--jit_compile` | False | XLA-compile the float training step; with `--mixed_precision` about 3x faster on the raw 448 model (not with `--qat`) |
 | `--resume` | False | Resume training from checkpoint |
 | `--init_checkpoint` | — | Start from this model's weights at epoch 0, e.g. the output of `add-exposure`; its frontend must match the architecture flags. Checkpoint selection and early stopping start after the learning-rate warm-up |
 | `--seed` | 42 | Random seed |
@@ -395,6 +399,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--epochs` | 50 (8 with `--qat`) | Number of epochs |
 | `--steps_per_epoch` | 0 | Training steps per epoch; 0 = one pass over the training files. Fix it to keep a schedule unchanged when the dataset grows |
 | `--warmup_epochs` | 2 | Linear learning-rate warm-up before the cosine decay, in epochs; may be fractional (e.g. 0.5 when one epoch is a pass over a large dataset) |
+| `--class_cap_per_epoch` | 0 | At most this many files per class in each epoch (0 = off): a larger class contributes a different subset each epoch, rotating through all its files, so the draw is more balanced without repeating or discarding files. Noise folders are not capped |
 | `--learning_rate` | 5e-4 (2e-5 with `--qat`, 1e-3 with `--linear_probe`) | Initial learning rate |
 | `--val_split` | 0.2 | Validation split fraction when `--data_path_val` is not supplied |
 | `--checkpoint_path` | checkpoints/best_model.keras | Output path (.keras) |

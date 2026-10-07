@@ -473,21 +473,15 @@ def run_qat(args: argparse.Namespace) -> None:
         raise ValueError("QAT requires float32 training for INT8 grid simulation")
     if not args.data_path_val:
         raise ValueError("QAT requires an explicit, disjoint --data_path_val")
-    # QAT builds its own training loader and does not apply these. Refuse them
-    # rather than accept and silently ignore them. The knowledge they add during
-    # float training still reaches QAT through its frozen teacher, which is the
-    # pre-QAT checkpoint itself.
-    ignored = [
-        flag
-        for flag, active in (
-            ("--teacher_cache", bool(getattr(args, "teacher_cache", None))),
-            ("--teacher_weight", getattr(args, "teacher_weight", 0.0) > 0),
-            ("--crop_policy", getattr(args, "crop_policy", "energy") != "energy"),
-        )
-        if active
-    ]
-    if ignored:
-        raise ValueError(f"QAT does not apply {', '.join(ignored)}; drop them from the --qat run")
+    # Teacher targets and the teacher crop reach QAT's training loader as they do
+    # float training's (opt-in); without them QAT trains on hard labels and energy
+    # crops, and the knowledge float training added still reaches it through its
+    # frozen teacher, the pre-QAT checkpoint itself.
+    teacher_cache = getattr(args, "teacher_cache", None)
+    teacher_weight = float(getattr(args, "teacher_weight", 0.0) or 0.0)
+    crop_policy = getattr(args, "crop_policy", "energy")
+    if (teacher_weight > 0 or crop_policy == "teacher") and not teacher_cache:
+        raise ValueError("QAT --teacher_weight > 0 or --crop_policy teacher needs a --teacher_cache")
     if not os.path.isfile(args.checkpoint_path):
         raise FileNotFoundError(f"QAT requires a pretrained model: {args.checkpoint_path}")
     print(f"[QAT] Loading pretrained model from {args.checkpoint_path}")
@@ -549,6 +543,22 @@ def run_qat(args: argparse.Namespace) -> None:
         max_chunks_per_file=args.max_chunks_per_file,
         prefetch_batches=args.prefetch_batches,
     )
+    teacher_kwargs: dict = {}
+    if teacher_cache:
+        from birdnet_stm32.data.teacher import TeacherTargets
+
+        teacher = TeacherTargets(teacher_cache, classes)  # fail here rather than in every loader worker
+        covered = sum(os.path.splitext(os.path.basename(p))[0] in teacher for p in train_paths)
+        print(
+            f"[QAT] Teacher targets: {covered}/{len(train_paths)} training files covered, "
+            f"weight {teacher_weight}, crop policy {crop_policy}"
+        )
+        teacher_kwargs = dict(teacher_cache=teacher_cache, teacher_weight=teacher_weight, crop_policy=crop_policy)
+    if getattr(args, "label_sidecar", None):
+        from birdnet_stm32.data.sidecar import load_label_sidecar
+
+        teacher_kwargs["label_sidecar"] = load_label_sidecar(args.label_sidecar, classes)
+        print(f"[QAT] Label sidecar: {len(teacher_kwargs['label_sidecar'])} files with label additions")
     train_dataset = load_dataset(
         train_paths,
         classes,
@@ -559,6 +569,7 @@ def run_qat(args: argparse.Namespace) -> None:
         random_offset=True,
         snr_threshold=0.1,
         spec_augment=False,
+        **teacher_kwargs,
         **common_kwargs,
     )
     # Selection converts and scores an INT8 model every epoch, twice over the
