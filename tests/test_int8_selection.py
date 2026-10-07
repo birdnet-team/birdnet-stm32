@@ -283,14 +283,15 @@ def test_file_cmap_traces_one_runner_per_model(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "flags, named",
+    "flags, accepted",
     [
-        (["--teacher_cache", "/c", "--teacher_weight", "0.5"], ["--teacher_cache", "--teacher_weight"]),
-        (["--teacher_cache", "/c", "--crop_policy", "teacher"], ["--teacher_cache", "--crop_policy"]),
+        (["--teacher_weight", "0.5"], False),
+        (["--crop_policy", "teacher"], False),
+        (["--teacher_cache", "/c", "--teacher_weight", "0.5", "--crop_policy", "teacher"], True),
     ],
 )
-def test_qat_refuses_loader_options_it_would_silently_ignore(tmp_path, monkeypatch, flags, named):
-    """QAT builds its own loader; these float-training options must not pass as no-ops."""
+def test_qat_takes_teacher_targets_only_with_a_cache(tmp_path, monkeypatch, flags, accepted):
+    """QAT's loader takes the float run's teacher options; without a cache the CLI refuses them."""
     import sys
 
     from birdnet_stm32.cli.train import get_args
@@ -308,7 +309,9 @@ def test_qat_refuses_loader_options_it_would_silently_ignore(tmp_path, monkeypat
         *flags,
     ]
     monkeypatch.setattr(sys, "argv", argv)
-    with pytest.raises(ValueError, match="QAT does not apply") as info:
-        run_qat(get_args())
-    for flag in named:
-        assert flag in str(info.value)
+    if accepted:  # past the option check, stopped by the missing checkpoint
+        with pytest.raises(FileNotFoundError, match="pretrained model"):
+            run_qat(get_args())
+    else:
+        with pytest.raises(SystemExit):
+            run_qat(get_args())
