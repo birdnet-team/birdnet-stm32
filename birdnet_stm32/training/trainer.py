@@ -135,6 +135,7 @@ def train_model(
     gradient_clip_norm: float = 1.0,
     resume: bool = False,
     extra_callbacks: list[tf.keras.callbacks.Callback] | None = None,
+    jit_compile: bool = False,
     checkpoint_model: tf.keras.Model | None = None,
     checkpoint_sync: Callable[[], None] | None = None,
     checkpoint_monitor: str = _MONITOR,
@@ -175,6 +176,7 @@ def train_model(
         resume: If True, reload the model from the checkpoint and continue from
             the recorded epoch (the learning-rate schedule is advanced to match).
         extra_callbacks: Additional Keras callbacks (e.g. QAT callback).
+        jit_compile: XLA-compile the training step (float training; not with fake-quant QAT models).
         checkpoint_model: Optional deployment model that shares weights with
             ``model``. When supplied, checkpoints contain this clean model
             instead of training-only wrappers such as fake-quant layers.
@@ -278,10 +280,11 @@ def train_model(
         optimizer=opt,
         loss=loss_fn,
         metrics=[auc_metric, pr_metric],
-        # Audio models contain custom frontend and fake-quant operators whose
-        # XLA compilation is both fragile and very memory hungry on long raw
-        # inputs. Standard graph execution is faster end-to-end here.
-        jit_compile=False,
+        # Off by default: fake-quant operators (QAT) compile fragile and memory
+        # hungry under XLA. Float training of the raw 448 model is another matter:
+        # the depthwise backbone runs ~3x faster with XLA and mixed precision
+        # (``train --jit_compile --mixed_precision``).
+        jit_compile=jit_compile,
     )
 
     class _SaveTrainState(tf.keras.callbacks.Callback):
