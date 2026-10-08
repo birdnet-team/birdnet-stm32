@@ -613,9 +613,14 @@ def main():
         random.seed(seed)
         np.random.seed(seed)
         tf.random.set_seed(seed)
-        os.environ["TF_DETERMINISTIC_OPS"] = "1"
         os.environ["PYTHONHASHSEED"] = str(seed)
-        print(f"Deterministic mode enabled (seed={seed}).")
+        if args.jit_compile:
+            # Keras turns XLA off whenever TF op determinism is on, so --jit_compile keeps
+            # the seeds but not the deterministic kernels (GPU sums may differ in the last bits).
+            print(f"Seeded (seed={seed}); deterministic TF ops off: they would disable --jit_compile.")
+        else:
+            os.environ["TF_DETERMINISTIC_OPS"] = "1"
+            print(f"Deterministic mode enabled (seed={seed}).")
 
     # Early warning for STM32N6 raw frontend constraint
     if args.audio_frontend == "raw":
