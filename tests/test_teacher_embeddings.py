@@ -238,7 +238,7 @@ class TestLoaderAndTrainer:
             student,
             train,
             val,
-            epochs=2,
+            epochs=1,  # the checkpoint is the best epoch; with one, that is the student's final state
             steps_per_epoch=2,
             val_steps=1,
             checkpoint_path=path,
