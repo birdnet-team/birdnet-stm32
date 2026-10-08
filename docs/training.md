@@ -388,6 +388,11 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--weight_decay` | 0.0 | Weight decay (adamw only) |
 | `--grad_clip` | 1.0 | Max gradient norm for clipping (0 = disabled) |
 | `--mixed_precision` | False | Enable FP16 mixed precision training |
+| `--dw_weight_decay` | None | L2 weight on the depthwise kernels (None: the blocks' 1e-4; 0 turns it off) |
+| `--dw_activation` | relu6 | Activation after each depthwise BN: `relu6` or `leaky_relu` (slope 0.1; a channel cannot die) |
+| `--field_table` | None | CSV `sample_id,site,recording` of field clips; with `--class_cap_per_epoch` they are drawn for diversity: round-robin over sites and recordings, at most `--field_share` of a class's cap |
+| `--field_share` | 0.5 | Max share of a class's per-epoch cap filled by field clips (more only when focal files cannot fill the rest) |
+| `--field_per_recording` | 2 | Max segments of one field recording per class and epoch |
 | `--jit_compile` | False | XLA-compile the float training step; with `--mixed_precision` about 3x faster on the raw 448 model (not with `--qat`) |
 | `--resume` | False | Resume training from checkpoint |
 | `--init_checkpoint` | — | Start from this model's weights at epoch 0, e.g. the output of `add-exposure`; its frontend must match the architecture flags. Checkpoint selection and early stopping start after the learning-rate warm-up |

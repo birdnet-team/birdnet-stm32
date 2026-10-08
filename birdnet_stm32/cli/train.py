@@ -428,6 +428,30 @@ def get_args() -> argparse.Namespace:
         "--mixed_precision", action="store_true", default=False, help="Enable FP16 mixed precision training"
     )
     parser.add_argument(
+        "--dw_weight_decay",
+        type=float,
+        default=None,
+        help="L2 weight on the depthwise kernels (default: the blocks' 1e-4); 0 turns it off",
+    )
+    parser.add_argument(
+        "--dw_activation",
+        choices=("relu6", "leaky_relu"),
+        default="relu6",
+        help="Activation after each depthwise BN (leaky_relu: a channel cannot die)",
+    )
+    parser.add_argument(
+        "--field_table",
+        type=str,
+        default=None,
+        help="CSV sample_id,site,recording of field clips: the class cap draws them for diversity (see --field_share)",
+    )
+    parser.add_argument(
+        "--field_share", type=float, default=0.5, help="Max share of a class's per-epoch cap filled by field clips"
+    )
+    parser.add_argument(
+        "--field_per_recording", type=int, default=2, help="Max segments of one field recording per class and epoch"
+    )
+    parser.add_argument(
         "--jit_compile",
         action="store_true",
         default=False,
@@ -543,6 +567,8 @@ def get_args() -> argparse.Namespace:
         parser.error(f"--teacher_embedding_weight must be >= 0, got {args.teacher_embedding_weight}")
     if args.teacher_embedding_weight > 0 and not has_embeddings:
         parser.error("--teacher_embedding_weight > 0 needs a --teacher_cache that holds emb.npy")
+    if args.field_table and args.class_cap_per_epoch <= 0:
+        parser.error("--field_table shapes the per-epoch class cap: it needs --class_cap_per_epoch > 0")
     if args.jit_compile and args.qat:
         parser.error("--jit_compile applies to float training only (QAT's fake-quant graph stays uncompiled)")
     if args.teacher_embedding_weight > 0 and (args.qat or args.linear_probe):
@@ -686,10 +712,28 @@ def main():
         print(f"Loader auto-tuning enabled (initial max_inflight_files={initial_inflight}).")
 
     train_kwargs = dict(common_kwargs)
+    field_kwargs: dict = {}
+    if args.field_table:
+        from birdnet_stm32.data.sidecar import load_field_table
+
+        field_kwargs = dict(
+            field=load_field_table(args.field_table),
+            field_share=args.field_share,
+            per_recording=args.field_per_recording,
+        )
+        print(
+            f"Field table: {len(field_kwargs['field'])} field clips, share {args.field_share}, {args.field_per_recording} per recording"
+        )
     if args.class_cap_per_epoch > 0:
         train_kwargs["class_cap_per_epoch"] = args.class_cap_per_epoch
+        if field_kwargs:
+            train_kwargs.update(
+                field_table=field_kwargs["field"],
+                field_share=args.field_share,
+                field_per_recording=args.field_per_recording,
+            )
         print(
-            f"Per-epoch class cap {args.class_cap_per_epoch}: {len(ClassCappedPasses(train_paths, args.class_cap_per_epoch))} "
+            f"Per-epoch class cap {args.class_cap_per_epoch}: {len(ClassCappedPasses(train_paths, args.class_cap_per_epoch, **field_kwargs))} "
             f"of {len(train_paths)} training files per epoch"
         )
     if train_loader_control is not None:
@@ -769,7 +813,7 @@ def main():
     )
 
     epoch_files = (
-        len(ClassCappedPasses(train_paths, args.class_cap_per_epoch))
+        len(ClassCappedPasses(train_paths, args.class_cap_per_epoch, **field_kwargs))
         if args.class_cap_per_epoch > 0
         else len(train_paths)
     )
@@ -800,6 +844,8 @@ def main():
         raw_exposure_mode=args.raw_exposure_mode,
         frontend_trainable=args.frontend_trainable,
         dropout_rate=args.dropout,
+        dw_weight_decay=args.dw_weight_decay,
+        dw_activation=args.dw_activation,
     )
     # Per-layer MACs and N6 compatibility, rather than a plain Keras summary:
     # on this target the MAC budget and op support decide whether the model is

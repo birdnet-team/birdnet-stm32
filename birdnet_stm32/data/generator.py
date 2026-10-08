@@ -9,6 +9,7 @@ in-memory reservoir to maximize I/O reuse and batch diversity.
 """
 
 import multiprocessing as mp
+import os
 import random
 import time
 from typing import Any
@@ -239,35 +240,120 @@ class ClassCappedPasses:
     and none is discarded. Smaller classes contribute all their files every pass. Nothing is
     repeated within a pass. Noise-like folders (all-zero negatives) are not a class and are
     never capped.
+
+    With a ``field`` table (file stem -> (site, recording)) a class's field clips are drawn for
+    diversity, not at random: at most ``field_share`` of its quota (more only when it lacks
+    focal files to fill the rest), taken round-robin over its sites and, within a site, over
+    recordings, with at most ``per_recording`` segments of one recording per pass (consecutive
+    windows of a recording are near duplicates). Every recording rotates through its segments
+    across passes. Focal files fill the remaining quota as above.
     """
 
-    def __init__(self, file_paths: list[str], cap: int, rng: random.Random | None = None):
+    def __init__(
+        self,
+        file_paths: list[str],
+        cap: int,
+        rng: random.Random | None = None,
+        field: dict[str, tuple[str, str]] | None = None,
+        field_share: float = 0.5,
+        per_recording: int = 2,
+    ):
         self.cap = int(cap)
         self.rng = rng or random
+        self.field_share = float(field_share)
+        self.per_recording = max(1, int(per_recording))
         groups: dict[str, list[str]] = {}
+        sites: dict[str, dict[str, dict[str, list[str]]]] = {}
         for p in file_paths:
-            groups.setdefault(p.replace("\\", "/").split("/")[-2], []).append(p)
-        self.groups = groups
+            parts = p.replace("\\", "/").split("/")
+            k = parts[-2]
+            info = field.get(os.path.splitext(parts[-1])[0]) if field else None
+            if info is not None and k.lower() not in NOISE_CLASSES:
+                site, rec = info
+                sites.setdefault(k, {}).setdefault(site, {}).setdefault(rec, []).append(p)
+            else:
+                groups.setdefault(k, []).append(p)
+        for k in sites:
+            groups.setdefault(k, [])
+        self.groups = groups  # focal (or all, without a field table) files per class
+        self.sites = sites  # field clips per class -> site -> recording
         self.order = {k: [] for k in groups}
+        self.rec_order: dict[tuple[str, str, str], list[str]] = {}
+        self.rec_start: dict[tuple[str, str], int] = {}
 
     def _cap(self, k: str) -> int:
         return len(self.groups[k]) if k.lower() in NOISE_CLASSES else self.cap
 
+    def _field_plan(self, k: str) -> int:
+        """How many field clips class ``k`` takes per pass (deterministic, for ``len``)."""
+        recs = [r for site in self.sites.get(k, {}).values() for r in site.values()]
+        if not recs:
+            return 0
+        eligible = sum(min(self.per_recording, len(r)) for r in recs)
+        target = int(self.field_share * self.cap)
+        target = max(target, self.cap - len(self.groups[k]))  # field fills what focal cannot
+        return min(eligible, target, self.cap)
+
     def __len__(self) -> int:
-        return sum(min(len(v), self._cap(k)) for k, v in self.groups.items())
+        total = 0
+        for k, paths in self.groups.items():
+            n_field = self._field_plan(k)
+            total += n_field + min(len(paths), self._cap(k) - n_field)
+        return total
+
+    def _draw_field(self, k: str, n: int) -> list[str]:
+        if n <= 0:
+            return []
+        site_names = list(self.sites[k])
+        self.rng.shuffle(site_names)
+        cursors = []
+        for site in site_names:
+            recs = sorted(self.sites[k][site])
+            start = self.rec_start.get((k, site), 0) % len(recs)
+            self.rec_start[(k, site)] = start + 1  # the next pass starts at another recording
+            cursors.append([recs[(start + i) % len(recs)] for i in range(len(recs))])
+        used: dict[tuple[str, str], int] = {}
+        take: list[str] = []
+        while len(take) < n:
+            progressed = False
+            for site, recs in zip(site_names, cursors, strict=True):
+                while recs:
+                    rec = recs[0]
+                    key = (site, rec)
+                    clips = self.sites[k][site][rec]
+                    if used.get(key, 0) >= min(self.per_recording, len(clips)):
+                        recs.pop(0)
+                        continue
+                    order_key = (k, site, rec)
+                    if not self.rec_order.get(order_key):
+                        self.rec_order[order_key] = list(clips)
+                        self.rng.shuffle(self.rec_order[order_key])
+                    take.append(self.rec_order[order_key].pop())
+                    used[key] = used.get(key, 0) + 1
+                    recs.append(recs.pop(0))  # next recording of this site on the next round
+                    progressed = True
+                    break
+                if len(take) >= n:
+                    break
+            if not progressed:
+                break
+        return take
 
     def next_pass(self) -> list[str]:
         out: list[str] = []
         for k, paths in self.groups.items():
-            if len(paths) <= self._cap(k):
+            n_field = self._field_plan(k)
+            out.extend(self._draw_field(k, n_field))
+            quota = self._cap(k) - n_field
+            if len(paths) <= quota:
                 out.extend(paths)
                 continue
             take: list[str] = []
-            while len(take) < self.cap:
+            while len(take) < quota:
                 if not self.order[k]:
                     self.order[k] = list(paths)
                     self.rng.shuffle(self.order[k])
-                n = self.cap - len(take)
+                n = quota - len(take)
                 take.extend(self.order[k][:n])
                 self.order[k] = self.order[k][n:]
             out.extend(take)
@@ -347,7 +433,17 @@ def load_dataset(
 
     # Per-epoch class cap (train --class_cap_per_epoch): a balanced draw without repetition.
     class_cap = int(kwargs.get("class_cap_per_epoch", 0) or 0)
-    capped = ClassCappedPasses(file_paths, class_cap) if class_cap > 0 else None
+    capped = (
+        ClassCappedPasses(
+            file_paths,
+            class_cap,
+            field=kwargs.get("field_table"),
+            field_share=float(kwargs.get("field_share", 0.5)),
+            per_recording=int(kwargs.get("field_per_recording", 2)),
+        )
+        if class_cap > 0
+        else None
+    )
 
     def _generator():
         """Infinite generator with reservoir for multi-chunk file reuse."""

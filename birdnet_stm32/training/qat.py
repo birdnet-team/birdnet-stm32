@@ -21,6 +21,7 @@ QUANTIZABLE_TYPES = (layers.Conv2D, layers.DepthwiseConv2D, layers.Dense)
 ACTIVATION_BOUNDARY_TYPES = (
     layers.BatchNormalization,
     layers.ReLU,
+    layers.LeakyReLU,
     layers.Add,
     layers.Multiply,
     layers.Dense,

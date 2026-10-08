@@ -40,6 +40,8 @@ def ds_conv_block(
     weight_decay: float = 1e-4,
     drop_rate: float = 0.1,
     dw_kernel_size: int = 3,
+    dw_weight_decay: float | None = None,
+    dw_activation: str = "relu6",
 ) -> tf.Tensor:
     """Depthwise-separable block (k x k DW + 1x1 PW) with optional residual.
 
@@ -52,11 +54,16 @@ def ds_conv_block(
         weight_decay: L2 regularization for DW/PW kernels.
         drop_rate: Spatial dropout rate after PW BN.
         dw_kernel_size: Square depthwise kernel size.
+        dw_weight_decay: L2 regularization for the DW kernel (None: ``weight_decay``).
+        dw_activation: Activation after the DW BN: ``relu6`` or ``leaky_relu`` (slope 0.1; a
+            channel cannot die, and the N6 NPU runs it in hardware).
 
     Returns:
         Output tensor [B, H', W', out_ch].
     """
     reg = regularizers.l2(weight_decay) if weight_decay and weight_decay > 0 else None
+    dw_wd = weight_decay if dw_weight_decay is None else dw_weight_decay
+    dw_reg = regularizers.l2(dw_wd) if dw_wd and dw_wd > 0 else None
     in_ch = x.shape[-1]
 
     y = layers.DepthwiseConv2D(
@@ -64,11 +71,16 @@ def ds_conv_block(
         strides=(stride_f, stride_t),
         padding="same",
         use_bias=False,
-        depthwise_regularizer=reg,
+        depthwise_regularizer=dw_reg,
         name=f"{name}_dw",
     )(x)
     y = layers.BatchNormalization(name=f"{name}_dw_bn")(y)
-    y = layers.ReLU(max_value=6, name=f"{name}_dw_relu")(y)
+    if dw_activation == "relu6":
+        y = layers.ReLU(max_value=6, name=f"{name}_dw_relu")(y)
+    elif dw_activation == "leaky_relu":
+        y = layers.LeakyReLU(negative_slope=0.1, name=f"{name}_dw_relu")(y)
+    else:
+        raise ValueError(f"dw_activation must be relu6 or leaky_relu, got {dw_activation!r}")
 
     y = layers.Conv2D(
         filters=out_ch,
@@ -131,6 +143,8 @@ def build_dscnn_model(
     frontend_trainable: bool = False,
     dropout_rate: float = 0.5,
     weight_decay: float = 1e-4,
+    dw_weight_decay: float | None = None,
+    dw_activation: str = "relu6",
     head_pooling: str = "gap",
     dw_kernel_size: int = 3,
     stage_widths: tuple[int, ...] | list[int] | None = None,
@@ -165,6 +179,8 @@ def build_dscnn_model(
         frontend_trainable: Make frontend sub-layers trainable.
         dropout_rate: Dropout rate before the classifier head.
         weight_decay: L2 regularization weight for DS-CNN blocks.
+        dw_weight_decay: L2 weight for the depthwise kernels (None: ``weight_decay``).
+        dw_activation: Activation after each depthwise BN: ``relu6`` or ``leaky_relu``.
         head_pooling: Pooling head, one of ``HEAD_POOLINGS``.
         dw_kernel_size: Depthwise kernel size in stages 2-4; stage 1, which
             carries the largest feature map, stays 3x3.
@@ -266,11 +282,27 @@ def build_dscnn_model(
         k = 3 if si == 1 else dw_kernel_size
 
         x = ds_conv_block(
-            x, out_ch, stride_f=sf, stride_t=st, name=f"stage{si}_ds1", weight_decay=weight_decay, dw_kernel_size=k
+            x,
+            out_ch,
+            stride_f=sf,
+            stride_t=st,
+            name=f"stage{si}_ds1",
+            weight_decay=weight_decay,
+            dw_kernel_size=k,
+            dw_weight_decay=dw_weight_decay,
+            dw_activation=dw_activation,
         )
         for bi in range(2, reps + 1):
             x = ds_conv_block(
-                x, out_ch, stride_f=1, stride_t=1, name=f"stage{si}_ds{bi}", weight_decay=weight_decay, dw_kernel_size=k
+                x,
+                out_ch,
+                stride_f=1,
+                stride_t=1,
+                name=f"stage{si}_ds{bi}",
+                weight_decay=weight_decay,
+                dw_kernel_size=k,
+                dw_weight_decay=dw_weight_decay,
+                dw_activation=dw_activation,
             )
 
     # Final 1x1 conv to embeddings
