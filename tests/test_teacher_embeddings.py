@@ -201,7 +201,7 @@ class TestLoaderAndTrainer:
             CLASSES,
             audio_frontend="raw",
             batch_size=4,
-            num_workers=0,
+            num_workers=kwargs.pop("num_workers", 0),
             sample_rate=24000,
             chunk_duration=2.5,
             teacher_cache=str(cache),
@@ -210,13 +210,14 @@ class TestLoaderAndTrainer:
             **kwargs,
         )
 
-    def test_batches_carry_embeddings_and_mixup_clears_their_flag(self, tmp_path):
-        ds = self._dataset(tmp_path, mixup_alpha=0.5, mixup_probability=0.5)
+    @pytest.mark.parametrize("workers", [0, 2])
+    def test_batches_carry_embeddings_and_mixup_clears_their_flag(self, tmp_path, workers):
+        ds = self._dataset(tmp_path, mixup_alpha=0.5, mixup_probability=0.5, num_workers=workers)
         x, (y, emb, valid) = next(iter(ds))
         assert x.shape == (4, 60000, 1) and y.shape == (4, 3) and emb.shape == (4, DIM) and valid.shape == (4,)
         # rec1 is cached, rec2 is not; two of four samples are mixed.
         assert float(tf.reduce_sum(valid)) <= 2.0
-        unmixed = self._dataset(tmp_path / "u", mixup_alpha=0.0, mixup_probability=0.0)
+        unmixed = self._dataset(tmp_path / "u", mixup_alpha=0.0, mixup_probability=0.0, num_workers=workers)
         _, (_, emb, valid) = next(iter(unmixed))
         assert float(tf.reduce_sum(valid)) == 2.0
         np.testing.assert_array_equal(emb.numpy()[valid.numpy() > 0][0], np.arange(DIM) + 1.0)

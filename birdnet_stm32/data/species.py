@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import os
 
+# Folders of all-negative clips: not a class, every output 0.
+NOISE_CLASSES = {"noise", "silence", "background", "other"}
+
 
 def load_species_list(path: str) -> list[str]:
     """Load a species list from a text file (one species per line).

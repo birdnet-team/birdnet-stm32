@@ -9,9 +9,10 @@ import os
 import numpy as np
 import tensorflow as tf
 
+from birdnet_stm32.data.species import NOISE_CLASSES
+
 # Supported audio filename extensions (lowercase)
 SUPPORTED_AUDIO_EXTS = (".wav", ".mp3", ".flac", ".ogg", ".m4a")
-NOISE_CLASSES = {"noise", "silence", "background", "other"}
 
 
 def load_classes_file(path: str) -> list[str]:

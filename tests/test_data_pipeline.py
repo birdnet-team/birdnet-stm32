@@ -3,10 +3,12 @@
 import numpy as np
 import soundfile as sf
 
+from birdnet_stm32.data.feeder import batch_layout, fill_batch, sample_stream
 from birdnet_stm32.data.generator import (
     _compute_reservoir_limits,
     _init_worker,
     _process_file,
+    _worker_config,
     estimate_samples_per_epoch,
     load_dataset,
 )
@@ -377,28 +379,26 @@ class TestLoadDataset:
             def join(self):
                 return None
 
-        monkeypatch.setattr("birdnet_stm32.data.generator._pool_context", lambda: type("Ctx", (), {"Pool": FakePool}))
-        monkeypatch.setattr("birdnet_stm32.data.generator.random.shuffle", lambda seq: None)
-        monkeypatch.setattr("birdnet_stm32.data.generator._POOL_POLL_INTERVAL_S", 0.0)
+        monkeypatch.setattr("birdnet_stm32.data.feeder._pool_context", lambda: type("Ctx", (), {"Pool": FakePool}))
+        monkeypatch.setattr("birdnet_stm32.data.feeder.random.shuffle", lambda seq: None)
+        monkeypatch.setattr("birdnet_stm32.data.feeder._POOL_POLL_INTERVAL_S", 0.0)
 
-        ds = load_dataset(
+        worker_cfg, _ = _worker_config(classes, "raw", 256, 64, 1, sample_rate=4, chunk_duration=2)
+        stream = sample_stream(
             paths,
-            classes,
-            audio_frontend="raw",
-            batch_size=32,
+            worker_cfg,
             num_workers=2,
-            max_chunks_per_file=1,
-            sample_rate=4,
-            chunk_duration=2,
-            mixup_alpha=0.0,
-            mixup_probability=0.0,
+            batch_size=32,
+            reservoir_high=64,
+            reservoir_low=32,
             max_inflight_files=32,
             file_task_timeout_s=0.0,
         )
-
-        samples, labels = next(iter(ds))
-        assert samples.shape == (32, 8, 1)
-        assert labels.shape == (32, 1)
+        columns = [np.empty(shape, dtype) for shape, dtype in batch_layout(32, (8, 1), 1)]
+        fill_batch(stream, columns)  # 32 chunks although the first file never finishes
+        stream.close()
+        assert columns[0].shape == (32, 8, 1)
+        assert columns[1].shape == (32, 1)
 
     def test_loader_control_tracks_skipped_corrupt_file(self, monkeypatch):
         """load_dataset should surface the last skipped unreadable file."""
@@ -415,8 +415,8 @@ class TestLoadDataset:
             label = np.array([1.0], dtype=np.float32)
             return [(sample, label)]
 
-        monkeypatch.setattr("birdnet_stm32.data.generator._process_file", fake_process_file)
-        monkeypatch.setattr("birdnet_stm32.data.generator.random.shuffle", lambda seq: None)
+        monkeypatch.setattr("birdnet_stm32.data.feeder._process_file", fake_process_file)
+        monkeypatch.setattr("birdnet_stm32.data.feeder.random.shuffle", lambda seq: None)
 
         ds = load_dataset(
             paths,

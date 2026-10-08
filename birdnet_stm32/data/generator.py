@@ -2,30 +2,30 @@
 
 Uses ``multiprocessing.Pool`` for true parallel audio loading and
 preprocessing, bypassing the GIL so FLAC decode, resampling, smart-crop,
-and spectrogram computation run concurrently across CPU cores.
+and spectrogram computation run concurrently across CPU cores. A feeder
+process runs the pool and assembles batches (``birdnet_stm32.data.feeder``).
 
 Long files yield multiple salient chunks per open, stored in a shuffled
 in-memory reservoir to maximize I/O reuse and batch diversity.
 """
 
-import multiprocessing as mp
-import os
 import random
-import time
 from typing import Any
 
 import numpy as np
 import tensorflow as tf
 
-from birdnet_stm32.data.dataset import NOISE_CLASSES
+from birdnet_stm32.data.feeder import (  # noqa: F401  (ClassCappedPasses is re-exported)
+    BatchFeeder,
+    ClassCappedPasses,
+    _create_worker_pool,
+    _terminate_worker_pool,
+    batch_layout,
+    fill_batch,
+    sample_stream,
+)
 from birdnet_stm32.data.worker import _init_worker, _process_file
 from birdnet_stm32.models.frontend import hybrid_fft_bins, normalize_frontend_name
-
-# ---------------------------------------------------------------------------
-# Multiprocessing worker pool
-# ---------------------------------------------------------------------------
-
-_POOL_POLL_INTERVAL_S = 0.05
 
 
 def mixup_batch(samples: tf.Tensor, labels: tf.Tensor, alpha: float = 0.2, probability: float = 0.25):
@@ -57,44 +57,6 @@ def mixup_batch(samples: tf.Tensor, labels: tf.Tensor, alpha: float = 0.2, proba
     merged = tf.reduce_max(tf.gather(labels, sources) * active[:, :, None], axis=1)
     m = tf.reshape(mixed, tf.concat([[b], extra], 0))
     return m * blend + (1.0 - m) * samples, mixed[:, None] * merged + (1.0 - mixed[:, None]) * labels, mixed
-
-
-def _pool_context():
-    """Start workers from a clean forkserver rather than by forking the trainer.
-
-    Forking the training process copies a snapshot of dozens of TensorFlow and
-    loader threads. A child forked while one of them held a lock (logging,
-    malloc, BLAS) hangs on first use, and with ``maxtasksperchild`` respawning
-    every worker every 100 files, some runs lost most of their pool: measured,
-    the same seeded run trained at 55 or at 390 ms/step with the GPU at 6%.
-    The forkserver is single-threaded and preloads only the TF-free worker
-    module, so a replacement worker (after a timeout) cannot inherit a held lock.
-    """
-    ctx = mp.get_context("forkserver")
-    ctx.set_forkserver_preload(["birdnet_stm32.data.worker"])
-    return ctx
-
-
-def _create_worker_pool(num_workers: int, worker_cfg: dict) -> mp.pool.Pool:
-    """Create a worker pool with the project's standard settings."""
-    return _pool_context().Pool(
-        num_workers,
-        initializer=_init_worker,
-        initargs=(worker_cfg,),
-        # Workers live for the whole run. Recycling them every 100 files cost more
-        # than the files did (~0.5 s to re-open the teacher cache against ~5 ms a
-        # file) and capped the loader at ~10 batches/s; a worker's private memory
-        # stays flat (measured over 4,000 files), the growth in its RSS is the
-        # shared, memory-mapped teacher cache.
-        maxtasksperchild=None,
-    )
-
-
-def _terminate_worker_pool(pool: mp.pool.Pool | None) -> None:
-    """Terminate a worker pool if it exists."""
-    if pool is not None:
-        pool.terminate()
-        pool.join()
 
 
 def estimate_samples_per_epoch(n_files: int, max_chunks_per_file: int = 1) -> int:
@@ -261,136 +223,6 @@ def sample_chunks(
     return [item for result in results if result for item in result]
 
 
-class ClassCappedPasses:
-    """File lists for successive passes with at most ``cap`` files per class (the folder).
-
-    A class with more files than ``cap`` contributes a different ``cap`` of them each pass: it
-    walks through a shuffled order of all its files, continuing where the last pass stopped and
-    reshuffling once every file has been used, so over successive passes every file is drawn
-    and none is discarded. Smaller classes contribute all their files every pass. Nothing is
-    repeated within a pass. Noise-like folders (all-zero negatives) are not a class and are
-    never capped.
-
-    With a ``field`` table (file stem -> (site, recording)) a class's field clips are drawn for
-    diversity, not at random: at most ``field_share`` of its quota (more only when it lacks
-    focal files to fill the rest), taken round-robin over its sites and, within a site, over
-    recordings, with at most ``per_recording`` segments of one recording per pass (consecutive
-    windows of a recording are near duplicates). Every recording rotates through its segments
-    across passes. Focal files fill the remaining quota as above.
-    """
-
-    def __init__(
-        self,
-        file_paths: list[str],
-        cap: int,
-        rng: random.Random | None = None,
-        field: dict[str, tuple[str, str]] | None = None,
-        field_share: float = 0.5,
-        per_recording: int = 2,
-    ):
-        self.cap = int(cap)
-        self.rng = rng or random
-        self.field_share = float(field_share)
-        self.per_recording = max(1, int(per_recording))
-        groups: dict[str, list[str]] = {}
-        sites: dict[str, dict[str, dict[str, list[str]]]] = {}
-        for p in file_paths:
-            parts = p.replace("\\", "/").split("/")
-            k = parts[-2]
-            info = field.get(os.path.splitext(parts[-1])[0]) if field else None
-            if info is not None and k.lower() not in NOISE_CLASSES:
-                site, rec = info
-                sites.setdefault(k, {}).setdefault(site, {}).setdefault(rec, []).append(p)
-            else:
-                groups.setdefault(k, []).append(p)
-        for k in sites:
-            groups.setdefault(k, [])
-        self.groups = groups  # focal (or all, without a field table) files per class
-        self.sites = sites  # field clips per class -> site -> recording
-        self.order = {k: [] for k in groups}
-        self.rec_order: dict[tuple[str, str, str], list[str]] = {}
-        self.rec_start: dict[tuple[str, str], int] = {}
-
-    def _cap(self, k: str) -> int:
-        return len(self.groups[k]) if k.lower() in NOISE_CLASSES else self.cap
-
-    def _field_plan(self, k: str) -> int:
-        """How many field clips class ``k`` takes per pass (deterministic, for ``len``)."""
-        recs = [r for site in self.sites.get(k, {}).values() for r in site.values()]
-        if not recs:
-            return 0
-        eligible = sum(min(self.per_recording, len(r)) for r in recs)
-        target = int(self.field_share * self.cap)
-        target = max(target, self.cap - len(self.groups[k]))  # field fills what focal cannot
-        return min(eligible, target, self.cap)
-
-    def __len__(self) -> int:
-        total = 0
-        for k, paths in self.groups.items():
-            n_field = self._field_plan(k)
-            total += n_field + min(len(paths), self._cap(k) - n_field)
-        return total
-
-    def _draw_field(self, k: str, n: int) -> list[str]:
-        if n <= 0:
-            return []
-        site_names = list(self.sites[k])
-        self.rng.shuffle(site_names)
-        cursors = []
-        for site in site_names:
-            recs = sorted(self.sites[k][site])
-            start = self.rec_start.get((k, site), 0) % len(recs)
-            self.rec_start[(k, site)] = start + 1  # the next pass starts at another recording
-            cursors.append([recs[(start + i) % len(recs)] for i in range(len(recs))])
-        used: dict[tuple[str, str], int] = {}
-        take: list[str] = []
-        while len(take) < n:
-            progressed = False
-            for site, recs in zip(site_names, cursors, strict=True):
-                while recs:
-                    rec = recs[0]
-                    key = (site, rec)
-                    clips = self.sites[k][site][rec]
-                    if used.get(key, 0) >= min(self.per_recording, len(clips)):
-                        recs.pop(0)
-                        continue
-                    order_key = (k, site, rec)
-                    if not self.rec_order.get(order_key):
-                        self.rec_order[order_key] = list(clips)
-                        self.rng.shuffle(self.rec_order[order_key])
-                    take.append(self.rec_order[order_key].pop())
-                    used[key] = used.get(key, 0) + 1
-                    recs.append(recs.pop(0))  # next recording of this site on the next round
-                    progressed = True
-                    break
-                if len(take) >= n:
-                    break
-            if not progressed:
-                break
-        return take
-
-    def next_pass(self) -> list[str]:
-        out: list[str] = []
-        for k, paths in self.groups.items():
-            n_field = self._field_plan(k)
-            out.extend(self._draw_field(k, n_field))
-            quota = self._cap(k) - n_field
-            if len(paths) <= quota:
-                out.extend(paths)
-                continue
-            take: list[str] = []
-            while len(take) < quota:
-                if not self.order[k]:
-                    self.order[k] = list(paths)
-                    self.rng.shuffle(self.order[k])
-                n = quota - len(take)
-                take.extend(self.order[k][:n])
-                self.order[k] = self.order[k][n:]
-            out.extend(take)
-        self.rng.shuffle(out)
-        return out
-
-
 def load_dataset(
     file_paths: list[str],
     classes: list[str],
@@ -452,8 +284,6 @@ def load_dataset(
     loader_control = kwargs.get("loader_control")
     file_task_timeout_s = float(kwargs.get("file_task_timeout_s", max(120.0, cd * 10.0)))
 
-    use_mp = num_workers > 0
-
     reservoir_high, reservoir_low = _compute_reservoir_limits(
         sample_shape=sample_shape,
         num_classes=num_classes,
@@ -461,154 +291,57 @@ def load_dataset(
         loader_buffer_mb=loader_buffer_mb,
     )
 
-    # Per-epoch class cap (train --class_cap_per_epoch): a balanced draw without repetition.
-    class_cap = int(kwargs.get("class_cap_per_epoch", 0) or 0)
-    capped = (
-        ClassCappedPasses(
-            file_paths,
-            class_cap,
-            field=kwargs.get("field_table"),
-            field_share=float(kwargs.get("field_share", 0.5)),
-            per_recording=int(kwargs.get("field_per_recording", 2)),
-        )
-        if class_cap > 0
-        else None
+    stream_kwargs = dict(
+        file_paths=list(file_paths),
+        worker_cfg=worker_cfg,
+        num_workers=num_workers,
+        batch_size=batch_size,
+        reservoir_high=reservoir_high,
+        reservoir_low=reservoir_low,
+        max_inflight_files=max_inflight_files,
+        file_task_timeout_s=file_task_timeout_s,
+        # Per-epoch class cap (train --class_cap_per_epoch): a balanced draw without repetition.
+        class_cap=int(kwargs.get("class_cap_per_epoch", 0) or 0),
+        field=kwargs.get("field_table"),
+        field_share=float(kwargs.get("field_share", 0.5)),
+        per_recording=int(kwargs.get("field_per_recording", 2)),
     )
+    layout = batch_layout(batch_size, sample_shape, num_classes, embedding_dim)
 
-    def _generator():
-        """Infinite generator with reservoir for multi-chunk file reuse."""
-        pool = None
-        if use_mp:
-            pool = _create_worker_pool(num_workers, worker_cfg)
-        else:
-            _init_worker(worker_cfg)
-
-        try:
-            while True:
-                if capped is not None:
-                    shuffled = capped.next_pass()
-                else:
-                    shuffled = list(file_paths)
-                    random.shuffle(shuffled)
-
-                reservoir: list[tuple[np.ndarray, np.ndarray]] = []
-
-                if pool is None:
-                    for path in shuffled:
-                        result = _process_file(path)
-                        if result is not None:
-                            reservoir.extend(result)
-                        elif isinstance(loader_control, dict):
-                            loader_control["last_skipped_file"] = path
-                        if len(reservoir) >= reservoir_high:
-                            random.shuffle(reservoir)
-                            while len(reservoir) > reservoir_low:
-                                yield reservoir.pop()
-                else:
-                    pending: list[dict[str, object]] = []
-                    next_index = 0
-
-                    while next_index < len(shuffled) or pending:
-                        current_inflight = max_inflight_files
-                        if isinstance(loader_control, dict):
-                            current_inflight = int(loader_control.get("max_inflight_files", max_inflight_files))
-                        inflight_cap = max(
-                            32,
-                            max(batch_size * 2, num_workers * 4, (reservoir_high // max(1, max_chunks_per_file)) * 2),
-                        )
-                        current_inflight = max(32, min(current_inflight, inflight_cap))
-
-                        while next_index < len(shuffled) and len(pending) < current_inflight:
-                            path = shuffled[next_index]
-                            next_index += 1
-                            pending.append(
-                                {
-                                    "path": path,
-                                    "started_at": time.monotonic(),
-                                    "result": pool.apply_async(_process_file, (path,)),
-                                }
-                            )
-
-                        made_progress = False
-                        recycle_pool = False
-                        timed_out_path = None
-                        now = time.monotonic()
-
-                        for idx in range(len(pending) - 1, -1, -1):
-                            job = pending[idx]
-                            async_result = job["result"]
-                            if async_result.ready():
-                                pending.pop(idx)
-                                try:
-                                    result = async_result.get()
-                                except Exception:
-                                    result = None
-                                if result is not None:
-                                    reservoir.extend(result)
-                                elif isinstance(loader_control, dict):
-                                    loader_control["last_skipped_file"] = str(job["path"])
-                                made_progress = True
-                                continue
-
-                            if file_task_timeout_s > 0 and (now - float(job["started_at"])) > file_task_timeout_s:
-                                timed_out_path = str(job["path"])
-                                recycle_pool = True
-                                break
-
-                        if recycle_pool:
-                            if isinstance(loader_control, dict):
-                                loader_control["last_loader_timeout"] = {
-                                    "path": timed_out_path,
-                                    "timeout_s": float(file_task_timeout_s),
-                                    "pending_jobs": int(len(pending)),
-                                }
-                            _terminate_worker_pool(pool)
-                            pool = _create_worker_pool(num_workers, worker_cfg)
-                            pending.clear()
-                            continue
-
-                        if len(reservoir) >= reservoir_high:
-                            random.shuffle(reservoir)
-                            while len(reservoir) > reservoir_low:
-                                yield reservoir.pop()
-                                made_progress = True
-                        elif reservoir and not made_progress:
-                            yield reservoir.pop()
-                            made_progress = True
-
-                        if not made_progress and pending:
-                            time.sleep(_POOL_POLL_INTERVAL_S)
-
-                # Drain remaining samples at end of epoch
-                if reservoir:
-                    random.shuffle(reservoir)
-                    while reservoir:
-                        yield reservoir.pop()
-        except GeneratorExit:
-            pass  # tf.data tearing down the generator — normal shutdown
-        finally:
-            _terminate_worker_pool(pool)
+    def _report(key, value):
+        if isinstance(loader_control, dict):
+            loader_control[key] = value
 
     def _batched():
-        """Stack samples into whole batches before they cross into TensorFlow.
+        """Whole batches, built off the training process's Python thread when there are workers.
 
-        One conversion per batch instead of one per sample: the per-sample
-        handoff held the GIL often enough that loading and the training step
-        took turns instead of overlapping. The stream is unchanged; a partial
-        batch carries over to the next pass, as ``batch(drop_remainder=True)``
-        on the infinite generator did.
+        With workers, a feeder process (``birdnet_stm32.data.feeder``) runs the pool, the
+        reservoir and the stacking, and this only copies finished batches out of shared memory.
+        Without, the same stream runs here, serially. A partial batch carries over to the next
+        pass, as ``batch(drop_remainder=True)`` on an infinite sample stream would.
         """
-        batch: list[tuple[np.ndarray, ...]] = []
-        for item in _generator():
-            batch.append(item)
-            if len(batch) == batch_size:
-                columns = [np.stack(column) for column in zip(*batch, strict=True)]
-                if teacher_embeddings:
-                    x, y, emb, valid = columns
-                    yield x, (y, emb.astype(np.float32), valid)
-                else:
-                    yield columns[0], columns[1]
-                batch = []
+        if num_workers > 0:
+            feeder = BatchFeeder(stream_kwargs, layout, seed=random.getrandbits(63))
+            try:
+                while True:
+                    yield _structure(feeder.next(loader_control))
+            finally:
+                feeder.close()
+        else:
+            stream = sample_stream(**stream_kwargs, report=_report)
+            try:
+                while True:
+                    columns = [np.empty(shape, dtype) for shape, dtype in layout]
+                    fill_batch(stream, columns)
+                    yield _structure(columns)
+            finally:
+                stream.close()
+
+    def _structure(columns):
+        if teacher_embeddings:
+            x, y, emb, valid = columns
+            return x, (y, emb.astype(np.float32), valid)
+        return columns[0], columns[1]
 
     label_sig = tf.TensorSpec(shape=(batch_size, num_classes), dtype=tf.float32)
     if teacher_embeddings:
