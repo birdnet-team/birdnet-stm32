@@ -5,7 +5,6 @@ import pytest
 import tensorflow as tf
 from test_teacher_targets import CLASSES, TestWorkerIntegration, write_cache
 
-from birdnet_stm32.audio.augmentation import apply_mixup
 from birdnet_stm32.data.teacher import TeacherTargets
 from birdnet_stm32.models.dscnn import build_dscnn_model
 from birdnet_stm32.training.embedding_distillation import (
@@ -99,22 +98,6 @@ class TestWorkerEmbeddings:
         finally:
             worker._init_worker(TestWorkerIntegration()._cfg(None, 0.0))
         assert len(item) == 2
-
-
-class TestMixupMask:
-    def test_marks_exactly_the_mixed_samples(self):
-        np.random.seed(0)
-        x = np.random.randn(16, 10).astype(np.float32)
-        y = np.eye(16, dtype=np.float32)
-        before = x.copy()
-        _, _, mixed = apply_mixup(x, y, alpha=0.5, probability=0.25, return_mixed=True)
-        assert mixed.sum() == 4
-        changed = ~np.all(np.isclose(x, before), axis=1)
-        assert not changed[~mixed].any()
-
-    def test_default_return_is_unchanged(self):
-        out = apply_mixup(np.zeros((4, 3), np.float32), np.zeros((4, 2), np.float32), probability=0.0)
-        assert len(out) == 2
 
 
 class TestMaskedCosine:

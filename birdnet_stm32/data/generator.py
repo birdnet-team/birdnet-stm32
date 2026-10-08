@@ -17,7 +17,6 @@ from typing import Any
 import numpy as np
 import tensorflow as tf
 
-from birdnet_stm32.audio.augmentation import apply_mixup
 from birdnet_stm32.data.dataset import NOISE_CLASSES
 from birdnet_stm32.data.worker import _init_worker, _process_file
 from birdnet_stm32.models.frontend import hybrid_fft_bins, normalize_frontend_name
@@ -27,6 +26,37 @@ from birdnet_stm32.models.frontend import hybrid_fft_bins, normalize_frontend_na
 # ---------------------------------------------------------------------------
 
 _POOL_POLL_INTERVAL_S = 0.05
+
+
+def mixup_batch(samples: tf.Tensor, labels: tf.Tensor, alpha: float = 0.2, probability: float = 0.25):
+    """Multi-source mixup on a batch, in TensorFlow ops (runs inside tf.data, off the Python lock).
+
+    Emulates several birds calling at once: ``floor(B * probability)`` random samples of the batch
+    are each replaced by a blend of themselves and 1 or 2 random partners (even odds), with gains
+    from a Dirichlet(``alpha``) distribution (normalized Gamma draws), and their labels become the
+    element-wise max over the sources so every contributing species stays a target. Every blend
+    reads the original batch.
+
+    Returns:
+        ``(samples, labels, mixed)``: ``mixed`` is a float32 ``[B]`` mask of the replaced samples
+        (the teacher embedding of such a chunk no longer describes its audio).
+    """
+    b = tf.shape(samples)[0]
+    if alpha <= 0 or probability <= 0:
+        return samples, labels, tf.zeros([b], tf.float32)
+    num_mix = tf.cast(tf.floor(tf.cast(b, tf.float32) * probability), tf.int32)
+    chosen = tf.random.shuffle(tf.range(b))[:num_mix]
+    mixed = tf.scatter_nd(chosen[:, None], tf.ones([num_mix], tf.float32), [b])
+    sources = tf.concat([tf.range(b)[:, None], tf.random.uniform([b, 2], maxval=b, dtype=tf.int32)], axis=1)
+    third = tf.cast(tf.random.uniform([b]) < 0.5, tf.float32)
+    active = tf.stack([tf.ones([b]), tf.ones([b]), third], axis=1)
+    gains = tf.random.gamma([b, 3], alpha) * active + 1e-12 * active
+    gains = gains / tf.reduce_sum(gains, axis=1, keepdims=True)
+    extra = tf.ones([tf.rank(samples) - 1], tf.int32)
+    blend = tf.reduce_sum(tf.reshape(gains, tf.concat([[b, 3], extra], 0)) * tf.gather(samples, sources), axis=1)
+    merged = tf.reduce_max(tf.gather(labels, sources) * active[:, :, None], axis=1)
+    m = tf.reshape(mixed, tf.concat([[b], extra], 0))
+    return m * blend + (1.0 - m) * samples, mixed[:, None] * merged + (1.0 - mixed[:, None]) * labels, mixed
 
 
 def _pool_context():
@@ -594,25 +624,16 @@ def load_dataset(
     # Mixup on batches
     if mixup_alpha > 0 and mixup_probability > 0:
 
-        def _mix(s, lb):
-            mixed_s, mixed_l, mixed = apply_mixup(
-                s.numpy(), lb.numpy(), alpha=mixup_alpha, probability=mixup_probability, return_mixed=True
-            )
-            return mixed_s, mixed_l, mixed.astype(np.float32)
-
         def _apply_batch_mixup(samples, labels):
             if teacher_embeddings:
                 labels, emb, valid = labels
-            mixed_s, mixed_l, mixed = tf.py_function(_mix, [samples, labels], [tf.float32, tf.float32, tf.float32])
-            mixed_s.set_shape(samples.shape)
-            mixed_l.set_shape(labels.shape)
+            mixed_s, mixed_l, mixed = mixup_batch(samples, labels, alpha=mixup_alpha, probability=mixup_probability)
             if not teacher_embeddings:
                 return mixed_s, mixed_l
             # A mixed chunk no longer sounds like the window its embedding came from.
-            mixed.set_shape(valid.shape)
             return mixed_s, (mixed_l, emb, valid * (1.0 - mixed))
 
-        dataset = dataset.map(_apply_batch_mixup, num_parallel_calls=1)
+        dataset = dataset.map(_apply_batch_mixup, num_parallel_calls=tf.data.AUTOTUNE)
 
     dataset = dataset.prefetch(max(1, prefetch_batches))
     return dataset
