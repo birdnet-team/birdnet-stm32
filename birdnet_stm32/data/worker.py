@@ -7,6 +7,7 @@ small single-threaded process instead of a fork of the TensorFlow trainer.
 
 import contextlib
 import signal
+from multiprocessing import shared_memory
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +30,50 @@ from birdnet_stm32.data.teacher import TeacherTargets, blend_targets
 
 _worker_cfg: dict = {}
 _teacher: TeacherTargets | None = None
+_arena: list[np.ndarray] = []  # where _process_into writes chunks (see arena_columns)
+_arena_shm: shared_memory.SharedMemory | None = None
+
+
+def arena_columns(buf, n_cells: int, layout) -> list[np.ndarray]:
+    """``[n_cells, *shape]`` arrays over ``buf``, one per chunk column, each 64-byte aligned.
+
+    ``layout`` is a list of ``(shape, dtype)``, one per element of the tuples ``_process_file``
+    returns: sample, label and, with teacher embeddings, the embedding and its valid flag.
+    """
+    columns, offset = [], 0
+    for shape, dtype in layout:
+        columns.append(np.ndarray((n_cells, *shape), dtype=dtype, buffer=buf, offset=offset))
+        offset += -(-columns[-1].nbytes // 64) * 64
+    return columns
+
+
+def arena_bytes(n_cells: int, layout) -> int:
+    """Size of the buffer ``arena_columns`` lays out."""
+    return sum(
+        -(-(n_cells * int(np.prod(shape, dtype=np.int64)) * np.dtype(dtype).itemsize) // 64) * 64
+        for shape, dtype in layout
+    )
+
+
+def set_arena(columns: list[np.ndarray]) -> None:
+    """Point ``_process_into`` at ``columns`` (the in-process loader's own arena)."""
+    global _arena  # noqa: PLW0603
+    _arena = columns
+
+
+def _process_into(path: str, cells: list[int]) -> int | None:
+    """Process one file and write its chunks into the arena ``cells``, in order.
+
+    Returns how many cells were written (at most ``len(cells)``), or ``None`` when the file
+    yields nothing. Only that count crosses back to the loader, not the chunks.
+    """
+    result = _process_file(path)
+    if not result:
+        return None
+    for cell, item in zip(cells, result, strict=False):
+        for column, value in zip(_arena, item, strict=True):
+            column[cell] = value
+    return min(len(result), len(cells))
 
 
 def _init_worker(cfg: dict) -> None:
@@ -51,8 +96,13 @@ def _init_worker(cfg: dict) -> None:
         from threadpoolctl import threadpool_limits
 
         threadpool_limits(1)
-    global _worker_cfg, _teacher  # noqa: PLW0603
+    global _worker_cfg, _teacher, _arena, _arena_shm  # noqa: PLW0603
     _worker_cfg = cfg
+    arena = cfg.get("arena")  # (shared-memory name, cells, layout) from the feeder
+    if arena is not None:
+        name, n_cells, layout = arena
+        _arena_shm = shared_memory.SharedMemory(name=name)
+        _arena = arena_columns(_arena_shm.buf, n_cells, layout)
     # Memory-mapped, so every worker shares one copy through the page cache.
     cache = cfg.get("teacher_cache")
     embeddings = bool(cfg.get("teacher_embeddings", False))

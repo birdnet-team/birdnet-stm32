@@ -17,14 +17,14 @@ import tensorflow as tf
 
 from birdnet_stm32.data.feeder import (  # noqa: F401  (ClassCappedPasses is re-exported)
     BatchFeeder,
+    CellPool,
     ClassCappedPasses,
     _create_worker_pool,
     _terminate_worker_pool,
-    batch_layout,
-    fill_batch,
+    chunk_layout,
     sample_stream,
 )
-from birdnet_stm32.data.worker import _init_worker, _process_file
+from birdnet_stm32.data.worker import _init_worker, _process_file, set_arena
 from birdnet_stm32.models.frontend import hybrid_fft_bins, normalize_frontend_name
 
 
@@ -306,7 +306,7 @@ def load_dataset(
         field_share=float(kwargs.get("field_share", 0.5)),
         per_recording=int(kwargs.get("field_per_recording", 2)),
     )
-    layout = batch_layout(batch_size, sample_shape, num_classes, embedding_dim)
+    layout = chunk_layout(sample_shape, num_classes, embedding_dim)
 
     def _report(key, value):
         if isinstance(loader_control, dict):
@@ -315,10 +315,11 @@ def load_dataset(
     def _batched():
         """Whole batches, built off the training process's Python thread when there are workers.
 
-        With workers, a feeder process (``birdnet_stm32.data.feeder``) runs the pool, the
-        reservoir and the stacking, and this only copies finished batches out of shared memory.
-        Without, the same stream runs here, serially. A partial batch carries over to the next
-        pass, as ``batch(drop_remainder=True)`` on an infinite sample stream would.
+        With workers, a feeder process (``birdnet_stm32.data.feeder``) runs the pool and the
+        reservoir, workers write chunks into shared memory, and this only gathers each batch's
+        chunks. Without, the same stream runs here, serially, over a local arena. A partial batch
+        carries over to the next pass, as ``batch(drop_remainder=True)`` on an infinite sample
+        stream would.
         """
         if num_workers > 0:
             feeder = BatchFeeder(stream_kwargs, layout, seed=random.getrandbits(63))
@@ -328,12 +329,17 @@ def load_dataset(
             finally:
                 feeder.close()
         else:
-            stream = sample_stream(**stream_kwargs, report=_report)
+            n_cells = reservoir_high + 2 * batch_size + max_chunks_per_file  # every batch is given back at once
+            arena = [np.empty((n_cells, *shape), dtype) for shape, dtype in layout]
+            cells = CellPool(n_cells)
+            set_arena(arena)
+            stream = sample_stream(**stream_kwargs, cells=cells, report=_report)
             try:
                 while True:
-                    columns = [np.empty(shape, dtype) for shape, dtype in layout]
-                    fill_batch(stream, columns)
-                    yield _structure(columns)
+                    index = np.asarray([next(stream) for _ in range(batch_size)])
+                    batch = [column[index] for column in arena]
+                    cells.give(index)
+                    yield _structure(batch)
             finally:
                 stream.close()
 

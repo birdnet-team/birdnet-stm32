@@ -1,12 +1,12 @@
-"""Training batches assembled in a separate process and handed over through shared memory.
+"""Training batches assembled in a separate process, with every chunk in shared memory.
 
 The training process used to do all of this in its own Python thread: send files to the
 worker pool, receive and unpickle every chunk, buffer chunks in the shuffling reservoir and
-stack batches. That work held the GIL often enough to keep the training step waiting
-(measured: 50 ms a step against 19 ms for the step alone). Here a feeder process does it:
-it owns the worker pool, draws each pass's files, keeps the reservoir and writes whole
-batches into a ring of shared-memory slots. The training process copies a finished slot
-into TensorFlow and hands it back.
+stack batches. Here a feeder process runs the pool, draws each pass's files and keeps the
+reservoir, and the chunks themselves never travel through a pipe: a worker writes each chunk
+straight into a cell of a shared-memory arena and returns only how many it wrote. The
+reservoir and the batches are lists of cell indices; the training process gathers a batch's
+cells into TensorFlow in one copy and hands the cells back.
 
 Kept free of TensorFlow, like the worker module: the feeder starts from the forkserver.
 """
@@ -17,24 +17,30 @@ import atexit
 import contextlib
 import multiprocessing as mp
 import os
+import queue
 import random
 import signal
 import sys
 import time
 import traceback
 from collections.abc import Callable, Iterator
+from itertools import count
 from multiprocessing import shared_memory
 from typing import Any
 
 import numpy as np
 
 from birdnet_stm32.data.species import NOISE_CLASSES
-from birdnet_stm32.data.worker import _init_worker, _process_file
+from birdnet_stm32.data.worker import _init_worker, _process_into, arena_bytes, arena_columns
 
-_POOL_POLL_INTERVAL_S = 0.05
+# How long the feeder waits for a worker result before it looks for freed cells again.
+_POOL_POLL_INTERVAL_S = 0.01
 
-# Batches the feeder may hold ready ahead of the training step (a raw batch of 32 is ~8 MB).
-_FEEDER_SLOTS = 8
+# Batches the feeder may have handed to the trainer and not yet got back (a raw batch of 32 is ~8 MB).
+_BATCHES_AHEAD = 8
+
+# How often the feeder checks its files in flight for a timeout.
+_TIMEOUT_CHECK_S = 1.0
 
 
 def _pool_context():
@@ -205,11 +211,52 @@ class ClassCappedPasses:
         return out
 
 
+def chunk_layout(sample_shape: tuple[int, ...], num_classes: int, embedding_dim: int = 0):
+    """Shape and dtype of each element of a chunk: sample, label and, with teacher embeddings,
+    the float16 embedding and its valid flag (the worker's tuple)."""
+    layout = [(tuple(sample_shape), "float32"), ((num_classes,), "float32")]
+    if embedding_dim:
+        layout += [((embedding_dim,), "float16"), ((), "float32")]
+    return layout
+
+
+def inflight_cap(batch_size: int, num_workers: int, reservoir_high: int, max_chunks_per_file: int) -> int:
+    """Most files the stream keeps in flight, whatever the tuner asks for."""
+    return max(32, batch_size * 2, num_workers * 4, (reservoir_high // max(1, max_chunks_per_file)) * 2)
+
+
+def arena_size(
+    batch_size: int, num_workers: int, reservoir_high: int, max_chunks_per_file: int, batches_ahead: int
+) -> int:
+    """Cells enough for a full reservoir, every file in flight and every batch not yet returned."""
+    in_flight = inflight_cap(batch_size, num_workers, reservoir_high, max_chunks_per_file) * max_chunks_per_file
+    return reservoir_high + in_flight + (batches_ahead + 1) * batch_size + max_chunks_per_file
+
+
+class CellPool:
+    """The arena's free cells."""
+
+    def __init__(self, n_cells: int):
+        self.free = list(range(n_cells))
+
+    def __len__(self) -> int:
+        return len(self.free)
+
+    def take(self, k: int) -> list[int]:
+        out = self.free[len(self.free) - k :]
+        del self.free[len(self.free) - k :]
+        return out
+
+    def give(self, cells) -> None:
+        self.free.extend(int(c) for c in cells)
+
+
 def sample_stream(
     file_paths: list[str],
     worker_cfg: dict,
     num_workers: int,
     *,
+    cells: CellPool,
     batch_size: int,
     reservoir_high: int,
     reservoir_low: int,
@@ -221,12 +268,16 @@ def sample_stream(
     per_recording: int = 2,
     inflight: Callable[[], int] | None = None,
     report: Callable[[str, Any], None] | None = None,
-) -> Iterator[tuple[np.ndarray, ...]]:
-    """Infinite stream of training chunks, shuffled through a reservoir for multi-chunk file reuse.
+    reclaim: Callable[[], None] | None = None,
+) -> Iterator[int]:
+    """Infinite stream of arena cells holding training chunks, shuffled through a reservoir.
 
     Each pass covers ``file_paths`` once, or a class-capped draw of them (``class_cap``, see
-    ``ClassCappedPasses``). ``inflight`` returns the current cap on files in flight (tuned
-    online by the trainer); ``report`` receives loader events (skipped files, timeouts).
+    ``ClassCappedPasses``). Workers (or, without workers, this process) write each file's
+    chunks into cells taken from ``cells``; the consumer gives a cell back once it has read it.
+    ``reclaim`` is called whenever the stream waits, to collect cells given back from elsewhere;
+    ``inflight`` returns the current cap on files in flight (tuned online by the trainer);
+    ``report`` receives loader events (skipped files, timeouts).
     """
     max_chunks_per_file = int(worker_cfg["max_chunks_per_file"])
     capped = (
@@ -235,11 +286,15 @@ def sample_stream(
         else None
     )
     report = report or (lambda key, value: None)
+    reclaim = reclaim or (lambda: None)
+    cap = inflight_cap(batch_size, num_workers, reservoir_high, max_chunks_per_file)
     pool = None
     if num_workers > 0:
         pool = _create_worker_pool(num_workers, worker_cfg)
     else:
         _init_worker(worker_cfg)
+    done: queue.SimpleQueue = queue.SimpleQueue()  # (job id, cells written) from the pool's result thread
+    job_ids = count()
 
     try:
         while True:
@@ -249,81 +304,87 @@ def sample_stream(
                 shuffled = list(file_paths)
                 random.shuffle(shuffled)
 
-            reservoir: list[tuple[np.ndarray, ...]] = []
+            reservoir: list[int] = []
 
             if pool is None:
                 for path in shuffled:
-                    result = _process_file(path)
-                    if result is not None:
-                        reservoir.extend(result)
-                    else:
+                    if len(cells) < max_chunks_per_file:
+                        reclaim()
+                    if len(cells) < max_chunks_per_file:
+                        raise RuntimeError("Loader arena exhausted: give cells back after reading each batch")
+                    taken = cells.take(max_chunks_per_file)
+                    written = _process_into(path, taken) or 0
+                    if not written:
                         report("last_skipped_file", path)
+                    reservoir.extend(taken[:written])
+                    cells.give(taken[written:])
                     if len(reservoir) >= reservoir_high:
                         random.shuffle(reservoir)
                         while len(reservoir) > reservoir_low:
                             yield reservoir.pop()
             else:
-                pending: list[dict[str, object]] = []
+                pending: dict[int, tuple[str, float, list[int]]] = {}  # job id -> (path, started, cells)
                 next_index = 0
+                last_timeout_check = time.monotonic()
 
                 while next_index < len(shuffled) or pending:
+                    reclaim()
                     current_inflight = inflight() if inflight is not None else max_inflight_files
-                    inflight_cap = max(
-                        32,
-                        max(batch_size * 2, num_workers * 4, (reservoir_high // max(1, max_chunks_per_file)) * 2),
-                    )
-                    current_inflight = max(32, min(current_inflight, inflight_cap))
+                    current_inflight = max(32, min(current_inflight, cap))
 
-                    while next_index < len(shuffled) and len(pending) < current_inflight:
+                    while (
+                        next_index < len(shuffled)
+                        and len(pending) < current_inflight
+                        and len(cells) >= max_chunks_per_file
+                    ):
                         path = shuffled[next_index]
                         next_index += 1
-                        pending.append(
-                            {
-                                "path": path,
-                                "started_at": time.monotonic(),
-                                "result": pool.apply_async(_process_file, (path,)),
-                            }
+                        job = next(job_ids)
+                        taken = cells.take(max_chunks_per_file)
+                        pending[job] = (path, time.monotonic(), taken)
+                        pool.apply_async(
+                            _process_into,
+                            (path, taken),
+                            callback=lambda n, job=job: done.put((job, n)),
+                            error_callback=lambda _e, job=job: done.put((job, None)),
                         )
 
                     made_progress = False
-                    recycle_pool = False
-                    timed_out_path = None
-                    now = time.monotonic()
-
-                    for idx in range(len(pending) - 1, -1, -1):
-                        job = pending[idx]
-                        async_result = job["result"]
-                        if async_result.ready():
-                            pending.pop(idx)
-                            try:
-                                result = async_result.get()
-                            except Exception:
-                                result = None
-                            if result is not None:
-                                reservoir.extend(result)
-                            else:
-                                report("last_skipped_file", str(job["path"]))
-                            made_progress = True
-                            continue
-
-                        if file_task_timeout_s > 0 and (now - float(job["started_at"])) > file_task_timeout_s:
-                            timed_out_path = str(job["path"])
-                            recycle_pool = True
+                    while True:
+                        try:
+                            job, written = done.get_nowait()
+                        except queue.Empty:
                             break
+                        entry = pending.pop(job, None)
+                        if entry is None:
+                            continue  # from a pool recycled after a timeout
+                        path, _started, taken = entry
+                        written = written or 0
+                        if not written:
+                            report("last_skipped_file", str(path))
+                        reservoir.extend(taken[:written])
+                        cells.give(taken[written:])
+                        made_progress = True
 
-                    if recycle_pool:
-                        report(
-                            "last_loader_timeout",
-                            {
-                                "path": timed_out_path,
-                                "timeout_s": float(file_task_timeout_s),
-                                "pending_jobs": int(len(pending)),
-                            },
-                        )
-                        _terminate_worker_pool(pool)
-                        pool = _create_worker_pool(num_workers, worker_cfg)
-                        pending.clear()
-                        continue
+                    now = time.monotonic()
+                    if file_task_timeout_s > 0 and now - last_timeout_check > _TIMEOUT_CHECK_S:
+                        last_timeout_check = now
+                        stalled = [p for p, started, _ in pending.values() if now - started > file_task_timeout_s]
+                        if stalled:
+                            report(
+                                "last_loader_timeout",
+                                {
+                                    "path": str(stalled[0]),
+                                    "timeout_s": float(file_task_timeout_s),
+                                    "pending_jobs": int(len(pending)),
+                                },
+                            )
+                            _terminate_worker_pool(pool)  # no worker writes into the arena after this
+                            pool = _create_worker_pool(num_workers, worker_cfg)
+                            for _path, _started, taken in pending.values():
+                                cells.give(taken)
+                            pending.clear()
+                            continue
 
                     if len(reservoir) >= reservoir_high:
                         random.shuffle(reservoir)
@@ -334,8 +395,12 @@ def sample_stream(
                         yield reservoir.pop()
                         made_progress = True
 
-                    if not made_progress and pending:
-                        time.sleep(_POOL_POLL_INTERVAL_S)
+                    if not made_progress:
+                        if pending:  # wait for a result, then put it back for the loop above
+                            with contextlib.suppress(queue.Empty):
+                                done.put(done.get(timeout=_POOL_POLL_INTERVAL_S))
+                        else:  # every cell is out with the consumer
+                            time.sleep(_POOL_POLL_INTERVAL_S)
 
             # Drain remaining samples at end of epoch
             if reservoir:
@@ -346,65 +411,57 @@ def sample_stream(
         _terminate_worker_pool(pool)
 
 
-def batch_layout(
-    batch_size: int, sample_shape: tuple[int, ...], num_classes: int, embedding_dim: int = 0
-) -> list[tuple[tuple[int, ...], str]]:
-    """Shape and dtype of each column of a batch: samples, labels and, with teacher embeddings,
-    the float16 embeddings and their valid flags (the worker's tuple, stacked)."""
-    layout = [((batch_size, *sample_shape), "float32"), ((batch_size, num_classes), "float32")]
-    if embedding_dim:
-        layout += [((batch_size, embedding_dim), "float16"), ((batch_size,), "float32")]
-    return layout
+class _Stop(Exception):
+    """The trainer closed the feeder."""
 
 
-def fill_batch(stream: Iterator[tuple[np.ndarray, ...]], columns: list[np.ndarray]) -> None:
-    """Write the next ``len(columns[0])`` chunks of ``stream`` into ``columns`` row by row."""
-    for row in range(len(columns[0])):
-        for column, value in zip(columns, next(stream), strict=True):
-            column[row] = value
-
-
-def _slot_columns(buf, n_slots: int, layout) -> list[np.ndarray]:
-    """``[n_slots, *shape]`` arrays over ``buf``, one per column, each 64-byte aligned."""
-    columns, offset = [], 0
-    for shape, dtype in layout:
-        nbytes = n_slots * int(np.prod(shape, dtype=np.int64)) * np.dtype(dtype).itemsize
-        columns.append(np.ndarray((n_slots, *shape), dtype=dtype, buffer=buf, offset=offset))
-        offset += -(-nbytes // 64) * 64
-    return columns
-
-
-def _ring_bytes(n_slots: int, layout) -> int:
-    return sum(-(-(n_slots * int(np.prod(s, dtype=np.int64)) * np.dtype(d).itemsize) // 64) * 64 for s, d in layout)
-
-
-def _feeder_main(stream_kwargs, seed, shm_name, n_slots, layout, free_conn, ready_conn, inflight_value) -> None:
-    """Feeder process: fill each slot the trainer frees with the next batch and announce it.
+def _feeder_main(stream_kwargs, seed, arena, batches_ahead, free_conn, ready_conn, inflight_value) -> None:
+    """Feeder process: send the trainer batches of arena cells, at most ``batches_ahead`` unreturned.
 
     Exits when the trainer closes its end of ``free_conn`` (or dies). Any error is sent to the
     trainer, which raises it.
     """
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # Ctrl+C is the trainer's; it stops the feeder
+    # A closing screen or terminal hangs up the trainer, this process and the resource tracker
+    # at once, and nobody would remove the arena; this process outlives the hang-up to do it.
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # run the finally blocks: stop the pool
     random.seed(seed)
     np.random.seed(seed % 2**32)
-    shm = shared_memory.SharedMemory(name=shm_name)
-    columns = _slot_columns(shm.buf, n_slots, layout)
+    batch_size = int(stream_kwargs["batch_size"])
+    cells = CellPool(arena[1])
+    outstanding = 0
+    orphaned = False
+
+    def reclaim(block: bool = False) -> None:
+        nonlocal outstanding
+        while block or free_conn.poll():
+            freed = free_conn.recv()  # EOFError: the trainer is gone without closing the feeder
+            if freed is None:
+                raise _Stop
+            cells.give(freed)
+            outstanding -= 1
+            block = False
+
+    worker_cfg = dict(stream_kwargs["worker_cfg"], arena=arena)
     stream = sample_stream(
-        **stream_kwargs,
+        **dict(stream_kwargs, worker_cfg=worker_cfg),
+        cells=cells,
         inflight=lambda: int(inflight_value.value),
         report=lambda key, value: ready_conn.send(("control", key, value)),
+        reclaim=reclaim,
     )
     try:
         while True:
-            try:
-                slot = free_conn.recv()
-            except EOFError:
-                return
-            fill_batch(stream, [column[slot] for column in columns])
-            ready_conn.send(("batch", slot))
-    except (BrokenPipeError, ConnectionResetError):
-        pass  # the trainer is gone
+            while outstanding >= batches_ahead:
+                reclaim(block=True)
+            batch = [next(stream) for _ in range(batch_size)]
+            ready_conn.send(("batch", batch))
+            outstanding += 1
+    except _Stop:
+        pass
+    except (EOFError, BrokenPipeError, ConnectionResetError):
+        orphaned = True
     except SystemExit:
         raise
     except BaseException:
@@ -413,15 +470,16 @@ def _feeder_main(stream_kwargs, seed, shm_name, n_slots, layout, free_conn, read
         raise
     finally:
         stream.close()
-        del columns
-        shm.close()
+        if orphaned:  # the trainer died and cannot remove the arena (Linux shared memory path)
+            with contextlib.suppress(OSError):
+                os.unlink(f"/dev/shm/{arena[0].lstrip('/')}")
 
 
 class BatchFeeder:
     """Training-process end of the feeder: start it, receive its batches, stop it.
 
-    The ring of slots lives in shared memory created here. A slot circulates as an index:
-    free (trainer to feeder), filled (feeder to trainer), copied out and freed again.
+    The arena lives in shared memory created here. A batch arrives as a list of cells, is
+    gathered into fresh arrays (one copy) and its cells go back to the feeder.
     """
 
     def __init__(
@@ -429,12 +487,19 @@ class BatchFeeder:
         stream_kwargs: dict,
         layout: list[tuple[tuple[int, ...], str]],
         seed: int,
-        n_slots: int = _FEEDER_SLOTS,
+        batches_ahead: int = _BATCHES_AHEAD,
     ):
         ctx = _pool_context()
         self._closed = False
-        self.shm = shared_memory.SharedMemory(create=True, size=_ring_bytes(n_slots, layout))
-        self.columns = _slot_columns(self.shm.buf, n_slots, layout)
+        n_cells = arena_size(
+            int(stream_kwargs["batch_size"]),
+            int(stream_kwargs["num_workers"]),
+            int(stream_kwargs["reservoir_high"]),
+            int(stream_kwargs["worker_cfg"]["max_chunks_per_file"]),
+            batches_ahead,
+        )
+        self.shm = shared_memory.SharedMemory(create=True, size=arena_bytes(n_cells, layout))
+        self.columns = arena_columns(self.shm.buf, n_cells, layout)
         free_r, self.free = ctx.Pipe(duplex=False)
         self.ready, ready_w = ctx.Pipe(duplex=False)
         self.inflight = ctx.Value("i", int(stream_kwargs["max_inflight_files"]), lock=False)
@@ -442,7 +507,15 @@ class BatchFeeder:
         # before multiprocessing joins its children) stops it.
         self.proc = ctx.Process(
             target=_feeder_main,
-            args=(stream_kwargs, seed, self.shm.name, n_slots, layout, free_r, ready_w, self.inflight),
+            args=(
+                stream_kwargs,
+                seed,
+                (self.shm.name, n_cells, layout),
+                batches_ahead,
+                free_r,
+                ready_w,
+                self.inflight,
+            ),
             name="loader-feeder",
         )
         try:
@@ -453,8 +526,6 @@ class BatchFeeder:
         free_r.close()  # only the feeder's copies remain: EOF reaches each side when the other exits
         ready_w.close()
         atexit.register(self.close)
-        for slot in range(n_slots):
-            self.free.send(slot)
 
     def next(self, control: dict | None = None) -> list[np.ndarray]:
         """The next batch's columns (copies); loader events go into ``control``."""
@@ -467,9 +538,10 @@ class BatchFeeder:
                 raise RuntimeError(f"Loader feeder process exited (exit code {self.proc.exitcode})") from None
             kind = message[0]
             if kind == "batch":
-                slot = message[1]
-                batch = [column[slot].copy() for column in self.columns]
-                self.free.send(slot)
+                cells = message[1]
+                index = np.asarray(cells)
+                batch = [column[index] for column in self.columns]
+                self.free.send(cells)
                 return batch
             if kind == "control":
                 if isinstance(control, dict):
@@ -483,6 +555,9 @@ class BatchFeeder:
             return
         self._closed = True
         atexit.unregister(self.close)
+        if getattr(self, "free", None) is not None:
+            with contextlib.suppress(OSError):
+                self.free.send(None)  # a stop, not a crash: the arena is ours to remove
         for conn in (getattr(self, "free", None), getattr(self, "ready", None)):
             if conn is not None:
                 conn.close()

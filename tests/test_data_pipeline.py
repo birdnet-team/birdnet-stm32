@@ -3,7 +3,7 @@
 import numpy as np
 import soundfile as sf
 
-from birdnet_stm32.data.feeder import batch_layout, fill_batch, sample_stream
+from birdnet_stm32.data.feeder import CellPool, sample_stream
 from birdnet_stm32.data.generator import (
     _compute_reservoir_limits,
     _init_worker,
@@ -345,33 +345,17 @@ class TestLoadDataset:
         classes = ["class_0"]
         paths = [f"/tmp/class_0/sample_{idx}.wav" for idx in range(33)]
         stuck_path = paths[0]
-        sample = np.ones((8, 1), dtype=np.float32)
-        label = np.array([1.0], dtype=np.float32)
-
-        class FakeAsyncResult:
-            def __init__(self, payload, ready_after=0):
-                self.payload = payload
-                self.ready_after = ready_after
-
-            def ready(self):
-                if self.ready_after > 0:
-                    self.ready_after -= 1
-                    return False
-                return True
-
-            def get(self):
-                return self.payload
 
         class FakePool:
+            """Finishes every file at once (one chunk written) except the stuck one, which never returns."""
+
             def __init__(self, *_args, initializer=None, initargs=(), **_kwargs):
                 if initializer is not None:
                     initializer(*initargs)
 
-            def apply_async(self, _fn, args):
-                path = args[0]
-                if path == stuck_path:
-                    return FakeAsyncResult(None, ready_after=10_000)
-                return FakeAsyncResult([(sample.copy(), label.copy())])
+            def apply_async(self, _fn, args, callback=None, error_callback=None):
+                if args[0] != stuck_path:
+                    callback(1)
 
             def terminate(self):
                 return None
@@ -384,21 +368,22 @@ class TestLoadDataset:
         monkeypatch.setattr("birdnet_stm32.data.feeder._POOL_POLL_INTERVAL_S", 0.0)
 
         worker_cfg, _ = _worker_config(classes, "raw", 256, 64, 1, sample_rate=4, chunk_duration=2)
+        cells = CellPool(200)
         stream = sample_stream(
             paths,
             worker_cfg,
             num_workers=2,
+            cells=cells,
             batch_size=32,
             reservoir_high=64,
             reservoir_low=32,
             max_inflight_files=32,
             file_task_timeout_s=0.0,
         )
-        columns = [np.empty(shape, dtype) for shape, dtype in batch_layout(32, (8, 1), 1)]
-        fill_batch(stream, columns)  # 32 chunks although the first file never finishes
+        batch = [next(stream) for _ in range(32)]  # although the first file never finishes
         stream.close()
-        assert columns[0].shape == (32, 8, 1)
-        assert columns[1].shape == (32, 1)
+        assert len(set(batch)) == 32
+        assert len(cells) == 200 - 32 - 1  # the batch's cells, and the stuck file's
 
     def test_loader_control_tracks_skipped_corrupt_file(self, monkeypatch):
         """load_dataset should surface the last skipped unreadable file."""
@@ -415,7 +400,7 @@ class TestLoadDataset:
             label = np.array([1.0], dtype=np.float32)
             return [(sample, label)]
 
-        monkeypatch.setattr("birdnet_stm32.data.feeder._process_file", fake_process_file)
+        monkeypatch.setattr("birdnet_stm32.data.worker._process_file", fake_process_file)
         monkeypatch.setattr("birdnet_stm32.data.feeder.random.shuffle", lambda seq: None)
 
         ds = load_dataset(
