@@ -208,3 +208,21 @@ def test_warmup_epochs_defaults_to_two_and_may_be_fractional(monkeypatch, tmp_pa
     assert train.get_args().warmup_epochs == 2
     monkeypatch.setattr(sys, "argv", ["train", "--data_path_train", str(tmp_path), "--warmup_epochs", "0.5"])
     assert train.get_args().warmup_epochs == 0.5
+
+
+class TestFilterbankDesign:
+    """Every frontend trains: the raw filterbank's release options only go into raw models."""
+
+    @pytest.mark.parametrize("frontend", ["raw", "hybrid", "librosa"])
+    def test_each_frontend_gets_a_valid_config(self, frontend):
+        from birdnet_stm32.cli.train import filterbank_design
+        from birdnet_stm32.training.config import ModelConfig
+
+        raw_magnitude, raw_bank = filterbank_design(frontend)
+        ModelConfig(audio_frontend=frontend, raw_magnitude=raw_magnitude, raw_bank=raw_bank, num_classes=3)
+
+    def test_raw_gets_the_release_design(self):
+        from birdnet_stm32.cli.train import filterbank_design
+        from birdnet_stm32.models.frontend import RELEASE_RAW_BANK, RELEASE_RAW_MAGNITUDE
+
+        assert filterbank_design("raw") == (RELEASE_RAW_MAGNITUDE, RELEASE_RAW_BANK)

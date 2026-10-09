@@ -39,6 +39,14 @@ def _read_meminfo_gb() -> tuple[float, float]:
     return mem_total_kb / (1024 * 1024), mem_avail_kb / (1024 * 1024)
 
 
+def filterbank_design(audio_frontend: str) -> tuple[str, str]:
+    """``(raw_magnitude, raw_bank)`` for a model: the raw filterbank's release design for the raw frontend, and the
+    neutral values the other frontends' configs accept (they have no raw filterbank)."""
+    if audio_frontend == "raw":
+        return RELEASE_RAW_MAGNITUDE, RELEASE_RAW_BANK
+    return "alpha_max", "pair"
+
+
 class AdaptiveLoaderTuner(tf.keras.callbacks.Callback):
     """Tune loader in-flight queue online using throughput and free RAM."""
 
@@ -827,6 +835,8 @@ def main():
     )
     val_steps = max(1, math.ceil(len(selection_paths) / float(args.batch_size)))
 
+    raw_magnitude, raw_bank = filterbank_design(args.audio_frontend)
+
     # Build model
     print("Building model...")
     model = build_dscnn_model(
@@ -843,8 +853,8 @@ def main():
         embeddings_size=args.embeddings_size,
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
-        raw_magnitude=RELEASE_RAW_MAGNITUDE,
-        raw_bank=RELEASE_RAW_BANK,
+        raw_magnitude=raw_magnitude,
+        raw_bank=raw_bank,
         raw_exposure_gain=args.raw_exposure_gain,
         raw_exposure_mode=args.raw_exposure_mode,
         frontend_trainable=args.frontend_trainable,
@@ -868,8 +878,8 @@ def main():
         audio_frontend=args.audio_frontend,
         mag_scale=args.mag_scale,
         input_compression=args.input_compression,
-        raw_magnitude=RELEASE_RAW_MAGNITUDE,
-        raw_bank=RELEASE_RAW_BANK,
+        raw_magnitude=raw_magnitude,
+        raw_bank=raw_bank,
         embeddings_size=args.embeddings_size,
         alpha=args.alpha,
         depth_multiplier=args.depth_multiplier,
