@@ -20,12 +20,40 @@ _KERAS_CUSTOM_OBJECTS = {
 
 
 def load_keras_model(model_path: str) -> tf.keras.Model:
-    """Load a project checkpoint with the canonical custom-layer registry."""
-    return tf.keras.models.load_model(
+    """Load a project checkpoint with the canonical custom-layer registry, computing in float32.
+
+    A checkpoint trained with ``--mixed_precision`` keeps a ``mixed_float16`` policy in its layers, so
+    it would evaluate, calibrate and convert in float16; the TFLite converter rejects those graphs. Its
+    weights are float32 already: such a model is rebuilt with float32 policies and the same weights.
+    """
+    model = tf.keras.models.load_model(
         model_path,
         compile=False,
         custom_objects=_KERAS_CUSTOM_OBJECTS,
     )
+    return float32_model(model)
+
+
+def float32_model(model: tf.keras.Model) -> tf.keras.Model:
+    """``model`` itself if every layer computes in float32, else a float32 rebuild with its weights."""
+    if all(layer.dtype_policy.name == "float32" for layer in model.layers):
+        return model
+
+    def to_float32(node):
+        if isinstance(node, dict):
+            if "DTypePolicy" in str(node.get("class_name", "")) and isinstance(node.get("config"), dict):
+                node["config"]["name"] = "float32"
+            for value in node.values():
+                to_float32(value)
+        elif isinstance(node, list):
+            for value in node:
+                to_float32(value)
+
+    config = model.get_config()
+    to_float32(config)
+    rebuilt = model.__class__.from_config(config, custom_objects=_KERAS_CUSTOM_OBJECTS)
+    rebuilt.set_weights(model.get_weights())
+    return rebuilt
 
 
 def allocated_interpreter(
