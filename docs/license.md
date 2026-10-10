@@ -27,7 +27,7 @@ Every release bundle carries a copy of `LICENSE-MODELS.md` and
 
 The `firmware/` directory vendors source files from STMicroelectronics
 (BSD-3-Clause) and ChaN's FatFs, which retain their original licenses. See
-`firmware/THIRD_PARTY_LICENSES.md`. ST's toolchain (X-CUBE-AI / `stedgeai`) is
+`firmware/THIRD_PARTY_LICENSES.md`. ST's toolchain (ST Edge AI Core / `stedgeai`) is
 licensed separately by STMicroelectronics — see its own documentation.
 
 ## Acceptable use

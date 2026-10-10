@@ -72,7 +72,10 @@ requires all of the following:
    never optimize thresholds on the release test set.
 5. Export ONNX, run the ONNX checker, and smoke-test it in an ONNX runtime.
 6. Run `stedgeai analyze` or `stedgeai generate` for the STM32N6 target and
-   retain its compatibility/memory report.
+   retain its compatibility/memory report. From 2.0, release gates run on ST
+   Edge AI Core 4.1 with the epoch controller (see
+   [Deployment](../deployment.md#step-1-install-st-edge-ai-core)); steps 6–8
+   must all use the same core version, which the report header records.
 7. Run `stedgeai validate --mode target` on the physical board and retain the
    cross-accuracy report. **The gate is `cos >= 0.99` and `mae <= 1/256`
    (one output LSB) against the host reference**, measured on the release

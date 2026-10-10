@@ -10,7 +10,7 @@
 
 For STM32 deployment you also need:
 
-- [X-CUBE-AI](https://www.st.com/en/embedded-software/x-cube-ai.html) 10.2.0+
+- [ST Edge AI Core](https://www.st.com/en/development-tools/stedgeai-core.html) 4.1.0 (4.0.1 and X-CUBE-AI 10.2 also work)
 - [STM32CubeProgrammer](https://www.st.com/en/development-tools/stm32cubeprog.html) 2.20+
 - [STM32CubeIDE](https://www.st.com/en/development-tools/stm32cubeide.html) 1.19+
 - ARM GNU toolchain 14.3+

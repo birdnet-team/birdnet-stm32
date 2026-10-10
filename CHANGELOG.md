@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The deployment toolchain is now ST Edge AI Core 4.1 (`stedgeai`, installed
+  with ST's modular installer), replacing X-CUBE-AI 10.2. `generate` and
+  `validate` enable the NPU's epoch controller from 4.0: 2.0 Raw runs in
+  11.24 ms instead of 12.55 ms in `stedgeai validate --mode target`, with
+  identical outputs. `board-test`, `deploy` and the standalone firmware
+  Makefile handle the 4.x layout (shared `Applications/Drivers`, the moved
+  `N6_scripts`, the `network` C name instead of `Default`) and still work with
+  10.2 and 4.0.1. ST Edge AI Core 3.0 dropped the STM32N6 and is not supported.
+  See [Deployment](docs/deployment.md).
+
 ## [1.9.0] - 2026-10-03
 
 One model ships: `BirdNET_Tiny_N6_USNE_90_V1.9_Raw`. It is the v1.8 Raw design

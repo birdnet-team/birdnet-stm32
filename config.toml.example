@@ -4,7 +4,8 @@
 # or CLI arguments, which take highest priority.
 
 [deploy]
-# Path to X-CUBE-AI installation (e.g., "/opt/X-CUBE-AI.10.2.0")
+# Path to the ST Edge AI Core version folder (e.g., "/opt/STEdgeAI/4.1"),
+# or the root of an X-CUBE-AI 10.2 tree
 x_cube_ai_path = ""
 
 # Path to quantized TFLite model
@@ -29,7 +30,7 @@ compiler_type = "gcc"
 # When this section is present, a temporary n6_loader JSON file is
 # generated automatically during deployment.
 "network.c" = "validation/st_ai_output/network.c"
-project_path = "/path/to/X-CUBE-AI.10.2.0/Projects/STM32N6570-DK/Applications/NPU_Validation"
+project_path = "/path/to/STEdgeAI/4.1/Projects/STM32N6570-DK/Applications/NPU_Validation"
 project_build_conf = "N6-DK"
 skip_external_flash_programming = false
 skip_ram_data_programming = false

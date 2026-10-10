@@ -14,4 +14,4 @@ mitigation plan within 7 days for confirmed vulnerabilities.
 
 This policy covers the BirdNet-STM32 source code, build scripts, and
 deployment tooling. It does not cover third-party dependencies (TensorFlow,
-X-CUBE-AI, etc.) — please report those to their respective maintainers.
+ST Edge AI Core, etc.) — please report those to their respective maintainers.

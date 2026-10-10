@@ -177,7 +177,7 @@ not run on this class of hardware at all.
 Everything the firmware needs is in the bundle; no extra downloads.
 
 1. Install the toolchain and create `config.json` — see
-   [Deployment](deployment.md) for X-CUBE-AI, STM32CubeProgrammer, and ARM GNU
+   [Deployment](deployment.md) for ST Edge AI Core, STM32CubeProgrammer, and ARM GNU
    setup.
 2. Prepare an SD card with test audio — see
    [SD card preparation](deployment.md#sd-card-preparation). **WAV sample rate

@@ -3,7 +3,7 @@
 #
 # Usage:
 #   bash setup.sh                      # interactive — prompts for paths
-#   bash setup.sh /path/to/X-CUBE-AI   # non-interactive
+#   bash setup.sh /path/to/STEdgeAI/4.1   # non-interactive
 #
 # What it does:
 #   1. Creates a Python 3.12 virtual environment (.venv)
@@ -12,8 +12,9 @@
 #
 # Prerequisites:
 #   - Python 3.12+          (python3.12 -m venv)
-#   - ARM GCC 13+           (arm-none-eabi-gcc — for board deployment only)
-#   - X-CUBE-AI 10.2.0      (https://www.st.com/en/embedded-software/x-cube-ai.html)
+#   - ARM GCC 14.3+         (arm-none-eabi-gcc — for board deployment only)
+#   - ST Edge AI Core 4.1   (https://www.st.com/en/development-tools/stedgeai-core.html)
+#                           (4.0.1 and X-CUBE-AI 10.2 also work)
 #   - STM32CubeIDE           (optional — only needed if compiler_type=cubeide)
 #
 set -euo pipefail
@@ -42,11 +43,14 @@ pip install --upgrade pip setuptools wheel -q
 pip install -e ".[dev,deploy]" -q
 ok "Package installed"
 
-# ---- 3. Resolve X-CUBE-AI path -------------------------------------------
+# ---- 3. Resolve the ST Edge AI Core path -----------------------------------
 XCUBEAI="${1:-}"
 if [[ -z "$XCUBEAI" ]]; then
     # Try common locations
     for candidate in \
+        "$HOME/STEdgeAI/4.1" \
+        "/opt/STEdgeAI/4.1" \
+        "$HOME/STEdgeAI/4.0" \
         "$HOME/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0" \
         "$HOME/Code/X-CUBE-AI.10.2.0" \
         "/opt/X-CUBE-AI.10.2.0"; do
@@ -59,16 +63,16 @@ fi
 
 if [[ -z "$XCUBEAI" ]]; then
     echo ""
-    info "X-CUBE-AI path not found automatically."
-    read -rp "  Enter path to X-CUBE-AI 10.2.0 root directory: " XCUBEAI
+    info "ST Edge AI Core not found automatically."
+    read -rp "  Enter the ST Edge AI Core version folder (e.g. ~/STEdgeAI/4.1): " XCUBEAI
 fi
 
 if [[ ! -d "$XCUBEAI" ]]; then
-    err "X-CUBE-AI directory not found: $XCUBEAI"
-    err "Download from https://www.st.com/en/embedded-software/x-cube-ai.html"
+    err "ST Edge AI Core directory not found: $XCUBEAI"
+    err "Download from https://www.st.com/en/development-tools/stedgeai-core.html"
     exit 1
 fi
-ok "X-CUBE-AI found: $XCUBEAI"
+ok "ST Edge AI Core found: $XCUBEAI"
 
 # ---- 4. Resolve STM32CubeIDE path (optional) -----------------------------
 CUBEIDE=""

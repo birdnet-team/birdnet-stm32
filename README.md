@@ -20,7 +20,7 @@ Bird sound classification for edge deployment on the [STM32N6570-DK](https://www
 
 A compact DS-CNN trained on raw waveforms or spectral features, quantized to
 INT8 with post-training quantization or quantization-aware fine-tuning, and
-deployed using ST's X-CUBE-AI toolchain. The standalone firmware supports raw
+deployed using ST Edge AI Core. The standalone firmware supports raw
 waveform, hybrid STFT, and precomputed-mel deployment paths. A released raw
 model scores a 2.5-second window at 24 kHz in **16 ms on the NPU** (75 ms per
 file on the board including the SD-card read), with CPU and NPU at 400 MHz.
@@ -147,7 +147,7 @@ and never mix files across bundles. Models are licensed under the
 
 Everything the firmware needs is in the bundle — no extra downloads.
 
-1. Install the toolchain (X-CUBE-AI, STM32CubeProgrammer/IDE, ARM GNU) and copy
+1. Install the toolchain (ST Edge AI Core 4.1, STM32CubeProgrammer/IDE, ARM GNU) and copy
    `config.example.json` to `config.json`, filling in your local tool paths.
 2. Prepare an SD card with test audio as described above, matching the sample
    rate in `_model_config.json`.
@@ -228,7 +228,7 @@ Per-version history and what each metric means:
 
 ### Deployment
 
-- **X-CUBE-AI / stedgeai**: generate → flash → validate pipeline
+- **ST Edge AI Core / stedgeai** (4.1; 4.0 and X-CUBE-AI 10.2 also work): generate → flash → validate pipeline, with the NPU's epoch controller from 4.0
 - **Board test**: standalone on-device inference (`board-test`) — reads WAV from SD, performs frontend-specific preprocessing, runs the NPU, and captures results over UART
 
 

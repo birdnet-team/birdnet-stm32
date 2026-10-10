@@ -1,13 +1,13 @@
 # Deployment
 
 Deploy a quantized TFLite model to the STM32N6570-DK development board using
-ST's X-CUBE-AI toolchain.
+ST Edge AI Core (`stedgeai`), ST's compiler for the Neural-ART NPU.
 
 ## Prerequisites
 
 | Tool | Version | Download |
 |---|---|---|
-| X-CUBE-AI | 10.2.0+ | [ST website](https://www.st.com/en/embedded-software/x-cube-ai.html) |
+| ST Edge AI Core | 4.1.0 (4.0.1 and X-CUBE-AI 10.2 still work) | [ST website](https://www.st.com/en/development-tools/stedgeai-core.html) |
 | STM32CubeProgrammer | 2.20+ | [ST website](https://www.st.com/en/development-tools/stm32cubeprog.html) |
 | STM32CubeIDE | 1.19+ | [ST website](https://www.st.com/en/development-tools/stm32cubeide.html) |
 | ARM GNU Toolchain | 14.3+ | [ARM Developer](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads) |
@@ -28,24 +28,73 @@ flowchart LR
 
 *(Image source: [STM32ai](https://stm32ai-cs.st.com/assets/embedded-docs/stneuralart_getting_started.html))*
 
-## Step 1: Install X-CUBE-AI
+## Step 1: Install ST Edge AI Core
+
+From 4.0, ST ships the toolchain as ST Edge AI Core with a modular online
+installer (it replaces the X-CUBE-AI zip). Download the Linux installer from the
+[ST Edge AI Core page](https://www.st.com/en/development-tools/stedgeai-core.html)
+(a myST login is needed) and install the core plus its STM32 MCU/NPU component
+without a GUI:
 
 ```bash
-unzip x-cube-ai-linux-v10.2.0.zip X-CUBE-AI.10.2.0
-cd X-CUBE-AI.10.2.0
-unzip stedgeai-linux-10.2.0.zip
+chmod +x stedgeai-linux-onlineinstaller
+./stedgeai-linux-onlineinstaller --root ~/STEdgeAI \
+  --accept-licenses --accept-obligations --default-answer --confirm-command \
+  install stedgeai0401 stedgeai0401.stm32mcu
 ```
 
-Directory structure after extraction:
+`stedgeai0401` is the component name of the 4.1 release line; run the installer
+with `search stedgeai` to list what it offers. No root rights are needed. The
+install lives in a version folder under the root:
 
 ```
-X-CUBE-AI.10.2.0/
+~/STEdgeAI/4.1/                   # x_cube_ai_path in config.json
 ├── Utilities/
-│   └── linux/
-│       └── stedgeai          # CLI tool
-├── Middlewares/
+│   ├── linux/
+│   │   └── stedgeai              # CLI tool
+│   └── scripts/
+│       └── N6_scripts/           # n6_loader.py and its config.json
+├── Middlewares/                  # LL_ATON runtime, NPU drivers
 └── Projects/
+    └── STM32N6570-DK/
+        └── Applications/
+            ├── Drivers/          # HAL/BSP, shared by the projects
+            └── NPU_Validation/   # project the firmware is overlaid onto
 ```
+
+Point ST's flash loader at your STM32CubeIDE. Edit
+`Utilities/scripts/N6_scripts/config.json` (keep a copy of ST's original):
+
+```json
+{
+  "compiler_type": "gcc",
+  "cubeide_path": "/path/to/stm32cubeide"
+}
+```
+
+!!! note "What changed from X-CUBE-AI 10.2"
+    The project handles every difference itself, so the same commands work with
+    10.2, 4.0.1 and 4.1.0. With 4.x:
+
+    - **Epoch controller.** `generate` and `validate` add
+      `--enable-epoch-controller`, which lets the NPU chain its epochs without
+      the Cortex-M55 between them: 2.0 Raw runs in 11.24 ms instead of
+      12.55 ms in `stedgeai validate --mode target`, with identical outputs,
+      and the NPU part of the board test takes 22 ms per chunk instead of 25.
+      With 10.2 the project leaves the option off.
+    - **Network name.** Generated C symbols are named after the network
+      (`LL_ATON_RT_Main(&NN_Instance_network)` instead of `..._Default`); the
+      firmware reads the name from the generated `network.c`.
+    - **Layout.** The HAL and BSP drivers moved to
+      `Projects/STM32N6570-DK/Applications/Drivers`, the NPU_Validation Makefile
+      lists its sources differently, and 4.1 moved `N6_scripts` from `scripts/`
+      to `Utilities/scripts/`. `board-test` and the standalone firmware
+      Makefile detect each layout.
+    - **Compiler.** One step of `stedgeai` calls `arm-none-eabi-gcc` from your
+      `PATH`; put the 14.3 toolchain first (Step 2). An older system compiler
+      prints `-mcpu=cortex-m55` errors there.
+
+    ST Edge AI Core 3.0 dropped the STM32N6; do not use it.
 
 ## Step 2: Install ARM GNU Toolchain
 
@@ -92,13 +141,14 @@ STM32_Programmer_CLI --list
 
 ## Step 4: Generate model files
 
-Navigate to the X-CUBE-AI utilities directory and run:
+Run `stedgeai` from `Utilities/linux` of the install:
 
 ```bash
 ./stedgeai generate \
   --model /path/to/checkpoints/my_model_quantized.tflite \
   --target stm32n6 \
   --st-neural-art \
+  --enable-epoch-controller \
   --output /path/to/birdnet-stm32/validation/st_ai_output \
   --workspace /path/to/birdnet-stm32/validation/st_ai_ws \
   --verbose
@@ -140,7 +190,7 @@ Edit `config.json` with your machine-local paths:
 {
   "compiler_type": "gcc",
   "cubeide_path": "/path/to/stm32cubeide",
-  "x_cube_ai_path": "/path/to/X-CUBE-AI.10.2.0",
+  "x_cube_ai_path": "/path/to/STEdgeAI/4.1",
   "model_path": "checkpoints/best_model_quantized.tflite",
   "output_dir": "validation/st_ai_output",
   "workspace_dir": "validation/st_ai_ws",
@@ -153,7 +203,7 @@ Create `config_n6l.json` in the project root (required by ST's n6_loader):
 ```json
 {
   "network.c": "/path/to/birdnet-stm32/validation/st_ai_output/network.c",
-  "project_path": "/path/to/X-CUBE-AI.10.2.0/Projects/STM32N6570-DK/Applications/NPU_Validation",
+  "project_path": "/path/to/STEdgeAI/4.1/Projects/STM32N6570-DK/Applications/NPU_Validation",
   "project_build_conf": "N6-DK",
   "skip_external_flash_programming": false,
   "skip_ram_data_programming": false,
@@ -177,13 +227,13 @@ python -m birdnet_stm32 deploy
 You can override any path via CLI arguments:
 
 ```bash
-python -m birdnet_stm32 deploy --x_cube_ai_path /path/to/X-CUBE-AI.10.2.0
+python -m birdnet_stm32 deploy --x_cube_ai_path /path/to/STEdgeAI/4.1
 ```
 
 Or via environment variables:
 
 ```bash
-export X_CUBE_AI_PATH=/path/to/X-CUBE-AI.10.2.0
+export X_CUBE_AI_PATH=/path/to/STEdgeAI/4.1
 python -m birdnet_stm32 deploy
 ```
 
@@ -207,10 +257,11 @@ The deploy command runs validation automatically. To run validation separately
 with additional options (e.g., `--valinput` for specific test data):
 
 ```bash
-/path/to/X-CUBE-AI.10.2.0/Utilities/linux/stedgeai validate \
+/path/to/STEdgeAI/4.1/Utilities/linux/stedgeai validate \
   --model checkpoints/my_model_quantized.tflite \
   --target stm32n6 \
   --mode target \
+  --enable-epoch-controller \
   --desc serial:921600 \
   --output /path/to/birdnet-stm32/validation/st_ai_output \
   --workspace /path/to/birdnet-stm32/validation/st_ai_ws \
