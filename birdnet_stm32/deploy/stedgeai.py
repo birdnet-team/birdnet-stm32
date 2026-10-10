@@ -1,7 +1,9 @@
 """stedgeai deployment commands: generate, load, and validate on STM32N6."""
 
+import functools
 import glob
 import os
+import re
 import subprocess
 import sys
 
@@ -62,6 +64,29 @@ def _run(cmd: list[str], description: str, *, dry_run: bool = False):
         sys.exit(result.returncode)
 
 
+@functools.cache
+def core_version(stedgeai_path: str) -> tuple[int, ...]:
+    """ST Edge AI Core version of a ``stedgeai`` binary, e.g. ``(4, 0, 1)``; ``()`` if it cannot be read."""
+    try:
+        out = subprocess.run([stedgeai_path, "--version"], capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    match = re.search(r"ST Edge AI Core v(\d+)\.(\d+)\.(\d+)", out)
+    return tuple(int(g) for g in match.groups()) if match else ()
+
+
+def neural_art_options(stedgeai_path: str) -> list[str]:
+    """Compiler options for the N6's Neural-ART NPU.
+
+    From ST Edge AI Core 4.0 the epoch controller runs the whole schedule on the NPU (measured on the
+    STM32N6570-DK for 2.0 Raw: 12.55 -> 11.24 ms per inference, identical outputs); older cores lack the option.
+    """
+    options = ["--st-neural-art"]
+    if core_version(stedgeai_path) >= (4, 0, 0):
+        options.append("--enable-epoch-controller")
+    return options
+
+
 def generate(cfg: DeployConfig, *, dry_run: bool = False):
     """Run stedgeai generate to produce the target project.
 
@@ -80,7 +105,7 @@ def generate(cfg: DeployConfig, *, dry_run: bool = False):
             cfg.model_path,
             "--target",
             "stm32n6",
-            "--st-neural-art",
+            *neural_art_options(cfg.stedgeai_path),
             "--output",
             cfg.output_dir,
             "--workspace",
@@ -120,6 +145,7 @@ def validate_on_target(cfg: DeployConfig, *, dry_run: bool = False):
             cfg.model_path,
             "--target",
             "stm32n6",
+            *neural_art_options(cfg.stedgeai_path),
             "--mode",
             "target",
             "--desc",

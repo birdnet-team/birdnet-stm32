@@ -183,11 +183,26 @@ def _restore(bak: Path) -> None:
         orig.unlink()
 
 
+def generated_network_name(network_c: Path) -> str:
+    """The C name stedgeai gave the network: ``Default`` (X-CUBE-AI 10.2) or ``network`` (ST Edge AI Core 4.0)."""
+    # The buffer-info functions are in network.c in both modes (with the epoch controller, its init
+    # functions move to network_ecblobs.h).
+    match = re.search(r"\bLL_ATON_Input_Buffers_Info_(\w+)\s*\(", network_c.read_text(errors="ignore"))
+    return match.group(1) if match else "Default"
+
+
+def _drivers_dir(project: Path) -> Path:
+    """The board drivers: inside the project up to X-CUBE-AI 10.2, shared one level up from ST Edge AI Core 4.0."""
+    own = project / "Drivers"
+    return own if own.is_dir() else project.parent / "Drivers"
+
+
 def patch_project(
     project: Path,
     model_cfg: dict,
     num_classes: int,
     labels: list[str],
+    nn_name: str = "Default",
 ) -> list[Path]:
     """Copy firmware sources into the NPU_Validation project and patch build files.
 
@@ -200,17 +215,30 @@ def patch_project(
 
     Returns a list of .bak paths that must be passed to ``restore_project``.
     """
+    backups: list[Path] = []
+    try:
+        _patch_into(project, model_cfg, num_classes, labels, backups, nn_name)
+    except BaseException:
+        restore_project(backups)  # a half-patched project would break the next build
+        raise
+    return backups
+
+
+def _patch_into(
+    project: Path, model_cfg: dict, num_classes: int, labels: list[str], backups: list[Path], nn_name: str
+) -> None:
+    """The patching itself; records every backup in ``backups`` as it goes."""
+
     fw = _firmware_dir()
+    drivers = _drivers_dir(project)
     core_src = project / "Core" / "Src"
     core_inc = project / "Core" / "Inc"
-    hal_src = project / "Drivers" / "STM32N6xx_HAL_Driver" / "Src"
-    bsp_dk = project / "Drivers" / "BSP" / "STM32N6570-DK"
+    hal_src = drivers / "STM32N6xx_HAL_Driver" / "Src"
+    bsp_dk = drivers / "BSP" / "STM32N6570-DK"
     fatfs_dst = project / "FatFs"
     makefile = project / "armgcc" / "Makefile"
     hal_conf = core_inc / "stm32n6xx_hal_conf.h"
     app_conf = core_inc / "app_config.h"
-
-    backups: list[Path] = []
 
     # --- 1. Copy firmware C sources into Core/Src --------------------------
     for name in ("main.c", "wav_reader.c", "audio_stft.c", "audio_mel.c", "sd_handler.c"):
@@ -240,13 +268,17 @@ def patch_project(
     log.info("Generated app_labels.h with %d labels", len(labels))
 
     # --- 3. Copy HAL SD driver sources and headers --------------------------
-    hal_inc = project / "Drivers" / "STM32N6xx_HAL_Driver" / "Inc"
+    hal_inc = drivers / "STM32N6xx_HAL_Driver" / "Inc"
     for name in ("stm32n6xx_hal_sd.c", "stm32n6xx_ll_sdmmc.c"):
         dst = hal_src / name
         backups.append(_backup(dst))
         shutil.copy2(fw / "Drivers" / "HAL_SD" / name, dst)
     for name in ("stm32n6xx_hal_sd.h", "stm32n6xx_hal_sd_ex.h", "stm32n6xx_ll_sdmmc.h", "stm32n6xx_ll_dlyb.h"):
         dst = hal_inc / name
+        if dst.exists():
+            # A HAL that ships the SD headers (ST Edge AI Core 4.0) keeps its own: they match its device
+            # header (the delay block's registers were renamed), and ours would not compile against it.
+            continue
         backups.append(_backup(dst))
         shutil.copy2(fw / "Drivers" / "HAL_SD" / name, dst)
 
@@ -288,10 +320,9 @@ def patch_project(
 
     # --- 8. Patch Makefile — add our sources and include paths -------------
     backups.append(_backup(makefile))
-    _patch_makefile(makefile)
+    _patch_makefile(makefile, nn_name)
 
     log.info("Project patched (%d backups created)", len(backups))
-    return backups
 
 
 def _patch_app_config(path: Path, model_cfg: dict, num_classes: int) -> None:
@@ -320,10 +351,10 @@ CMSIS_DSP_SOURCES = (
 )
 
 
-def _cmsis_dsp_block() -> str:
+def _cmsis_dsp_block(sources_var: str = "C_SOURCES") -> str:
     """Makefile lines that build the CMSIS-DSP subset with Helium."""
     root = f"$(PROJECT_PATH)/{CMSIS_DSP_DIR}"
-    lines = [f"C_SOURCES += {root}/Source/{src}" for src in CMSIS_DSP_SOURCES]
+    lines = [f"{sources_var} += {root}/Source/{src}" for src in CMSIS_DSP_SOURCES]
     lines += [
         f"C_INCLUDES += -I{root}/Include -I{root}/PrivateInclude",
         "C_DEFS += -DARM_MATH_HELIUM",
@@ -333,7 +364,7 @@ def _cmsis_dsp_block() -> str:
     return "".join(line + "\n" for line in lines)
 
 
-def _patch_makefile(path: Path) -> None:
+def _patch_makefile(path: Path, nn_name: str = "Default") -> None:
     """Insert BirdNET sources before the OBJECTS definition in the Makefile."""
     text = path.read_text()
     # Strip any leftover patch block (e.g. from a corrupted .bak restore).
@@ -352,26 +383,31 @@ def _patch_makefile(path: Path) -> None:
             log.info("Makefile already patched — skipping")
             return
 
+    # Two layouts. X-CUBE-AI 10.2 compiles C_SOURCES through one OBJECTS pattern rule. ST Edge AI Core 4.0
+    # compiles APP_SOURCES, DRIVER_SOURCES, ... through per-file rules it generates while reading the Makefile,
+    # so additions must come before its object lists (and C_SOURCES is not compiled at all there).
+    per_file_rules = "APP_SOURCES" in text and "APP_OBJ =" in text
+    src = "APP_SOURCES" if per_file_rules else "C_SOURCES"
     addition = f"""\
 {MAKEFILE_SENTINEL}
 FATFS_PATH = $(PROJECT_PATH)/FatFs
 DRIVER_SOURCES += $(N6_DRIVER_PATH)/Src/stm32n6xx_hal_sd.c
 DRIVER_SOURCES += $(N6_DRIVER_PATH)/Src/stm32n6xx_ll_sdmmc.c
 DRIVER_SOURCES += $(DK_DRIVER_PATH)/stm32n6570_discovery_sd.c
-C_SOURCES += $(CORE_PATH)/Src/wav_reader.c
-C_SOURCES += $(CORE_PATH)/Src/audio_stft.c
-C_SOURCES += $(CORE_PATH)/Src/audio_mel.c
-C_SOURCES += $(CORE_PATH)/Src/sd_handler.c
-C_SOURCES += $(FATFS_PATH)/ff.c
-C_SOURCES += $(FATFS_PATH)/diskio.c
-C_SOURCES += $(FATFS_PATH)/ff_gen_drv.c
-C_SOURCES += $(FATFS_PATH)/sd_diskio.c
+{src} += $(CORE_PATH)/Src/wav_reader.c
+{src} += $(CORE_PATH)/Src/audio_stft.c
+{src} += $(CORE_PATH)/Src/audio_mel.c
+{src} += $(CORE_PATH)/Src/sd_handler.c
+{src} += $(FATFS_PATH)/ff.c
+{src} += $(FATFS_PATH)/diskio.c
+{src} += $(FATFS_PATH)/ff_gen_drv.c
+{src} += $(FATFS_PATH)/sd_diskio.c
 C_INCLUDES += -I$(FATFS_PATH)
-{_cmsis_dsp_block()}{MAKEFILE_END_SENTINEL}
+C_DEFS += -DAPP_NN_NAME={nn_name}
+{_cmsis_dsp_block(src)}{MAKEFILE_END_SENTINEL}
 """
-    # Insert before OBJECTS definition so pattern substitution picks up our sources.
-    # The OBJECTS line uses $(C_SOURCES:...) pattern substitution.
-    marker = "OBJECTS = $(C_SOURCES:"
+    # Insert before the object lists so their substitutions (and 4.0's per-file rules) see our sources.
+    marker = "APP_OBJ =" if per_file_rules else "OBJECTS = $(C_SOURCES:"
     idx = text.find(marker)
     if idx == -1:
         # Fallback: append to end.
@@ -884,7 +920,8 @@ def run_board_test(cfg: BoardTestConfig) -> dict:
 
     # Step 2: Patch the NPU_Validation project
     print("\n--- Step 2: Patch NPU_Validation project ---")
-    backups = patch_project(project, model_cfg, num_classes, labels)
+    nn_name = generated_network_name(Path(deploy.output_dir) / "network.c")
+    backups = patch_project(project, model_cfg, num_classes, labels, nn_name)
 
     try:
         # Step 3: Start serial capture (before n6_loader starts the firmware)

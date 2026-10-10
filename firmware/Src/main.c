@@ -33,8 +33,19 @@
 #include "ll_aton_runtime.h"
 #include "network.h"
 
-/* LL_ATON network instance for the Default network */
-LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(Default);
+/* The generated network's C name: "Default" from X-CUBE-AI 10.2, "network" from ST Edge AI Core 4.0
+ * (board-test reads it from network.c and passes -DAPP_NN_NAME). */
+#ifndef APP_NN_NAME
+#define APP_NN_NAME Default
+#endif
+#define NN_CAT_(a, b) a##b
+#define NN_CAT(a, b) NN_CAT_(a, b)
+#define NN_INSTANCE NN_CAT(NN_Instance_, APP_NN_NAME)
+#define NN_FN(f) NN_CAT(f##_, APP_NN_NAME)
+#define NN_DECLARE(name) LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(name)
+
+/* LL_ATON network instance and interface */
+NN_DECLARE(APP_NN_NAME);
 
 /* Application modules */
 #include "app_config.h"
@@ -131,8 +142,8 @@ static void peak_normalize(float *audio, uint32_t num_samples)
 
 static bool run_inference(const float *spect, float *output)
 {
-    const LL_Buffer_InfoTypeDef *in_info = LL_ATON_Input_Buffers_Info_Default();
-    const LL_Buffer_InfoTypeDef *out_info = LL_ATON_Output_Buffers_Info_Default();
+    const LL_Buffer_InfoTypeDef *in_info = NN_FN(LL_ATON_Input_Buffers_Info)();
+    const LL_Buffer_InfoTypeDef *out_info = NN_FN(LL_ATON_Output_Buffers_Info)();
 
     /* Size both copies from the buffers' byte ranges, never from `shape`.
      * LL_ATON's `shape` is not in tensor order: a [1, 256, 256, 1] hybrid input
@@ -156,7 +167,7 @@ static bool run_inference(const float *spect, float *output)
      * `allocate-inputs`, so the input tensor lives inside the activation pool;
      * resetting the instance re-initialises that pool and would wipe an input
      * written beforehand. */
-    LL_ATON_RT_Reset_Network(&NN_Instance_Default);
+    LL_ATON_RT_Reset_Network(&NN_INSTANCE);
 
     // Copy spectrogram into NPU
     memcpy(input_ptr, spect, input_bytes);
@@ -186,7 +197,7 @@ static bool run_inference(const float *spect, float *output)
     int dbg_block = 0;
 #endif
     do {
-        rt_ret = LL_ATON_RT_RunEpochBlock(&NN_Instance_Default);
+        rt_ret = LL_ATON_RT_RunEpochBlock(&NN_INSTANCE);
         if (rt_ret == LL_ATON_RT_WFE)
             LL_ATON_OSAL_WFE();
 #ifdef APP_DEBUG_IO
@@ -354,7 +365,7 @@ int main(void)
 
     /* ---- NPU network init ---- */
     printf("[INIT] Initialising NPU network...\n");
-    if (!LL_ATON_EC_Network_Init_Default()) {
+    if (!NN_FN(LL_ATON_EC_Network_Init)()) {
         printf("[ERROR] NPU network init failed\n");
         while (1) {}
     }
@@ -362,7 +373,7 @@ int main(void)
     /* Bring up the ATON runtime and the network instance once, for the lifetime
      * of the application. run_inference() only resets the instance per file. */
     LL_ATON_RT_RuntimeInit();
-    LL_ATON_RT_Init_Network(&NN_Instance_Default);
+    LL_ATON_RT_Init_Network(&NN_INSTANCE);
 
 #ifdef APP_DEBUG_IO
     {
@@ -375,8 +386,8 @@ int main(void)
     }
 #endif
 
-    const LL_Buffer_InfoTypeDef *in_info  = LL_ATON_Input_Buffers_Info_Default();
-    const LL_Buffer_InfoTypeDef *out_info = LL_ATON_Output_Buffers_Info_Default();
+    const LL_Buffer_InfoTypeDef *in_info  = NN_FN(LL_ATON_Input_Buffers_Info)();
+    const LL_Buffer_InfoTypeDef *out_info = NN_FN(LL_ATON_Output_Buffers_Info)();
     if (in_info && in_info->name) {
         printf("[OK] NPU input:  \"%s\"  %lu bytes\n",
                in_info->name,
