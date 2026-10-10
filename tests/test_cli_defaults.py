@@ -88,12 +88,36 @@ class TestBestPathDefaults:
         assert args.input_compression == "none"
         assert args.sample_rate == 24000
         assert args.chunk_duration == pytest.approx(2.5)
-        assert args.embeddings_size == 512
-        assert args.dw_kernel_size == 3
+        assert args.embeddings_size == 1024
+        assert args.alpha == pytest.approx(1.5)
+        assert args.dw_kernel_size == 5
         assert args.stage_widths == [32, 64, 128, 256]
+        assert args.spec_width == 448
+        assert args.raw_exposure_gain == pytest.approx(16.0)
         assert args.max_chunks_per_file == 1
+        assert args.class_cap_per_epoch == 3000
         assert args.epochs == 50
-        assert args.learning_rate == pytest.approx(5e-4)
+        assert args.learning_rate == pytest.approx(2e-4)
+        assert args.warmup_epochs == pytest.approx(0.5)
+
+    def test_frontend_sets_its_geometry(self):
+        hybrid = _train("--audio_frontend", "hybrid")
+        assert (hybrid.spec_width, hybrid.raw_exposure_gain) == (384, 1.0)
+        assert _train("--audio_frontend", "librosa").spec_width == 256
+        assert _train("--spec_width", "512").spec_width == 512
+        assert _train("--raw_exposure_gain", "1").raw_exposure_gain == 1.0
+
+    def test_a_teacher_cache_turns_on_the_teacher(self, tmp_path):
+        plain = _train()
+        assert (plain.teacher_weight, plain.crop_policy) == (0.0, "energy")
+        taught = _train("--teacher_cache", str(tmp_path))
+        assert (taught.teacher_weight, taught.crop_policy) == (0.5, "teacher")
+        own = _train("--teacher_cache", str(tmp_path), "--teacher_weight", "0.3", "--crop_policy", "energy")
+        assert (own.teacher_weight, own.crop_policy) == (0.3, "energy")
+
+    def test_qat_trains_in_float32_uncompiled(self):
+        args = _train("--qat")
+        assert args.mixed_precision is False and args.jit_compile is False
 
     def test_qat_gets_its_own_schedule_and_range_refresh(self):
         args = _train("--qat")
@@ -112,6 +136,19 @@ class TestBestPathDefaults:
     def test_disproven_options_are_gone(self):
         with pytest.raises(SystemExit):
             _train("--mag_scale", "cpwl")
+        for flag in (
+            ["--upsample_ratio", "0.5"],
+            ["--raw_exposure_mode", "channels"],
+            ["--dw_weight_decay", "0"],
+            ["--dw_activation", "leaky_relu"],
+            ["--frontend_trainable"],
+            ["--mixed_precision"],
+            ["--jit_compile"],
+        ):
+            with pytest.raises(SystemExit):
+                _train(*flag)
+        with pytest.raises(SystemExit):
+            _convert("--quantization", "dynamic")
         with pytest.raises(SystemExit):
             _train("--qat", "--qat_calibration_percentile", "99.9")
 
@@ -200,16 +237,16 @@ def test_steps_per_epoch_defaults_to_one_pass(monkeypatch, tmp_path):
     assert train.get_args().steps_per_epoch == 2850
 
 
-def test_warmup_epochs_defaults_to_two_and_may_be_fractional(monkeypatch, tmp_path):
-    """The default keeps the two-epoch warm-up; a long-epoch schedule can shorten it."""
+def test_warmup_epochs_defaults_to_half_an_epoch_and_may_be_set(monkeypatch, tmp_path):
+    """The 2.0 recipe warms up over half an epoch (one pass over a large dataset); any length can be set."""
     import sys
 
     from birdnet_stm32.cli import train
 
     monkeypatch.setattr(sys, "argv", ["train", "--data_path_train", str(tmp_path)])
-    assert train.get_args().warmup_epochs == 2
-    monkeypatch.setattr(sys, "argv", ["train", "--data_path_train", str(tmp_path), "--warmup_epochs", "0.5"])
     assert train.get_args().warmup_epochs == 0.5
+    monkeypatch.setattr(sys, "argv", ["train", "--data_path_train", str(tmp_path), "--warmup_epochs", "2"])
+    assert train.get_args().warmup_epochs == 2
 
 
 class TestFilterbankDesign:

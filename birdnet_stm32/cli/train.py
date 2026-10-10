@@ -13,7 +13,6 @@ from birdnet_stm32.data.dataset import (
     get_classes_with_most_samples,
     load_classes_file,
     load_file_paths_from_directory,
-    upsample_minority_classes,
 )
 from birdnet_stm32.data.generator import ClassCappedPasses, estimate_samples_per_epoch, load_dataset, sample_chunks
 from birdnet_stm32.models.dscnn import DW_KERNEL_SIZES, STAGE_WIDTHS, build_dscnn_model
@@ -181,7 +180,18 @@ _LOADER_TARGET_FREE_GB = 8.0
 # Schedule defaults per step: the recipes behind the released and best measured
 # models (docs/dev/int8-parity-plan.md).
 TRAIN_EPOCHS = 50
-TRAIN_LEARNING_RATE = 5e-4
+# 2.0 recipe (1,013 classes): 2e-4 after a half-epoch warm-up, each epoch one
+# pass under a per-class cap of 3,000 files.
+TRAIN_LEARNING_RATE = 2e-4
+TRAIN_WARMUP_EPOCHS = 0.5
+CLASS_CAP_PER_EPOCH = 3000
+# Input width (frames per chunk) per frontend: the release geometries.
+SPEC_WIDTH = {"raw": 448, "hybrid": 384, "librosa": 256}
+# Raw frontend: a second, clamped filterbank exposure at this gain, mixed per
+# band into a knee compressor (every raw release from 1.7); 1 is one exposure.
+RAW_EXPOSURE_GAIN = 16.0
+# Teacher share of the training target whenever --teacher_cache is given.
+TEACHER_WEIGHT = 0.5
 # Cosine loss to the teacher's embedding, against a BCE of ~0.06: at 0.2 the two
 # terms are about equal. From scratch it raised the float field window AUPRC by
 # 0.033 and the INT8 catalog cMAP by 0.016 (448 frames, 50 epochs).
@@ -235,12 +245,16 @@ def get_args() -> argparse.Namespace:
     )
     parser.add_argument("--max_classes", type=int, default=None, help="Use top N classes by sample count")
     parser.add_argument("--max_samples", type=int, default=None, help="Max samples per class")
-    parser.add_argument("--upsample_ratio", type=float, default=0.5, help="Upsample ratio for minority classes")
 
     # -- Audio ----------------------------------------------------------------
     parser.add_argument("--sample_rate", type=int, default=24000, help="Audio sample rate (Hz)")
     parser.add_argument("--num_mels", type=int, default=64, help="Number of mel bins")
-    parser.add_argument("--spec_width", type=int, default=256, help="Spectrogram width (frames)")
+    parser.add_argument(
+        "--spec_width",
+        type=int,
+        default=None,
+        help=f"Frames per chunk (default per frontend: {', '.join(f'{k} {v}' for k, v in SPEC_WIDTH.items())})",
+    )
     parser.add_argument("--fft_length", type=int, default=512, help="FFT length")
     parser.add_argument("--chunk_duration", type=float, default=2.5, help="Audio chunk duration (seconds)")
     parser.add_argument(
@@ -275,13 +289,13 @@ def get_args() -> argparse.Namespace:
     )
 
     # -- Model architecture ---------------------------------------------------
-    parser.add_argument("--embeddings_size", type=int, default=512, help="Embeddings layer size")
-    parser.add_argument("--alpha", type=float, default=1.0, help="Width multiplier")
+    parser.add_argument("--embeddings_size", type=int, default=1024, help="Embeddings layer size")
+    parser.add_argument("--alpha", type=float, default=1.5, help="Width multiplier")
     parser.add_argument("--depth_multiplier", type=int, default=1, help="Depth multiplier")
     parser.add_argument(
         "--dw_kernel_size",
         type=int,
-        default=3,
+        default=5,
         choices=list(DW_KERNEL_SIZES),
         help="Depthwise kernel size in stages 2-4 (stage 1 stays 3x3)",
     )
@@ -293,18 +307,14 @@ def get_args() -> argparse.Namespace:
         metavar="W",
         help="Base output channels of the four stages, before --alpha",
     )
-    parser.add_argument("--frontend_trainable", action="store_true", default=False)
     parser.add_argument(
         "--raw_exposure_gain",
         type=float,
-        default=1.0,
-        help="Experimental: gain of a second, clamped raw filterbank exposure (> 1 enables it; raw only)",
-    )
-    parser.add_argument(
-        "--raw_exposure_mode",
-        choices=("channels", "compress"),
-        default="channels",
-        help="Experimental: hand both exposures to the backbone, or mix them per band into a knee compressor",
+        default=None,
+        help=(
+            f"Gain of the raw filterbank's second, clamped exposure, mixed per band into a knee compressor "
+            f"(default {RAW_EXPOSURE_GAIN:g} for the raw frontend; 1 = one exposure)"
+        ),
     )
 
     # -- Augmentation ---------------------------------------------------------
@@ -314,14 +324,14 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         "--crop_policy",
         type=str,
-        default="energy",
+        default=None,
         choices=["energy", "teacher"],
         help=(
-            "How training chunks are chosen from a recording. 'energy' (default) ranks "
-            "candidates by short-time energy and keeps the loudest; 'teacher' (needs "
-            "--teacher_cache) keeps the chunk where the teacher hears the labelled species "
-            "most, and falls back to energy where it has no score. Evaluation is "
-            "unaffected: it always scores whole files with overlapping windows."
+            "How training chunks are chosen from a recording. 'energy' ranks candidates by "
+            "short-time energy and keeps the loudest; 'teacher' (needs --teacher_cache) keeps "
+            "the chunk where the teacher hears the labelled species most, and falls back to "
+            "energy where it has no score. Default: teacher with --teacher_cache, otherwise "
+            "energy. Evaluation is unaffected: it always scores whole files with overlapping windows."
         ),
     )
     parser.add_argument(
@@ -348,8 +358,11 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         "--teacher_weight",
         type=float,
-        default=0.0,
-        help="Teacher share of the training target in [0, 1] (0 = hard labels only)",
+        default=None,
+        help=(
+            f"Teacher share of the training target in [0, 1] (default {TEACHER_WEIGHT:g} with "
+            "--teacher_cache, otherwise 0 = hard labels only)"
+        ),
     )
     parser.add_argument(
         "--teacher_embedding_weight",
@@ -389,9 +402,10 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         "--class_cap_per_epoch",
         type=int,
-        default=0,
+        default=CLASS_CAP_PER_EPOCH,
         help=(
-            "At most this many training files per class (folder) in each epoch (default 0: off). A larger "
+            f"At most this many training files per class (folder) in each epoch (default {CLASS_CAP_PER_EPOCH}; "
+            "0 = off). A larger "
             "class contributes a different subset each epoch, rotating through all its files, so the draw is "
             "more balanced without repeating minority files or discarding majority ones. With "
             "--steps_per_epoch 0 an epoch is one such capped pass."
@@ -400,9 +414,9 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         "--warmup_epochs",
         type=float,
-        default=_WARMUP_EPOCHS,
+        default=TRAIN_WARMUP_EPOCHS,
         help=(
-            f"Linear learning-rate warm-up before the cosine decay, in epochs (default {_WARMUP_EPOCHS}; "
+            f"Linear learning-rate warm-up before the cosine decay, in epochs (default {TRAIN_WARMUP_EPOCHS:g}; "
             "may be fractional, e.g. 0.5 when one epoch is a pass over a large dataset)."
         ),
     )
@@ -433,21 +447,6 @@ def get_args() -> argparse.Namespace:
     )
     parser.add_argument("--grad_clip", type=float, default=1.0, help="Max gradient norm for clipping (0 = disabled)")
     parser.add_argument(
-        "--mixed_precision", action="store_true", default=False, help="Enable FP16 mixed precision training"
-    )
-    parser.add_argument(
-        "--dw_weight_decay",
-        type=float,
-        default=None,
-        help="L2 weight on the depthwise kernels (default: the blocks' 1e-4); 0 turns it off",
-    )
-    parser.add_argument(
-        "--dw_activation",
-        choices=("relu6", "leaky_relu"),
-        default="relu6",
-        help="Activation after each depthwise BN (leaky_relu: a channel cannot die)",
-    )
-    parser.add_argument(
         "--field_table",
         type=str,
         default=None,
@@ -459,19 +458,12 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         "--field_per_recording", type=int, default=2, help="Max segments of one field recording per class and epoch"
     )
-    parser.add_argument(
-        "--jit_compile",
-        action="store_true",
-        default=False,
-        help="XLA-compile the float training step (with --mixed_precision ~3x faster on the raw 448 model; not with --qat)",
-    )
     parser.add_argument("--resume", action="store_true", default=False, help="Resume training from checkpoint")
     parser.add_argument(
         "--init_checkpoint",
         type=str,
         default="",
-        help="Start from this model's weights at epoch 0 (e.g. the output of add-exposure); its frontend must "
-        "match the architecture flags",
+        help="Start from this model's weights at epoch 0; its frontend must match the architecture flags",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed for deterministic training")
 
@@ -562,6 +554,15 @@ def get_args() -> argparse.Namespace:
 
     # Derive positive flags from --no_* flags
     args.spec_augment = not args.no_spec_augment
+    frontend = normalize_frontend_name(args.audio_frontend)
+    if args.spec_width is None:
+        args.spec_width = SPEC_WIDTH[frontend]
+    if args.raw_exposure_gain is None:
+        args.raw_exposure_gain = RAW_EXPOSURE_GAIN if frontend == "raw" else 1.0
+    if args.teacher_weight is None:
+        args.teacher_weight = TEACHER_WEIGHT if args.teacher_cache else 0.0
+    if args.crop_policy is None:
+        args.crop_policy = "teacher" if args.teacher_cache else "energy"
     if not 0.0 <= args.teacher_weight <= 1.0:
         parser.error(f"--teacher_weight must be in [0, 1], got {args.teacher_weight}")
     if args.teacher_weight > 0 and not args.teacher_cache:
@@ -577,13 +578,16 @@ def get_args() -> argparse.Namespace:
         parser.error("--teacher_embedding_weight > 0 needs a --teacher_cache that holds emb.npy")
     if args.field_table and args.class_cap_per_epoch <= 0:
         parser.error("--field_table shapes the per-epoch class cap: it needs --class_cap_per_epoch > 0")
-    if args.jit_compile and args.qat:
-        parser.error("--jit_compile applies to float training only (QAT's fake-quant graph stays uncompiled)")
     if args.teacher_embedding_weight > 0 and (args.qat or args.linear_probe):
         parser.error("--teacher_embedding_weight applies to float training only (not --qat or --linear_probe)")
     if args.crop_policy == "teacher" and not args.teacher_cache:
         parser.error("--crop_policy teacher needs --teacher_cache")
     args.deterministic = True  # always deterministic
+    # Float training on a GPU runs XLA-compiled in mixed precision (~3x faster on
+    # the raw 448 model). QAT simulates the INT8 grid in float32, uncompiled.
+    float_training = not (args.qat or args.linear_probe)
+    has_gpu = bool(tf.config.list_physical_devices("GPU"))
+    args.mixed_precision = args.jit_compile = float_training and has_gpu
 
     if args.validation_subset < 0:
         parser.error("--validation_subset must be non-negative")
@@ -623,9 +627,9 @@ def main():
         tf.random.set_seed(seed)
         os.environ["PYTHONHASHSEED"] = str(seed)
         if args.jit_compile:
-            # Keras turns XLA off whenever TF op determinism is on, so --jit_compile keeps
-            # the seeds but not the deterministic kernels (GPU sums may differ in the last bits).
-            print(f"Seeded (seed={seed}); deterministic TF ops off: they would disable --jit_compile.")
+            # Keras turns XLA off whenever TF op determinism is on, so XLA keeps the
+            # seeds but not the deterministic kernels (GPU sums may differ in the last bits).
+            print(f"Seeded (seed={seed}); deterministic TF ops off: they would disable XLA.")
         else:
             os.environ["TF_DETERMINISTIC_OPS"] = "1"
             print(f"Deterministic mode enabled (seed={seed}).")
@@ -687,11 +691,6 @@ def main():
         train_paths = file_paths[:split_idx]
         val_paths = file_paths[split_idx:]
     print(f"Training on {len(train_paths)} files, validating on {len(val_paths)} files.")
-
-    # Upsample
-    if args.upsample_ratio and 0 < args.upsample_ratio < 1.0:
-        train_paths = upsample_minority_classes(train_paths, classes, args.upsample_ratio)
-        print(f"After upsampling: {len(train_paths)} training files.")
 
     # Datasets
     common_kwargs = dict(
@@ -856,11 +855,8 @@ def main():
         raw_magnitude=raw_magnitude,
         raw_bank=raw_bank,
         raw_exposure_gain=args.raw_exposure_gain,
-        raw_exposure_mode=args.raw_exposure_mode,
-        frontend_trainable=args.frontend_trainable,
+        raw_exposure_mode="compress",
         dropout_rate=args.dropout,
-        dw_weight_decay=args.dw_weight_decay,
-        dw_activation=args.dw_activation,
     )
     # Per-layer MACs and N6 compatibility, rather than a plain Keras summary:
     # on this target the MAC budget and op support decide whether the model is
@@ -888,8 +884,7 @@ def main():
         num_classes=len(classes),
         class_names=classes,
         raw_exposure_gain=args.raw_exposure_gain,
-        raw_exposure_mode=args.raw_exposure_mode,
-        frontend_trainable=args.frontend_trainable,
+        raw_exposure_mode="compress",
         dropout_rate=args.dropout,
     )
     if args.init_checkpoint:

@@ -8,8 +8,13 @@ python -m birdnet_stm32 train \
   --checkpoint_path checkpoints/my_model.keras
 ```
 
-The defaults are the release recipe: `raw` frontend, `pwl` magnitude scaling,
-24 kHz, 2.5 s chunks, 512-d embedding, 50 epochs at learning rate 5e-4.
+The defaults are the 2.0 release recipe: `raw` frontend at 448 frames with the
+two-exposure filterbank (gain 16), `pwl` magnitude scaling, 24 kHz, 2.5 s
+chunks, width 1.5 with 5 × 5 depthwise kernels and a 1024-d embedding, 50
+epochs of one pass each under a per-class cap of 3,000 files, at learning rate
+2e-4 after a half-epoch warm-up. With `--teacher_cache` the teacher's scores
+make up half of each target and choose the training chunk. On a GPU, float
+training runs XLA-compiled in mixed precision.
 
 For a leakage-safe precomputed validation split and stable output order, pass a
 separate validation root and a one-label-per-line classes file:
@@ -70,19 +75,23 @@ was removed in 1.3.0: best float of any raw model, worst INT8.
 The DS-CNN is scaled with two knobs:
 
 - **`--alpha`** (width multiplier): scales channel counts across all stages.
-  Default 1.0. Values like 0.5 or 0.75 produce smaller models.
+  Default 1.5 (2.0 release). Values like 0.75 or 1.0 produce smaller models.
 - **`--depth_multiplier`**: repeats each depthwise-separable block. Default 1.
   Increase to 2 for deeper models.
 
 Two options change the backbone shape:
 
-- **`--dw_kernel_size`**: depthwise kernel size in stages 2–4, `3` (default) or
-  `5`. Stage 1 stays 3 × 3.
+- **`--dw_kernel_size`**: depthwise kernel size in stages 2–4, `5` (default) or
+  `3`. Stage 1 stays 3 × 3.
 - **`--stage_widths`**: base output channels of the four stages before
   `--alpha`, default `32 64 128 256`. Use it to widen only the late stages,
   where the feature map is small and extra channels are cheap in activation
   memory. When the last stage is as wide as `--embeddings_size`, the separate
   1 × 1 embedding convolution is left out.
+
+The depthwise kernels carry no weight decay (the pointwise kernels keep
+1e-4): with it, 54–62% of the depthwise channels died during 2.x training,
+without it none did.
 
 !!! tip "Channel alignment"
     Keep channel counts as multiples of 8 for optimal NPU vectorization. The
@@ -102,7 +111,7 @@ Two options change the backbone shape:
   `--time_mask_max` (default 25 frames).
 - **Teacher targets**: `--teacher_cache` points at per-window scores from a
   larger model, computed once offline over every training recording, and
-  `--teacher_weight` (default 0, off) blends them into each chunk's label as
+  `--teacher_weight` (default 0.5 with a cache, otherwise off) blends them into each chunk's label as
   `(1 - w) * label + w * teacher` on the classes the teacher covers. Training
   labels are weak: a recording carries one species label, so every chunk drawn
   from it trains as that species, whether it holds the call, silence, or a
@@ -127,8 +136,8 @@ Two options change the backbone shape:
   salient regions using short-time energy (STE) analysis, reducing label
   noise from silent or irrelevant segments. Energy ranking selects the loudest
   part of a recording, which in field audio is as often rain, wind or an
-  insect chorus as the target bird. `--crop_policy teacher` (needs
-  `--teacher_cache`) ranks half-overlapping
+  insect chorus as the target bird. `--crop_policy teacher` (the default
+  with `--teacher_cache`) ranks half-overlapping
   candidates by the teacher's score for the recording's labelled species and
   keeps the best, so the chunk is chosen for holding the species rather than
   for being loud. It falls back to energy for noise recordings, classes the
@@ -137,7 +146,7 @@ Two options change the backbone shape:
   unaffected by every policy: it always scores whole files with overlapping
   windows.
 - **Multi-chunk I/O reuse**: long files (e.g. 60 s recordings) yield up to
-  `--max_chunks_per_file` (default 3) salient chunks per file open, stored
+  `--max_chunks_per_file` (default 1) salient chunks per file open, stored
   in a memory-bounded shuffled reservoir. This avoids redundant FLAC decode +
   resample for the same file across epochs.
 
@@ -171,13 +180,14 @@ Gradient clipping by global norm is enabled by default (`--grad_clip 1.0`).
 Set to 0 to disable. Prevents exploding gradients, especially useful with
 large models or unstable training.
 
-### Mixed precision
+### Mixed precision and XLA
 
-Use `--mixed_precision` to enable FP16 compute with FP32 accumulation.
-Reduces memory usage and speeds up training on GPUs with Tensor Cores.
-Together with `--jit_compile` (XLA) the float training step of the raw 448
-model runs about 3x faster: the depthwise backbone is most of the step, and XLA
-fuses it far better than graph execution does. QAT stays in float32 without XLA.
+On a GPU, float training runs in mixed precision (FP16 compute, FP32
+accumulation) with the training step XLA-compiled: the raw 448 model trains
+about 3x faster, since the depthwise backbone is most of the step and XLA
+fuses it far better than graph execution does. QAT and linear probing stay in
+float32 without XLA, and so does training on a CPU. Checkpoints are loaded in
+float32 for conversion and evaluation.
 
 ### Resumable training
 
@@ -263,35 +273,20 @@ For `hybrid` and `librosa` with `--input_compression`, skip QAT: it scored
 below plain post-training quantization at every epoch. Convert the trained
 checkpoint directly.
 
-### Two-exposure raw frontend (the 1.7 raw recipe)
+### Two-exposure raw frontend
 
 The raw frontend carries linear amplitude through its INT8 grids, so quiet and
-dense field audio lands in their bottom few levels. From 1.7 the raw model adds
-a second exposure of its filterbank: the same filters at gain 16, clamped to
-±1 at the convolution's own requantization, and mixed with the first per band
-into a knee compressor before the band stage. Every grid after the mix then
-carries a compressed envelope, much as `hybrid` compresses its spectrogram
-before its first INT8 tensor, and all of it stays on the NPU. On the 1.6 raw
-model it cut the field INT8 loss by more than half (WABAD INT8 recall 0.255 →
-0.309).
+dense field audio lands in their bottom few levels. The raw model therefore
+runs a second exposure of its filterbank: the same filters at gain 16
+(`--raw_exposure_gain`, default 16; 1 turns it off), clamped to ±1 at the
+convolution's own requantization, and mixed with the first per band into a
+knee compressor before the band stage. Every grid after the mix then carries a
+compressed envelope, much as `hybrid` compresses its spectrogram before its
+first INT8 tensor, and all of it stays on the NPU. On the 1.6 raw model it cut
+the field INT8 loss by more than half (WABAD INT8 recall 0.255 → 0.309).
 
-Train on the linear envelope first and switch afterwards: trained from scratch
-with the compressor, the model loses float accuracy. Between steps 1 and 2 above:
-
-```bash
-# Step 1b: switch to the two-exposure frontend
-python -m birdnet_stm32 add-exposure --checkpoint_path checkpoints/model.keras \
-  --data_path_train data/train --gain 16 --output_path checkpoints/model_e2.keras
-
-# Step 1c: fine-tune it (same data and labels as step 1)
-python -m birdnet_stm32 train --data_path_train data/train \
-  --data_path_val data/validation --classes_file data/labels.txt \
-  --init_checkpoint checkpoints/model_e2.keras \
-  --raw_exposure_gain 16 --raw_exposure_mode compress \
-  --epochs 20 --learning_rate 0.0002 --checkpoint_path checkpoints/model_ft.keras
-```
-
-Then equalize, QAT and convert `model_ft.keras` as in steps 2–4. `equalize`
+From 2.0 the model trains with both exposures from the start; 1.7 to 1.9
+trained on the linear envelope first and switched afterwards. `equalize`
 leaves the two-exposure filterbank alone (it is already normalized per band).
 
 ### Linear probing
@@ -335,7 +330,7 @@ on the device — see
 
 ### Learning rate
 
-A two-epoch linear warmup reaches `--learning_rate` (default 0.001), followed
+A linear warm-up of `--warmup_epochs` (default 0.5) reaches `--learning_rate` (default 2e-4), followed
 by cosine decay to near-zero over `--epochs` (default 50). Best-checkpoint
 selection and early stopping maximize exact validation cMAP. Early stopping
 (patience 10) only starts after 80% of `--epochs`, once the learning rate has
@@ -355,47 +350,40 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--classes_file` | None | Ordered one-label-per-line output schema |
 | `--max_classes` | None | Use only the N most populated classes |
 | `--max_samples` | None | Max files per class |
-| `--upsample_ratio` | 0.5 | Minority class upsample ratio |
 | `--sample_rate` | 24000 | Audio sample rate (Hz) |
 | `--num_mels` | 64 | Number of mel frequency bins |
-| `--spec_width` | 256 | Spectrogram width (frames) |
+| `--spec_width` | per frontend | Frames per chunk: 448 raw, 384 hybrid, 256 librosa |
 | `--fft_length` | 512 | FFT window length |
 | `--chunk_duration` | 2.5 | Chunk duration (seconds) |
 | `--max_duration` | 60 | Max seconds to load per file |
 | `--audio_frontend` | raw | `raw`, `hybrid`, or `librosa` — raw models trained before the [NPU fixes](dev/audio-frontends.md#raw-waveform) must be retrained |
 | `--mag_scale` | pwl | `pwl` or `none` |
 | `--input_compression` | none | `none`, `sqrt` or `log`: compress a `librosa`/`hybrid` spectrogram before its first INT8 quantization; the firmware applies the same compression |
-| `--embeddings_size` | 512 | Embedding channels before head |
-| `--alpha` | 1.0 | Model width scaling |
+| `--embeddings_size` | 1024 | Embedding channels before head |
+| `--alpha` | 1.5 | Model width scaling |
 | `--depth_multiplier` | 1 | Block repeats per stage |
-| `--dw_kernel_size` | 3 | Depthwise kernel in stages 2–4: `3` or `5` (experimental) |
+| `--dw_kernel_size` | 5 | Depthwise kernel in stages 2–4: `5` or `3` |
 | `--stage_widths` | 32 64 128 256 | Base channels of the four stages, before `--alpha` (experimental) |
-| `--frontend_trainable` | False | Make frontend weights trainable |
-| `--raw_exposure_gain` | 1.0 | Gain of a second, clamped exposure of the raw filterbank; > 1 enables it (experimental, raw only) |
-| `--raw_exposure_mode` | channels | With a second exposure: `channels` hands both to the backbone, `compress` mixes them per band into a knee compressor (experimental) |
+| `--raw_exposure_gain` | 16 (raw) | Gain of the raw filterbank's second, clamped exposure, mixed per band into a knee compressor; 1 = one exposure (raw only) |
 | `--mixup_alpha` | 0.2 | Mixup alpha (0 disables) |
 | `--mixup_probability` | 0.25 | Fraction of batch to mix |
 | `--no_spec_augment` | False | Disable SpecAugment masking (on by default) |
 | `--freq_mask_max` | 8 | Max frequency mask width (bins) |
 | `--time_mask_max` | 25 | Max time mask width (frames) |
 | `--teacher_cache` | None | Directory of cached per-window teacher scores, and optionally embeddings |
-| `--teacher_weight` | 0.0 | Teacher share of the training target in [0, 1] (0 = hard labels only) |
+| `--teacher_weight` | 0.5 with `--teacher_cache`, else 0 | Teacher share of the training target in [0, 1] (0 = hard labels only) |
 | `--label_sidecar` | None | CSV of per-file label additions (`sample_id`, `positives`, `negatives`; classes separated by `;`): positives join the folder's class in the hard label (recordings with several species), negatives are confirmed absent, held at 0 and never raised by the teacher's soft target |
 | `--teacher_embedding_weight` | 0.2 with embeddings | Weight of a cosine loss to the teacher's embedding of each chunk; on when `--teacher_cache` holds `emb.npy`, 0 disables |
-| `--crop_policy` | energy | How training chunks are chosen: `energy` or `teacher` (needs `--teacher_cache`) |
+| `--crop_policy` | teacher with `--teacher_cache`, else energy | How training chunks are chosen: `energy` or `teacher` (needs `--teacher_cache`) |
 | `--dropout` | 0.5 | Dropout rate before classifier head |
 | `--optimizer` | adam | `adam`, `sgd`, or `adamw` |
 | `--weight_decay` | 0.0 | Weight decay (adamw only) |
 | `--grad_clip` | 1.0 | Max gradient norm for clipping (0 = disabled) |
-| `--mixed_precision` | False | Enable FP16 mixed precision training |
-| `--dw_weight_decay` | None | L2 weight on the depthwise kernels (None: the blocks' 1e-4; 0 turns it off) |
-| `--dw_activation` | relu6 | Activation after each depthwise BN: `relu6` or `leaky_relu` (slope 0.1; a channel cannot die) |
 | `--field_table` | None | CSV `sample_id,site,recording` of field clips; with `--class_cap_per_epoch` they are drawn for diversity: round-robin over sites and recordings, at most `--field_share` of a class's cap |
 | `--field_share` | 0.5 | Max share of a class's per-epoch cap filled by field clips (more only when focal files cannot fill the rest) |
 | `--field_per_recording` | 2 | Max segments of one field recording per class and epoch |
-| `--jit_compile` | False | XLA-compile the float training step; with `--mixed_precision` about 3x faster on the raw 448 model (not with `--qat`) |
 | `--resume` | False | Resume training from checkpoint |
-| `--init_checkpoint` | — | Start from this model's weights at epoch 0, e.g. the output of `add-exposure`; its frontend must match the architecture flags. Checkpoint selection and early stopping start after the learning-rate warm-up |
+| `--init_checkpoint` | — | Start from this model's weights at epoch 0; its frontend must match the architecture flags. Checkpoint selection and early stopping start after the learning-rate warm-up |
 | `--seed` | 42 | Random seed |
 | `--batch_size` | 32 | Batch size |
 | `--num_workers` | 8 | Parallel data loading workers (0 = sequential) |
@@ -403,9 +391,9 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--prefetch_batches` | 2 | Loader prefetch depth in batches |
 | `--epochs` | 50 (8 with `--qat`) | Number of epochs |
 | `--steps_per_epoch` | 0 | Training steps per epoch; 0 = one pass over the training files. Fix it to keep a schedule unchanged when the dataset grows |
-| `--warmup_epochs` | 2 | Linear learning-rate warm-up before the cosine decay, in epochs; may be fractional (e.g. 0.5 when one epoch is a pass over a large dataset) |
-| `--class_cap_per_epoch` | 0 | At most this many files per class in each epoch (0 = off): a larger class contributes a different subset each epoch, rotating through all its files, so the draw is more balanced without repeating or discarding files. Noise folders are not capped |
-| `--learning_rate` | 5e-4 (2e-5 with `--qat`, 1e-3 with `--linear_probe`) | Initial learning rate |
+| `--warmup_epochs` | 0.5 | Linear learning-rate warm-up before the cosine decay, in epochs; may be fractional |
+| `--class_cap_per_epoch` | 3000 | At most this many files per class in each epoch (0 = off): a larger class contributes a different subset each epoch, rotating through all its files, so the draw is more balanced without repeating or discarding files. Noise folders are not capped |
+| `--learning_rate` | 2e-4 (2e-5 with `--qat`, 1e-3 with `--linear_probe`) | Initial learning rate |
 | `--val_split` | 0.2 | Validation split fraction when `--data_path_val` is not supplied |
 | `--checkpoint_path` | checkpoints/best_model.keras | Output path (.keras) |
 | `--qat` | False | Quantization-aware fine-tuning |

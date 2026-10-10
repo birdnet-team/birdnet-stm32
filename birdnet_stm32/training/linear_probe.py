@@ -15,7 +15,6 @@ import tensorflow as tf
 from birdnet_stm32.data.dataset import (
     load_classes_file,
     load_file_paths_from_directory,
-    upsample_minority_classes,
 )
 from birdnet_stm32.data.generator import load_dataset
 from birdnet_stm32.models.frontend import normalize_frontend_name
@@ -108,9 +107,6 @@ def run_linear_probe(args: argparse.Namespace) -> None:
         train_paths = file_paths[:split_idx]
         val_paths = file_paths[split_idx:]
     print(f"[linear-probe] Training on {len(train_paths)} files, validating on {len(val_paths)} files.")
-
-    if args.upsample_ratio and 0 < args.upsample_ratio < 1.0:
-        train_paths = upsample_minority_classes(train_paths, classes, args.upsample_ratio)
 
     common_kwargs = dict(
         sample_rate=old_cfg.sample_rate,

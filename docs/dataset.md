@@ -53,11 +53,12 @@ lists for various regions are available in `dev/`:
 During training, the data pipeline:
 
 1. **Discovers** all `.wav` files under `data/train/<class>/`.
-2. **Upsamples** minority classes to a configurable ratio (`--upsample_ratio`,
-   default 0.5) of the largest class.
-3. **Caps** files per class if `--max_samples` is set.
+2. **Caps** files per class if `--max_samples` is set.
+3. **Balances each epoch**: at most `--class_cap_per_epoch` (default 3,000)
+   files per class, a different subset each epoch, so larger classes rotate
+   through all their files without repeating minority files.
 4. **Chunks** each file into fixed-length segments (`--chunk_duration`,
-   default 3 seconds) up to `--max_duration` (default 30 seconds).
+   default 2.5 seconds) up to `--max_duration` (default 60 seconds).
 5. **Computes spectrograms** according to the selected `--audio_frontend`.
 6. **Splits** randomly into train/validation (`--val_split`, default 0.2), or
    loads a fixed validation root with `--data_path_val`. Prefer the fixed root

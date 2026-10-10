@@ -16,11 +16,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on-device speed. See [Conversion](docs/conversion.md#activation-ranges).
 - `convert` emits logits by default (`--output_activation logit`, as every
   release since 1.5); `--output_activation sigmoid` keeps the sigmoid.
+- `train` defaults are the 2.0 recipe: width 1.5, 5 × 5 depthwise kernels,
+  1024-d embedding, 448 frames for `raw` (384 `hybrid`, 256 `librosa`), the
+  two-exposure raw filterbank at gain 16 trained from scratch, a per-class cap
+  of 3,000 files per epoch, learning rate 2e-4 after a half-epoch warm-up, no
+  weight decay on the depthwise kernels (the cure for dead depthwise channels),
+  and with `--teacher_cache` a teacher weight of 0.5 and teacher-chosen crops.
+  On a GPU, float training runs XLA-compiled in mixed precision.
 
 ### Removed
 
 - `convert --quantization dynamic`: dynamic-range models keep float
   activations, which the STM32N6 NPU cannot run. Conversion is full INT8 only.
+- `add-exposure`: two exposures train from scratch from 2.0.
+- `train --upsample_ratio` (the per-epoch class cap balances classes),
+  `--raw_exposure_mode` (always the compressor), `--dw_weight_decay` (always
+  0), `--dw_activation` (always ReLU6), `--frontend_trainable`,
+  `--mixed_precision` and `--jit_compile` (automatic on a GPU).
 - The deployment toolchain is now ST Edge AI Core 4.1 (`stedgeai`, installed
   with ST's modular installer), replacing X-CUBE-AI 10.2. `generate` and
   `validate` enable the NPU's epoch controller from 4.0: 2.0 Raw runs in

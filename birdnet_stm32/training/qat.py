@@ -455,7 +455,6 @@ def run_qat(args: argparse.Namespace) -> None:
     from birdnet_stm32.data.dataset import (
         load_classes_file,
         load_file_paths_from_directory,
-        upsample_minority_classes,
     )
     from birdnet_stm32.data.generator import load_dataset
     from birdnet_stm32.models.runners import load_keras_model
@@ -470,8 +469,6 @@ def run_qat(args: argparse.Namespace) -> None:
         raise FileExistsError("QAT outputs already exist; use a new run directory")
     if args.resume:
         raise ValueError("QAT resume is unsupported: start from an explicit checkpoint in a new output directory")
-    if args.mixed_precision:
-        raise ValueError("QAT requires float32 training for INT8 grid simulation")
     if not args.data_path_val:
         raise ValueError("QAT requires an explicit, disjoint --data_path_val")
     # Teacher targets and the teacher crop reach QAT's training loader as they do
@@ -528,8 +525,6 @@ def run_qat(args: argparse.Namespace) -> None:
     # Conversion samples the physical training manifest, never the optionally
     # duplicated epoch-balancing list used by the trainer.
     calibration_source_paths = list(train_paths)
-    if args.upsample_ratio and 0 < args.upsample_ratio <= 1.0:
-        train_paths = upsample_minority_classes(train_paths, classes, args.upsample_ratio)
 
     common_kwargs = dict(
         sample_rate=cfg.sample_rate,

@@ -40,8 +40,6 @@ def ds_conv_block(
     weight_decay: float = 1e-4,
     drop_rate: float = 0.1,
     dw_kernel_size: int = 3,
-    dw_weight_decay: float | None = None,
-    dw_activation: str = "relu6",
 ) -> tf.Tensor:
     """Depthwise-separable block (k x k DW + 1x1 PW) with optional residual.
 
@@ -51,19 +49,16 @@ def ds_conv_block(
         stride_f: Stride along frequency axis.
         stride_t: Stride along time axis.
         name: Base name for layers.
-        weight_decay: L2 regularization for DW/PW kernels.
+        weight_decay: L2 regularization for the PW kernel. The DW kernel has none:
+            with it, 54-62% of the depthwise channels died during 2.x training
+            (zero after ReLU6 on all data); without it, none did.
         drop_rate: Spatial dropout rate after PW BN.
         dw_kernel_size: Square depthwise kernel size.
-        dw_weight_decay: L2 regularization for the DW kernel (None: ``weight_decay``).
-        dw_activation: Activation after the DW BN: ``relu6`` or ``leaky_relu`` (slope 0.1; a
-            channel cannot die, and the N6 NPU runs it in hardware).
 
     Returns:
         Output tensor [B, H', W', out_ch].
     """
     reg = regularizers.l2(weight_decay) if weight_decay and weight_decay > 0 else None
-    dw_wd = weight_decay if dw_weight_decay is None else dw_weight_decay
-    dw_reg = regularizers.l2(dw_wd) if dw_wd and dw_wd > 0 else None
     in_ch = x.shape[-1]
 
     y = layers.DepthwiseConv2D(
@@ -71,16 +66,10 @@ def ds_conv_block(
         strides=(stride_f, stride_t),
         padding="same",
         use_bias=False,
-        depthwise_regularizer=dw_reg,
         name=f"{name}_dw",
     )(x)
     y = layers.BatchNormalization(name=f"{name}_dw_bn")(y)
-    if dw_activation == "relu6":
-        y = layers.ReLU(max_value=6, name=f"{name}_dw_relu")(y)
-    elif dw_activation == "leaky_relu":
-        y = layers.LeakyReLU(negative_slope=0.1, name=f"{name}_dw_relu")(y)
-    else:
-        raise ValueError(f"dw_activation must be relu6 or leaky_relu, got {dw_activation!r}")
+    y = layers.ReLU(max_value=6, name=f"{name}_dw_relu")(y)
 
     y = layers.Conv2D(
         filters=out_ch,
@@ -139,12 +128,10 @@ def build_dscnn_model(
     raw_bank: str = RELEASE_RAW_BANK,
     raw_split_axis: str = RELEASE_RAW_SPLIT_AXIS,
     raw_exposure_gain: float = 1.0,
-    raw_exposure_mode: str = "channels",
+    raw_exposure_mode: str = "compress",
     frontend_trainable: bool = False,
     dropout_rate: float = 0.5,
     weight_decay: float = 1e-4,
-    dw_weight_decay: float | None = None,
-    dw_activation: str = "relu6",
     head_pooling: str = "gap",
     dw_kernel_size: int = 3,
     stage_widths: tuple[int, ...] | list[int] | None = None,
@@ -178,9 +165,8 @@ def build_dscnn_model(
             channel before band_bn).
         frontend_trainable: Make frontend sub-layers trainable.
         dropout_rate: Dropout rate before the classifier head.
-        weight_decay: L2 regularization weight for DS-CNN blocks.
-        dw_weight_decay: L2 weight for the depthwise kernels (None: ``weight_decay``).
-        dw_activation: Activation after each depthwise BN: ``relu6`` or ``leaky_relu``.
+        weight_decay: L2 regularization weight for the pointwise kernels of the
+            DS-CNN blocks (the depthwise kernels have none).
         head_pooling: Pooling head, one of ``HEAD_POOLINGS``.
         dw_kernel_size: Depthwise kernel size in stages 2-4; stage 1, which
             carries the largest feature map, stays 3x3.
@@ -289,8 +275,6 @@ def build_dscnn_model(
             name=f"stage{si}_ds1",
             weight_decay=weight_decay,
             dw_kernel_size=k,
-            dw_weight_decay=dw_weight_decay,
-            dw_activation=dw_activation,
         )
         for bi in range(2, reps + 1):
             x = ds_conv_block(
@@ -301,8 +285,6 @@ def build_dscnn_model(
                 name=f"stage{si}_ds{bi}",
                 weight_decay=weight_decay,
                 dw_kernel_size=k,
-                dw_weight_decay=dw_weight_decay,
-                dw_activation=dw_activation,
             )
 
     # Final 1x1 conv to embeddings
