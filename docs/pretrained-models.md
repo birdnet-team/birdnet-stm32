@@ -9,7 +9,9 @@ repository files. Download a bundle from the
 Every file in a bundle shares one basename,
 `BirdNET_Tiny_N6_<REGION>_<SPECIES>_V<VERSION>`, where the species count covers
 bird species only — nuisance and background outputs are not counted in the name
-but are part of the ordered output contract.
+but are part of the ordered output contract. The region is `USNE` (northeastern
+United States, the 1.x models) or `GLOBAL` (2.0); from 1,000 bird species the
+count is rounded to thousands, so 2.0's 1,007 species read `1K`.
 
 | File | Use it for |
 |---|---|
@@ -17,7 +19,7 @@ but are part of the ordered output contract.
 | `<basename>_model_config.json` | Input, frontend, and class contract; drives the firmware config |
 | `<basename>_labels.txt` | Ordered output labels |
 | `<basename>_FP32.keras` | Host inference, fine-tuning, re-conversion |
-| `<basename>_original_FP32.keras` | Pre-QAT checkpoint, for retraining from an untouched state |
+| `<basename>_original_FP32.keras` | The untouched trained checkpoint (before QAT in 1.x, before frontend equalization in 2.0), for retraining from it |
 | `<basename>_FP32.onnx` | Host and interchange inference |
 | `<basename>_model_card.md` | Contract, provenance, measured accuracy, and on-board timing |
 
@@ -84,6 +86,7 @@ scored on 2.5-second windows at a 1.25 s hop (the teacher on its native
 | `..._90_V1.8_Raw_INT8` | 0.438 | 0.348 | 0.314 | 0.329 | 0.421 |
 | `..._90_V1.8_Hybrid_INT8` | 0.464 | 0.361 | 0.339 | 0.376 | 0.461 |
 | **`..._90_V1.9_Raw_INT8`** | **0.441** | **0.370** | **0.369** | **0.351** | **0.430** |
+| `..._1K_V2.0_Raw_INT8` | 0.205 | 0.142 | 0.160 | 0.313 | 0.328 |
 | BirdNET+ V3.0 preview 3.1 | 0.766 | 0.656 | 0.607 | 0.517 | 0.617 |
 
 The last row is the server-class teacher these models are distilled from, scored
@@ -91,7 +94,7 @@ on the same annotations and the same 44 species. It has no memory or latency
 budget and runs nowhere near a microcontroller; it is here as the ceiling, not
 as an alternative.
 
-Per site, for the current release (event recall @0.5 / window AUPRC):
+Per site, for the latest northeastern models (event recall @0.5 / window AUPRC):
 
 | Site | Calls | Species | v1.9 Raw | v1.8 Raw | v1.7 Raw | v1.8 Hybrid |
 |---|---:|---:|---|---|---|---|
@@ -100,6 +103,12 @@ Per site, for the current release (event recall @0.5 / window AUPRC):
 | SD | 237 | 9 | 0.257 / 0.501 | 0.241 / 0.465 | 0.295 / 0.510 | 0.321 / 0.564 |
 | NL | 170 | 6 | 0.406 / 0.430 | 0.406 / 0.462 | 0.341 / 0.428 | 0.424 / 0.484 |
 | FEU (boreal) | 2,073 | 18 | 0.294 / 0.556 | 0.277 / 0.538 | 0.260 / 0.536 | 0.300 / 0.581 |
+
+**For the northeastern United States, v1.9 Raw remains the better model.** v2.0
+Raw is the global model: 1,007 bird species instead of 90, scored here on the
+same 44 species. It ranks calls nearly as well (window cMAP 0.313 vs 0.351) but
+is far less confident, so at a 0.5 threshold it logs 0.142 of the calls against
+v1.9's 0.370. Its own benchmark is the global one below.
 
 v1.9 ships a new Raw model only; the hybrid model stays v1.8 Hybrid (the v1.5
 weights). v1.9 Raw is the v1.8 Raw design trained on about five times the audio
@@ -119,6 +128,39 @@ frontend. v1.8 Raw is the same design at 448 frames. It gains at four of the fiv
 sites and gives some back at SD, the second smallest; pooled it finds 7% more
 calls than v1.7 Raw, and at CB it finds more than hybrid. (v1.6 had changed only
 how the filterbank is cut for the NPU, which helped the densest sites.)
+
+### The global benchmark (2.0)
+
+v2.0 is scored on WABAD's **61 sites on six continents**: 59,418 annotated calls,
+of which 434 species fall inside its output list. Same windows and hop, INT8
+model, pooled over all sites:
+
+| Model | Event recall @0.25 | @0.5 | Macro recall @0.5 | Window cMAP | Window AUPRC |
+|---|---:|---:|---:|---:|---:|
+| **`..._1K_V2.0_Raw_INT8`** | **0.244** | **0.165** | **0.120** | **0.190** | **0.282** |
+| BirdNET+ V3.0 preview 3.1 | 0.695 | 0.545 | 0.450 | 0.459 | 0.597 |
+
+By region (event recall @0.5 / window AUPRC):
+
+| Region | Calls | Species | v2.0 Raw | BirdNET+ V3.0 preview 3.1 |
+|---|---:|---:|---|---|
+| Europe | 29,344 | 163 | 0.225 / 0.382 | 0.603 / 0.650 |
+| North America | 6,319 | 74 | 0.215 / 0.404 | 0.681 / 0.709 |
+| South America | 7,594 | 96 | 0.142 / 0.216 | 0.578 / 0.569 |
+| Central America & Caribbean | 6,627 | 88 | 0.045 / 0.199 | 0.585 / 0.638 |
+| Oceania & Pacific | 5,517 | 15 | 0.060 / 0.621 | 0.258 / 0.754 |
+| Asia | 2,152 | 24 | 0.012 / 0.208 | 0.222 / 0.358 |
+| Africa | 1,865 | 25 | 0.054 / 0.243 | 0.135 / 0.351 |
+
+The model reaches about half the teacher's AUPRC at under 1.5% of its
+parameters. It is strongest in Europe and North America and weakest in the
+tropics, Asia and Africa.
+
+The INT8 conversion sets each activation's range at the 99.999th percentile of
+its values on the calibration data rather than at its min/max (see
+[Conversion](conversion.md#activation-ranges)). On this benchmark that took the
+same model from 0.258 to 0.282 AUPRC and from 0.141 to 0.165 event recall at 0.5
+— 17% more calls — with no change in size or speed (float model: 0.302 AUPRC).
 
 - **Event recall** is the share of annotated calls whose overlapping window
   scored above the threshold — what a recorder set to that threshold would log.
@@ -149,6 +191,7 @@ firmware's STFT (33 ms); the firmware of 1.5 and earlier took 69 ms for it.
 | **`..._90_V1.8_Hybrid_INT8`** | 946,196 | 104.83 M | 19 ms | 33 ms | 52 ms | 40 (4 sw) |
 | `..._90_V1.8_Raw_INT8` | 1,003,860 | 151.97 M | 22 ms | 0 ms | 22 ms | 51 (3 sw) |
 | **`..._90_V1.9_Raw_INT8`** | 1,006,256 | 151.97 M | **22 ms** | 0 ms | **22 ms** | 51 (3 sw) |
+| **`..._1K_V2.0_Raw_INT8`** | 1,939,685 | 152.91 M | **22 ms** | 0 ms | **22 ms** | 49 (2 sw) |
 | BirdNET+ V3.0 preview 3.1 | 135,228,889 | — | — | — | — | — |
 
 The teacher is listed for scale only: **137x the parameters** of either model here,
@@ -168,7 +211,12 @@ not run on this class of hardware at all.
   input quantize and output dequantize, which have run on the M55 in every
   release. A shorter raw frontend in 1.5 took raw from 58 epochs to 53, 1.6's
   kernel split to 52, 1.7's second exposure and 384 frames to 54, and 1.8's 448
-  frames to 51.
+  frames to 51. 2.0 is compiled with ST Edge AI Core 4.1 and the NPU's epoch
+  controller, which runs the hardware epochs without the CPU between them: its
+  wider backbone takes the same 22 ms (25 ms without the epoch controller).
+- **2.0's extra parameters are almost all in the classifier.** 1,013 outputs
+  from a 1,024-d embedding are about a million weights; the backbone is 0.9 M.
+  The INT8 model is 2.2 MB (1.9: 1.2 MB).
 - At 22 ms per 2.5 s chunk, raw is **114x faster than real time**, so duty cycle
   rather than throughput sets a recorder's power budget.
 

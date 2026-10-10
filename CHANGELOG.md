@@ -7,26 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-10
+
+One model ships: `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Raw`, the first global BirdNET
+Tiny model: 1,007 bird species from around the world plus the six non-bird
+outputs of 1.9 (1,013 outputs), trained on dataset v0.4.0. It runs entirely on
+the NPU at 22 ms per 2.5 s chunk. For the northeastern United States, 1.9 Raw
+remains the better model; it stays available.
+
+### Model performance
+
+Scored on all 61 [WABAD](https://zenodo.org/records/14191524) sites on six
+continents (59,418 annotated calls, 434 species inside the output list), on the
+INT8 model that gets flashed:
+
+| Model | Event recall @0.5 | Macro recall @0.5 | Window cMAP | Window AUPRC |
+|---|---:|---:|---:|---:|
+| **v2.0 Raw** | **0.165** | **0.120** | **0.190** | **0.282** |
+| BirdNET+ V3.0 preview 3.1 (the teacher, 70x the parameters) | 0.545 | 0.450 | 0.459 | 0.597 |
+
+On the five northeastern sites and the same 44 species as the 1.x table, v2.0
+Raw ranks calls nearly as well as v1.9 Raw (window cMAP 0.313 vs 0.351) but is
+far less confident: event recall at 0.5 is 0.142 against 0.370. Per region and
+per site: [Pre-trained Models](docs/pretrained-models.md#the-global-benchmark-20).
+
+**The model:** the 1.9 Raw frontend (two-exposure learned filterbank, 448
+frames per 2.5 s) in a wider backbone (width 1.5, 5 × 5 depthwise kernels,
+1024-d embedding), 1.94 M parameters, 2.2 MB as INT8. It passed the release
+gates: Keras/TFLite parity (cosine 0.9996), ONNX validation, INT8 catalog cMAP
+0.534 against 0.546 float (gate: at most 0.05 below), STM32N6 compilation (49
+epochs, 2 in software), on-target validation (cos 0.99995, 11.2 ms per inference)
+and a 25-file board test (25/25 agree with the host).
+
 ### Changed
 
-- INT8 conversion cuts every activation range to the 99.999th percentile of its
-  values on the calibration data instead of their min/max (input and output
-  keep min/max). On 2.0 Raw over the 61 WABAD 2.0 sites: window AUPRC 0.258 ->
-  0.286 (float 0.302), 20% more annotated calls found at 0.5, same size and
-  on-device speed. See [Conversion](docs/conversion.md#activation-ranges).
+- **Percentile activation ranges.** INT8 conversion cuts every activation range
+  to the 99.999th percentile of its values on the calibration data instead of
+  their min/max (input and output keep min/max). On 2.0 Raw over the 61 WABAD
+  sites: window AUPRC 0.258 -> 0.282 (float 0.302) and 17% more annotated calls
+  found at 0.5, at the same size and on-device speed; catalog cMAP 0.525 ->
+  0.534. See [Conversion](docs/conversion.md#activation-ranges).
+- **ST Edge AI Core 4.1.** The deployment toolchain is now ST Edge AI Core 4.1
+  (`stedgeai`, installed with ST's modular installer), replacing X-CUBE-AI 10.2.
+  `generate` and `validate` enable the NPU's epoch controller from 4.0: 2.0 Raw
+  runs in 11.24 ms instead of 12.55 ms in `stedgeai validate --mode target`
+  (22 ms instead of 25 ms per chunk in the firmware), with identical outputs.
+  `board-test`, `deploy` and the standalone firmware Makefile handle the 4.x
+  layout (shared `Applications/Drivers`, the moved `N6_scripts`, the `network`
+  C name instead of `Default`) and still work with 10.2 and 4.0.1. ST Edge AI
+  Core 3.0 dropped the STM32N6 and is not supported. See
+  [Deployment](docs/deployment.md).
 - `convert` emits logits by default (`--output_activation logit`, as every
   release since 1.5); `--output_activation sigmoid` keeps the sigmoid.
 - `train` defaults are the 2.0 recipe: width 1.5, 5 × 5 depthwise kernels,
   1024-d embedding, 448 frames for `raw` (384 `hybrid`, 256 `librosa`), the
   two-exposure raw filterbank at gain 16 trained from scratch, a per-class cap
   of 3,000 files per epoch, learning rate 2e-4 after a half-epoch warm-up, no
-  weight decay on the depthwise kernels (the cure for dead depthwise channels),
-  and with `--teacher_cache` a teacher weight of 0.5 and teacher-chosen crops.
-  On a GPU, float training runs XLA-compiled in mixed precision.
-
+  weight decay on the depthwise kernels (with it, 54-62% of the depthwise
+  channels died during training), and with `--teacher_cache` a teacher weight
+  of 0.5 and teacher-chosen crops. On a GPU, float training runs XLA-compiled
+  in mixed precision.
+- **QAT is no longer part of the recipe** (train, equalize, convert). On 2.0
+  Raw no QAT epoch beat its starting point (INT8 cMAP 0.545 at epoch 0,
+  0.520-0.541 after each of 8 epochs), and on hybrid models it scored below
+  plain post-training quantization at every epoch. `--qat` remains available.
 - `evaluate`'s per-species bootstrap confidence intervals draw each class's
   resamples as counts over the groups its AP depends on: the same bootstrap
   distribution, under a minute instead of hours for 1,013 classes over 53k files.
+- Model names: `GLOBAL` is the region code for models covering birds worldwide,
+  and from 1,000 bird species the count is rounded to thousands (`1K`).
 
 ### Removed
 
@@ -37,15 +86,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--raw_exposure_mode` (always the compressor), `--dw_weight_decay` (always
   0), `--dw_activation` (always ReLU6), `--frontend_trainable`,
   `--mixed_precision` and `--jit_compile` (automatic on a GPU).
-- The deployment toolchain is now ST Edge AI Core 4.1 (`stedgeai`, installed
-  with ST's modular installer), replacing X-CUBE-AI 10.2. `generate` and
-  `validate` enable the NPU's epoch controller from 4.0: 2.0 Raw runs in
-  11.24 ms instead of 12.55 ms in `stedgeai validate --mode target`, with
-  identical outputs. `board-test`, `deploy` and the standalone firmware
-  Makefile handle the 4.x layout (shared `Applications/Drivers`, the moved
-  `N6_scripts`, the `network` C name instead of `Default`) and still work with
-  10.2 and 4.0.1. ST Edge AI Core 3.0 dropped the STM32N6 and is not supported.
-  See [Deployment](docs/deployment.md).
 
 ## [1.9.0] - 2026-10-03
 
