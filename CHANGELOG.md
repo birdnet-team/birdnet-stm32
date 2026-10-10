@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and with `--teacher_cache` a teacher weight of 0.5 and teacher-chosen crops.
   On a GPU, float training runs XLA-compiled in mixed precision.
 
+- `evaluate`'s per-species bootstrap confidence intervals draw each class's
+  resamples as counts over the groups its AP depends on: the same bootstrap
+  distribution, under a minute instead of hours for 1,013 classes over 53k files.
+
 ### Removed
 
 - `convert --quantization dynamic`: dynamic-range models keep float

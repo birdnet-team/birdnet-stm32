@@ -84,6 +84,36 @@ class TestBootstrapApCi:
             w99 = r99["ci_upper"] - r99["ci_lower"]
             assert w99 >= w90 - 1e-6
 
+    def test_grouped_ap_matches_sklearn_on_the_resample(self):
+        """Draws counted per AP group score exactly what sklearn scores on the resampled data, ties included."""
+        from sklearn.metrics import average_precision_score
+
+        from birdnet_stm32.evaluation.metrics import _ap_categories, _grouped_ap
+
+        rng = np.random.default_rng(3)
+        n = 400
+        y = (rng.random(n) < 0.2).astype(np.float32)
+        s = np.round(rng.random(n) + 0.5 * y, 2)  # rounded: many tied scores
+        pos, neg = _ap_categories(y, s)
+        assert pos.sum() == y.sum()
+        # The same groups, as sample indices, to count real draws into them.
+        order = np.argsort(-s, kind="stable")
+        starts = np.r_[0, np.flatnonzero(np.diff(s[order])) + 1]
+        group = np.cumsum(np.isin(np.arange(n), starts)) - 1
+        scored_groups = np.unique(group[y[order] > 0])
+        for _ in range(5):
+            idx = rng.integers(0, n, n)
+            counts = np.bincount(idx, minlength=n)[order]
+            ys = y[order] > 0
+            pos_draws = np.array([counts[(group == g) & ys].sum() for g in scored_groups])
+            # negatives of each scored group: those at or above it, after the previous scored group
+            bounds = np.r_[-1, scored_groups]
+            neg_draws = np.array(
+                [counts[(group > bounds[i]) & (group <= bounds[i + 1]) & ~ys].sum() for i in range(len(scored_groups))]
+            )
+            ours = _grouped_ap(pos_draws[None, :], neg_draws[None, :])[0]
+            assert ours == pytest.approx(average_precision_score(y[idx], s[idx]), abs=1e-9)
+
     def test_all_positive_degeneracy(self):
         """When all samples are positive for a class, CI collapses to point."""
         n, c = 10, 1
