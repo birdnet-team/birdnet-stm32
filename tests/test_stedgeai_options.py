@@ -41,3 +41,14 @@ def test_unreadable_binary_gives_no_version(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", boom)
     assert stedgeai.core_version("/missing/stedgeai") == ()
+
+
+@pytest.mark.parametrize("layout", [("scripts",), ("Utilities", "scripts")])
+def test_n6_loader_found_in_either_layout(tmp_path, layout):
+    from birdnet_stm32.deploy.config import DeployConfig
+
+    loader = tmp_path.joinpath(*layout, "N6_scripts", "n6_loader.py")
+    loader.parent.mkdir(parents=True)
+    loader.write_text("")
+    cfg = DeployConfig(x_cube_ai_path=str(tmp_path))
+    assert cfg.n6_loader_script == str(loader)
