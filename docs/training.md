@@ -206,8 +206,16 @@ python -m birdnet_stm32 train --epochs 50 --resume --checkpoint_path ckpt/model.
 ### Quantization-Aware Training (QAT)
 
 Use `--qat` to fine-tune a pretrained model with simulated INT8 quantization
-noise. This closes the accuracy gap between the float Keras model and the
-quantized TFLite model by teaching the weights to survive quantization.
+noise, teaching the weights to survive quantization.
+
+!!! note "Not part of the 2.x recipe"
+    On 2.0 Raw no QAT epoch beat its starting point: INT8 cMAP 0.545 at epoch
+    0, 0.520–0.541 after each of 8 epochs, so the selection kept the untrained
+    checkpoint. On hybrid models QAT scored below plain post-training
+    quantization at every epoch. The release recipe converts the trained
+    (raw: equalized) checkpoint directly, with percentile activation ranges
+    (see [Conversion](conversion.md#activation-ranges)); QAT simulates min/max
+    ranges and does not model them.
 
 !!! warning "QAT requires a pretrained model"
     Always train normally first, then fine-tune with `--qat`. Do **not** use
@@ -239,39 +247,33 @@ quantizes every tensor the converter quantizes, including each partial
 filterbank convolution, so its validation cMAP (`val_sim_int8_cmap`) tracks
 the converted model's (`val_int8_cmap`) to within a few thousandths.
 
-The full raw pipeline:
+The full raw pipeline (the 2.0 recipe):
 
 ```bash
-# Step 1: Normal training
+# Step 1: Normal training (with a teacher cache, as the releases are trained)
 python -m birdnet_stm32 train --data_path_train data/train \
   --data_path_val data/validation --classes_file data/labels.txt \
-  --checkpoint_path checkpoints/model.keras
+  --teacher_cache data/teacher_cache --checkpoint_path checkpoints/model.keras
 
 # Step 2: Equalize the frontend's per-band ranges (raw only; exact in float)
 python -m birdnet_stm32 equalize --checkpoint_path checkpoints/model.keras \
   --data_path_train data/train --output_path checkpoints/model_eq.keras
 
-# Step 3: QAT fine-tuning
-python -m birdnet_stm32 train --data_path_train data/train \
-  --data_path_val data/validation --classes_file data/labels.txt --qat \
-  --checkpoint_path checkpoints/model_eq.keras
-
-# Step 4: Convert the QAT model
+# Step 3: Convert
 python -m birdnet_stm32 convert \
-  --checkpoint_path checkpoints/model_eq_qat.keras \
+  --checkpoint_path checkpoints/model_eq.keras \
   --model_config checkpoints/model_eq_model_config.json \
   --data_path_train data/train
 ```
 
-The QAT model is saved as `{name}_qat.keras` alongside the original.
+A QAT run is saved as `{name}_qat.keras` alongside the original.
 `equalize` rescales each band of the raw filterbank and PWL so that every band
 gets the same share of the tensors' INT8 grids, and refuses to save if the
 float output changes. See [INT8 quality](dev/int8-parity-plan.md) for the
 measurements.
 
-For `hybrid` and `librosa` with `--input_compression`, skip QAT: it scored
-below plain post-training quantization at every epoch. Convert the trained
-checkpoint directly.
+For `hybrid` and `librosa`, skip step 2 and convert the trained checkpoint
+directly.
 
 ### Two-exposure raw frontend
 

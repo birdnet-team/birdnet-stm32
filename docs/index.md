@@ -67,7 +67,7 @@ what a bundle contains and how to run one on the board.
   >0.95 cosine similarity vs. the float model. Activation ranges at the
   99.999th percentile of the calibration data; per-channel (default) or
   per-tensor.
-- **Quantization-aware training (QAT)**: per-channel kernel and per-tensor
+- **Quantization-aware training (QAT)**, not in the 2.x recipe: per-channel kernel and per-tensor
   activation INT8 simulation via `--qat`, aligned to final conversion's exact
   calibration manifest. Frozen-teacher KL plus mean and worst-sample cosine
   consistency protect mean and tail parity. The saved deployment checkpoint

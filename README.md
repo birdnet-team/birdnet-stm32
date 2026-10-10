@@ -178,7 +178,7 @@ for toolchain setup and troubleshooting.
 - **Model**: DS-CNN with configurable width (`--alpha`) and depth (`--depth_multiplier`) built from plain depthwise separable blocks
 - **Augmentation**: Dirichlet multi-source mixup with multi-label union targets for overlapping vocalizations, SpecAugment (on by default), smart crop for long recordings
 - **Optimization**: linear warmup into cosine LR decay, Adam/SGD/AdamW, gradient clipping (on by default), mixed precision (FP16). Standard training checkpoints track exact validation cMAP; QAT selects matching Keras/TFLite artifacts using actual converted INT8 file cMAP, including the starting checkpoint
-- **QAT**: native Keras 3 quantization-aware fine-tuning via `--qat` — uses the converter's exact calibration manifest to simulate the INT8 input, per-channel kernels, fused activation boundaries, and otherwise-opaque raw-frontend internals; frozen-teacher KL plus mean and configurable worst-sample cosine consistency protect probability calibration and lower-tail parity while exact converted INT8 validation cMAP selects the deployment checkpoint
+- **QAT** (not in the 2.x recipe: on 2.0 Raw no epoch beat its starting point): native Keras 3 quantization-aware fine-tuning via `--qat` — uses the converter's exact calibration manifest to simulate the INT8 input, per-channel kernels, fused activation boundaries, and otherwise-opaque raw-frontend internals; frozen-teacher KL plus mean and configurable worst-sample cosine consistency protect probability calibration and lower-tail parity while exact converted INT8 validation cMAP selects the deployment checkpoint
 - **Linear probing**: `--linear_probe` freezes a pretrained backbone and trains only the classifier head
 
 ### Conversion
