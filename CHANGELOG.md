@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- INT8 conversion cuts every activation range to the 99.999th percentile of its
+  values on the calibration data instead of their min/max (input and output
+  keep min/max). On 2.0 Raw over the 61 WABAD 2.0 sites: window AUPRC 0.258 ->
+  0.286 (float 0.302), 20% more annotated calls found at 0.5, same size and
+  on-device speed. See [Conversion](docs/conversion.md#activation-ranges).
+- `convert` emits logits by default (`--output_activation logit`, as every
+  release since 1.5); `--output_activation sigmoid` keeps the sigmoid.
+
+### Removed
+
+- `convert --quantization dynamic`: dynamic-range models keep float
+  activations, which the STM32N6 NPU cannot run. Conversion is full INT8 only.
 - The deployment toolchain is now ST Edge AI Core 4.1 (`stedgeai`, installed
   with ST's modular installer), replacing X-CUBE-AI 10.2. `generate` and
   `validate` enable the NPU's epoch controller from 4.0: 2.0 Raw runs in

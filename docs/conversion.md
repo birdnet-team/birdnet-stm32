@@ -224,7 +224,6 @@ After conversion, the script reports:
 | `--validate_samples` | 256 | Samples for Keras vs. TFLite validation |
 | `--min_cosine_sim` | 0.95 | Fail conversion if cosine similarity is below this |
 | `--min_cosine_p05` | 0.90 | Fail conversion if fifth-percentile cosine is below this |
-| `--quantization` | `ptq` | `ptq` (full INT8 with calibration) or `dynamic` (dynamic range, no calibration data) |
 | `--calibration_dir` | — | Calibrate on this directory of audio instead of `--data_path_train` (any layout, stratified by subfolder). The parity validation set still comes from `--data_path_train` |
 | `--per_tensor` | off | Use per-tensor quantization instead of per-channel |
 | `--batch_validate` | 0 | Run validation N times with different seeds, report worst-case |
@@ -232,18 +231,18 @@ After conversion, the script reports:
 | `--split_head` | off | Also emit the backbone/classifier pair (see [Backbone and classifier split](#backbone-and-classifier-split)) |
 | `--backbone_path` | None | Convert only the head against this already-quantized backbone (see [Updating the head against a flashed backbone](#updating-the-head-against-a-flashed-backbone)); mutually exclusive with `--split_head` |
 | `--allow_backbone_mismatch` | off | Proceed when the checkpoint's backbone does not match `--backbone_path`; diagnostics only |
-| `--output_activation` | `sigmoid` | `logit` removes the final sigmoid, so the output stays off the INT8 1/256 grid (see below) |
+| `--output_activation` | `logit` | `logit` leaves the final sigmoid to the caller, so the output stays off the INT8 1/256 grid; `sigmoid` keeps it (see below) |
 | `--report_json` | None | Save structured JSON conversion report |
 
 ## Probability or logit output
 
-By default the converted model ends in a sigmoid, so it emits probabilities —
-and those probabilities are quantized onto the INT8 grid, whose step is 1/256.
-Everything below about 0.002 is floored to zero and the rest is tied to that
-grid, which costs ranking accuracy across the long tail of classes.
+A model that ends in a sigmoid emits probabilities — and those probabilities
+are quantized onto the INT8 grid, whose step is 1/256. Everything below about
+0.002 is floored to zero and the rest is tied to that grid, which costs ranking
+accuracy across the long tail of classes.
 
-`--output_activation logit` removes the sigmoid before conversion. The model
-then emits logits, whose grid (about 0.1 per step over roughly ±12) keeps far
+So the conversion removes the sigmoid by default (`--output_activation logit`,
+every release from 1.5; `sigmoid` keeps it). The model then emits logits, whose grid (about 0.1 per step over roughly ±12) keeps far
 more resolution where scores are small. Measured on the 1.5 candidates over the
 full catalog:
 
@@ -275,9 +274,12 @@ sigmoid automatically. A caller outside this package applies
 - **Provenance**: the report records counts, per-class coverage, and SHA-256
   identities for both path manifests
 - **Target hardware**: STM32N6 NPU (requires channel counts in multiples of 8)
+- **Activation ranges**: the converter calibrates every activation's min/max,
+  then each range is cut to the 99.999th percentile of that activation's values
+  on the same calibration data (input and output keep min/max), and the model is
+  quantized with those ranges. See [Activation ranges](#activation-ranges).
 - **Per-channel** (default): quantizes each output channel separately — better accuracy
 - **Per-tensor**: single scale per tensor — use only if per-channel causes N6 issues
-- **Dynamic range**: INT8 weights, runtime float activations — no calibration data needed, less compression
 
 When `--export_onnx` is requested, export uses the native Keras 3 ONNX path and
 a temporary sibling file. The ONNX checker runs with full validation, then 16
@@ -285,10 +287,32 @@ held-out samples must pass ONNX Runtime parity (`cosine_min >= 0.9999` and
 `max_abs_error <= 1e-4`) before the final `.onnx` is promoted. Install the
 required tools with `pip install 'birdnet-stm32[release]'`.
 
-!!! tip "Quantization modes"
-    Use `--quantization ptq` (default) for best on-device performance.
-    Use `--quantization dynamic` when no training data is available.
+!!! tip "Per-tensor"
     Use `--per_tensor` only if stedgeai rejects a per-channel model.
+
+### Activation ranges
+
+An INT8 activation has 256 steps spread over its range. The TFLite converter
+sets that range to the minimum and maximum the activation reached on the
+calibration data, so one rare loud input stretches it and coarsens the grid for
+every other value — and the scores of a 1,000-class model rank on small values.
+The conversion therefore cuts each range to the 99.999th percentile of the
+activation's values on the calibration data (both ends where the range is
+negative). It changes only the stored ranges: the graph, size and on-device
+speed stay the same.
+
+Measured on 2.0 Raw over the 61 WABAD 2.0 sites (59,418 annotated calls):
+
+| INT8 ranges | Window AUPRC | Window cMAP | Calls found @0.5 |
+|---|---:|---:|---:|
+| min/max | 0.258 | 0.179 | 0.141 |
+| **99.999th percentile** | **0.286** | **0.190** | **0.169** |
+| float model (reference) | 0.302 | | |
+
+The gain is all in the audio frontend's tensors; clipping only the backbone's
+changes nothing. 99.9 clips too far (below min/max) and 99.9999 too little. On
+the STM32N6 the clipped model runs at the same 11.2 ms and tracks the host more
+closely (`stedgeai validate` cos 0.99994 vs 0.99984).
 
 !!! note "No INT8 I/O"
     Audio spectrograms are continuous-valued signals. Quantizing model inputs

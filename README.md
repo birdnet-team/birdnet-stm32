@@ -183,8 +183,8 @@ for toolchain setup and troubleshooting.
 
 ### Conversion
 
-- **Post-training quantization**: INT8 internals, float32 I/O, per-channel (default) or per-tensor
-- **Dynamic range quantization**: `--quantization dynamic` — no calibration data needed
+- **Post-training quantization**: INT8 internals, float32 I/O, per-channel (default) or per-tensor; activation ranges cut to the 99.999th percentile of the calibration data instead of its min/max (2.0 Raw on WABAD: AUPRC 0.258 → 0.286, float 0.302)
+- **Logit output** by default: the converted model leaves the sigmoid to the caller, keeping scores off the INT8 1/256 grid
 - **Backbone/classifier split**: `--split_head` also emits the backbone (audio to embeddings) and the classifier head (embeddings to scores) as separate gated artifacts with deterministic `.gz` copies, so a species-list change can be pushed over a narrowband satellite link as a few kB instead of the whole model. The head is calibrated on the quantized backbone's embeddings, and the chained pair must clear the same parity gates as the monolithic model
 - **Validation**: mean and tail cosine similarity, MSE, MAE, and Pearson r on a deterministic held-out calibration split
 - **Atomic quality gate**: failed conversions never promote a release-looking `.tflite`

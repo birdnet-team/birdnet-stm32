@@ -129,7 +129,9 @@ class TestConversionDefaults:
         args = _convert()
         assert args.min_cosine_sim == pytest.approx(0.95)
         assert args.min_cosine_p05 == pytest.approx(0.90)
-        assert args.quantization == "ptq"
+
+    def test_logit_output_by_default(self):
+        assert _convert().output_activation == "logit"
 
 
 class TestEvaluationDefaults:
