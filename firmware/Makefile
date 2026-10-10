@@ -8,12 +8,19 @@ MODEL_CONFIG ?= ../checkpoints/best_model_model_config.json
 LABELS_FILE  ?=
 
 # --- Paths
-XCUBE_AI_DIR ?= /home/mi/Code/X-CUBE-AI.10.2.0
+# ST Edge AI Core root (the folder holding Middlewares/ and Projects/), e.g. <install>/4.1; an X-CUBE-AI 10.2
+# root works too. See docs/firmware/building.md.
+XCUBE_AI_DIR ?= $(HOME)/STEdgeAI/4.1
 MIDDLEWARES_PATH = $(XCUBE_AI_DIR)/Middlewares/ST
 ATONN_RT_PATH = $(MIDDLEWARES_PATH)/AI/Npu/ll_aton
-BSP_PATH = $(XCUBE_AI_DIR)/Projects/STM32N6570-DK/Applications/NPU_Validation/Drivers/BSP
-CMSIS_PATH = $(XCUBE_AI_DIR)/Projects/STM32N6570-DK/Applications/NPU_Validation/Drivers/CMSIS
-N6_DRIVER_PATH = $(XCUBE_AI_DIR)/Projects/STM32N6570-DK/Applications/SNS/Drivers/STM32N6xx_HAL_Driver
+# The prebuilt runtime is named after the tool version (NetworkRuntime1020 for 10.2, 1210 for 4.1).
+NETWORK_RUNTIME_LIB ?= $(firstword $(wildcard $(MIDDLEWARES_PATH)/AI/Lib/GCC/ARMCortexM55/NetworkRuntime*_CM55_GCC.a))
+# Board drivers: shared under Applications/Drivers from ST Edge AI Core 4.0, inside the example projects before.
+APPS_PATH = $(XCUBE_AI_DIR)/Projects/STM32N6570-DK/Applications
+DRIVERS_PATH := $(if $(wildcard $(APPS_PATH)/Drivers/BSP),$(APPS_PATH)/Drivers,$(APPS_PATH)/NPU_Validation/Drivers)
+BSP_PATH = $(DRIVERS_PATH)/BSP
+CMSIS_PATH = $(DRIVERS_PATH)/CMSIS
+N6_DRIVER_PATH := $(if $(wildcard $(APPS_PATH)/Drivers/STM32N6xx_HAL_Driver),$(APPS_PATH)/Drivers/STM32N6xx_HAL_Driver,$(APPS_PATH)/SNS/Drivers/STM32N6xx_HAL_Driver)
 DK_DRIVER_PATH = $(BSP_PATH)/STM32N6570-DK
 
 # --- Sources
@@ -54,7 +61,11 @@ C_SOURCES += Src/npu_cache.c
 C_SOURCES += Src/mcu_cache.c
 C_SOURCES += Src/sysmem.c
 C_SOURCES += Src/syscalls.c
-C_SOURCES += network.c
+# The compiled network (stedgeai generate) and its C name: "Default" from 10.2, "network" from 4.x.
+NETWORK_C ?= network.c
+C_SOURCES += $(NETWORK_C)
+NN_NAME_FOUND := $(shell sed -n 's/.*LL_ATON_Input_Buffers_Info_\([A-Za-z0-9_]*\).*/\1/p' $(NETWORK_C) 2>/dev/null | head -1)
+APP_NN_NAME ?= $(if $(NN_NAME_FOUND),$(NN_NAME_FOUND),Default)
 C_SOURCES += $(ATONN_SOURCES)
 C_SOURCES += $(DRIVER_SOURCES)
 C_SOURCES += $(BSP_PATH)/STM32N6570-DK/stm32n6570_discovery.c
@@ -111,18 +122,28 @@ FLOAT-ABI = -mfloat-abi=hard
 MCU = $(CPU) -mthumb $(FPU) $(FLOAT-ABI) -mcmse
 
 C_DEFS = -DSTM32N657xx -DUSE_HAL_DRIVER -DCORE_CM55 -DSECURE=1 -DCPU_IN_SECURE_STATE -DUSE_UART_BAUDRATE=921600 -DUSE_OVERDRIVE=0 -DLL_ATON_PLATFORM=LL_ATON_PLAT_STM32N6 -DLL_ATON_OSAL=LL_ATON_OSAL_BARE_METAL -DLL_ATON_RT_MODE=LL_ATON_RT_ASYNC -DLL_ATON_EB_DBG_INFO -DLL_ATON_DBG_BUFFER_INFO_EXCLUDED=1 -DLL_ATON_SW_FALLBACK=1 -DARM_MATH_HELIUM
+C_DEFS += -DAPP_NN_NAME=$(APP_NN_NAME)
 
-C_INCLUDES += -IInc -I. -IDrivers/FatFs -IConfig -IDrivers -IDrivers/HAL_SD
+C_INCLUDES += -IInc -I. -I$(dir $(NETWORK_C)) -IDrivers/FatFs -IConfig -IDrivers
 C_INCLUDES += -I$(CMSIS_DSP)/Include -I$(CMSIS_DSP)/PrivateInclude
 C_INCLUDES += -I$(CMSIS_PATH)/Core/Include
 C_INCLUDES += -I$(CMSIS_PATH)/Device/ST/STM32N6xx/Include
 C_INCLUDES += -I$(CMSIS_PATH)/Device/ST/STM32N6xx/Include/Templates
 C_INCLUDES += -I$(N6_DRIVER_PATH)/Inc
 C_INCLUDES += -I$(N6_DRIVER_PATH)/Inc/Legacy
+# Our SD driver headers: after the HAL's with ST Edge AI Core 4.x (its own SD headers match its device header),
+# before them with X-CUBE-AI 10.2 (its SD headers do not match our SD sources).
+ifeq ($(wildcard $(APPS_PATH)/Drivers/BSP),)
+C_INCLUDES := -IDrivers/HAL_SD $(C_INCLUDES)
+else
+C_INCLUDES += -IDrivers/HAL_SD
+endif
 C_INCLUDES += -I$(DK_DRIVER_PATH)
 C_INCLUDES += -I$(ATONN_RT_PATH)
 C_INCLUDES += -I$(MIDDLEWARES_PATH)/AI/Inc
-C_INCLUDES += -I$(MIDDLEWARES_PATH)/AI/Npu/Devices/STM32N6XX
+# NPU device headers: Devices/STM32N6XX up to 10.2, Devices/STM32N6xx from ST Edge AI Core 4.1.
+NPU_DEVICE_PATH := $(firstword $(wildcard $(MIDDLEWARES_PATH)/AI/Npu/Devices/STM32N6XX $(MIDDLEWARES_PATH)/AI/Npu/Devices/STM32N6xx))
+C_INCLUDES += -I$(NPU_DEVICE_PATH)
 
 # CMSIS-DSP's Helium code relies on implicit vector conversions under GCC.
 CFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections -flax-vector-conversions
@@ -130,7 +151,7 @@ CFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-
 ASFLAGS = $(MCU) $(OPT) -Wall -fdata-sections -ffunction-sections
 
 LDSCRIPT = STM32N657xx.ld
-LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections $(XCUBE_AI_DIR)/Middlewares/ST/AI/Lib/GCC/ARMCortexM55/NetworkRuntime1020_CM55_GCC.a
+LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections $(NETWORK_RUNTIME_LIB)
 
 BUILD_DIR = build
 
@@ -142,6 +163,11 @@ OBJECTS += $(addprefix $(BUILD_DIR)/,$(notdir $(ASM_SOURCES:.s=.o)))
 vpath %.s $(sort $(dir $(ASM_SOURCES)))
 
 $(BUILD_DIR)/%.o: %.c Makefile | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) -c $(CFLAGS) -Wa,-a,-ad,-alms=$(BUILD_DIR)/$(notdir $(<:.c=.lst)) $< -o $@
+
+# The network gets its own rule: a NETWORK_C elsewhere must win over a network.c in this directory.
+$(BUILD_DIR)/$(notdir $(NETWORK_C:.c=.o)): $(NETWORK_C) Makefile | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(CC) -c $(CFLAGS) -Wa,-a,-ad,-alms=$(BUILD_DIR)/$(notdir $(<:.c=.lst)) $< -o $@
 
