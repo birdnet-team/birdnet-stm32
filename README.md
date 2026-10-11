@@ -204,35 +204,26 @@ for toolchain setup and troubleshooting.
 ### Public benchmark results
 
 Published models are scored on **WABAD** ([Zenodo 14191524](https://zenodo.org/records/14191524)),
-a public passive acoustic monitoring benchmark — 3,794 annotated calls across
-five northeastern sites, 44 of its species inside the 90-output list. Every figure is from the INT8 model that gets flashed, on 2.5 s windows at a 1.25 s hop, pooled over all five sites.
+a public passive acoustic monitoring benchmark — 59,418 annotated calls across
+61 sites on six continents, 434 of its species inside the 2.0 output list. Every figure is from the INT8 model that gets flashed, on 2.5 s windows at a 1.25 s hop, pooled over all sites.
 
 | Model | Event recall @0.5 | Window cMAP | Window AUPRC | Params | Compute per 2.5 s chunk |
 |---|---:|---:|---:|---:|---:|
-| `BirdNET_Tiny_N6_USNE_90_V1.9_Raw_INT8` | **0.370** | 0.351 | 0.430 | 1.01 M | **22 ms** (all NPU) |
-| `BirdNET_Tiny_N6_USNE_90_V1.8_Hybrid_INT8` | 0.361 | 0.376 | 0.461 | 946 k | 52 ms (33 ms STFT on the M55) |
-| `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Raw_INT8` (global, 1,007 species) | 0.142 | 0.313 | 0.328 | 1.94 M | **22 ms** (all NPU) |
-| `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid_INT8` (global, 1,007 species) | 0.164 | 0.355 | 0.377 | 1.88 M | 53 ms (33 ms STFT on the M55) |
-| BirdNET+ V3.0 preview 3.1, the teacher | 0.656 | 0.517 | 0.617 | 135 M | does not run on this hardware |
+| `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Raw_INT8` | 0.165 | 0.190 | 0.282 | 1.94 M | **22 ms** (all NPU) |
+| `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid_INT8` | **0.183** | **0.209** | **0.303** | 1.88 M | 53 ms (33 ms STFT on the M55) |
+| BirdNET+ V3.0 preview 3.1, the teacher | 0.545 | 0.459 | 0.597 | 135 M | does not run on this hardware |
 
 Timings are measured on an STM32N6570-DK for one chunk, excluding the audio
 read, with CPU, NPU and buses at 400 MHz (the firmware's clock profile, no
 overdrive). Raw runs its learned filterbank on the NPU, which is why it costs
 about 40% of hybrid's compute; hybrid buys its accuracy with a 512-point STFT
-on the Cortex-M55. Since 1.7 raw computes its filterbank twice, the second time
-at 16x gain, compressing the two into one envelope so quiet field audio survives
-its INT8 grids; 1.8 reads 448 frames per chunk (1.7: 384). 1.9 trains the same raw
-design on about five times the audio and is the first raw model to find more calls
-than hybrid, at well under half its compute. The hybrid model is unchanged since 1.5
-and was not re-issued for 1.9.
+on the Cortex-M55. Raw computes its filterbank twice, the second time at 16x
+gain, compressing the two into one envelope so quiet field audio survives its
+INT8 grids. With 1,007 species the hybrid finds 11% more annotated calls than raw.
 
-2.0 is global, in a raw and a hybrid model, so for the northeastern United States 1.9
-remains the better choice: on the same 44 species 2.0 Hybrid ranks calls as well
-(cMAP 0.355 vs 0.351) but both 2.0 models are far less confident at a 0.5 threshold.
-On all 61 WABAD sites on six continents (59,418 calls, 434 species inside their output
-list) the INT8 models reach event recall 0.183 (hybrid) and 0.165 (raw) at 0.5 and
-window AUPRC 0.303 and 0.282; the teacher reaches 0.545 and 0.597 at 70x the
-parameters.
+The 2.0 models are global. For the northeastern United States the 90-species
+`BirdNET_Tiny_N6_USNE_90_V1.9_Raw` remains the better choice: on the five
+northeastern sites it logs far more calls at a 0.5 threshold.
 
 Per-version history and what each metric means:
 [Pre-trained Models](https://birdnet-team.github.io/birdnet-stm32/pretrained-models/#benchmark-results).
