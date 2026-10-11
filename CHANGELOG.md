@@ -9,11 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.0.0] - 2026-10-10
 
-One model ships: `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Raw`, the first global BirdNET
-Tiny model: 1,007 bird species from around the world plus the six non-bird
-outputs of 1.9 (1,013 outputs), trained on dataset v0.4.0. It runs entirely on
-the NPU at 22 ms per 2.5 s chunk. For the northeastern United States, 1.9 Raw
-remains the better model; it stays available.
+Two models ship, the first global BirdNET Tiny models: 1,007 bird species from
+around the world plus the six non-bird outputs of 1.9 (1,013 outputs), trained
+on dataset v0.4.0. `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Raw` runs entirely on the NPU
+at 22 ms per 2.5 s chunk; `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid` finds 11% more
+annotated calls at 53 ms (33 ms of it the STFT on the Cortex-M55). For the
+northeastern United States, 1.9 Raw remains the better model; it stays available.
 
 ### Model performance
 
@@ -23,21 +24,34 @@ INT8 model that gets flashed:
 
 | Model | Event recall @0.5 | Macro recall @0.5 | Window cMAP | Window AUPRC |
 |---|---:|---:|---:|---:|
-| **v2.0 Raw** | **0.165** | **0.120** | **0.190** | **0.282** |
+| v2.0 Raw | 0.165 | 0.120 | 0.190 | 0.282 |
+| **v2.0 Hybrid** | **0.183** | **0.134** | **0.209** | **0.303** |
 | BirdNET+ V3.0 preview 3.1 (the teacher, 70x the parameters) | 0.545 | 0.450 | 0.459 | 0.597 |
 
 On the five northeastern sites and the same 44 species as the 1.x table, v2.0
-Raw ranks calls nearly as well as v1.9 Raw (window cMAP 0.313 vs 0.351) but is
-far less confident: event recall at 0.5 is 0.142 against 0.370. Per region and
+Hybrid ranks calls as well as v1.9 Raw (window cMAP 0.355 vs 0.351) and v2.0 Raw
+nearly so (0.313), but both are far less confident: event recall at 0.5 is 0.164
+and 0.142 against 0.370. With 1,013 classes the hybrid frontend's lead over raw
+has grown (+0.049 AUPRC on those 44 species, against +0.031 between v1.8 Hybrid
+and v1.9 Raw). Per region and
 per site: [Pre-trained Models](docs/pretrained-models.md#the-global-benchmark-20).
 
-**The model:** the 1.9 Raw frontend (two-exposure learned filterbank, 448
-frames per 2.5 s) in a wider backbone (width 1.5, 5 × 5 depthwise kernels,
-1024-d embedding), 1.94 M parameters, 2.2 MB as INT8. It passed the release
-gates: Keras/TFLite parity (cosine 0.9996), ONNX validation, INT8 catalog cMAP
-0.534 against 0.546 float (gate: at most 0.05 below), STM32N6 compilation (49
-epochs, 2 in software), on-target validation (cos 0.99995, 11.2 ms per inference)
-and a 25-file board test (25/25 agree with the host).
+**The models:** one wider backbone (width 1.5, 5 × 5 depthwise kernels, 1024-d
+embedding) behind each frontend.
+
+- **v2.0 Raw:** the 1.9 Raw frontend (two-exposure learned filterbank, 448
+  frames per 2.5 s), 1.94 M parameters, 2.2 MB as INT8. Keras/TFLite parity
+  cosine 0.9996, INT8 catalog cMAP 0.534 against 0.546 float, 49 NPU epochs (2
+  in software), on target cos 0.99995 at 11.2 ms per inference.
+- **v2.0 Hybrid:** the 1.5-1.8 hybrid frontend (512-point STFT on the M55,
+  square-root compressed, 384 frames, then a learned mel mixer on the NPU),
+  1.88 M parameters, 2.1 MB as INT8. Parity cosine 0.9999, INT8 catalog cMAP
+  0.542 against 0.549 float, 36 NPU epochs (2 in software), on target cos
+  0.99993 at 9.3 ms per inference.
+
+Both passed the release gates: Keras/TFLite parity, ONNX validation, INT8
+catalog cMAP at most 0.05 below the float model, STM32N6 compilation,
+on-target validation and a 25-file board test (25/25 agree with the host).
 
 ### Changed
 
