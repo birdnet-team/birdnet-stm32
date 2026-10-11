@@ -83,6 +83,11 @@ and a 25-file board test (25/25 agree with the host).
   config's `class_names` both carry them, in the same output order. Bundles
   before 2.0 keep their lowercase machine labels.
 
+- Firmware: SD file paths are at most 127 characters (`SD_MAX_PATH` 128, was
+  256), and longer names are skipped with a warning instead of cut. The file
+  list shares the 1 MB application SRAM with the code and every buffer, and a
+  hybrid build with 1,013 classes overflowed it by 31 KB.
+
 ### Removed
 
 - `convert --quantization dynamic`: dynamic-range models keep float

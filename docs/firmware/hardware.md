@@ -79,12 +79,19 @@ sequence (see [Building & Flashing — Init Sequence](building.md#init-sequence)
 | `audio_buf` | `CHUNK_SAMPLES × 4` bytes | 32 B (DCache line) | e.g. 72,000 × 4 = 288 KB @ 24 kHz × 3 s |
 | `spec_buf` | `FFT_BINS × SPEC_WIDTH × 4` bytes | 32 B | Hybrid/librosa builds only; e.g. 256 × 256 × 4 = 256 KB |
 | `mel_buf` | `NUM_MELS × SPEC_WIDTH × 4` bytes | 32 B | Librosa builds only; e.g. 64 × 256 × 4 = 64 KB |
-| `file_list` | `SD_MAX_FILES × SD_MAX_PATH` bytes | .bss | 512 × 256 = 128 KB |
+| `file_list` | `SD_MAX_FILES × SD_MAX_PATH` bytes | .bss | 512 × 128 = 64 KB |
 | `scores` | `NUM_CLASSES × 4` bytes | stack | Tiny (40 B for 10 classes) |
 
 The frontend buffers are selected at compile time: raw builds allocate neither
 `spec_buf` nor `mel_buf`, hybrid builds allocate `spec_buf`, and librosa builds
 allocate both. Consequently there is no single application-RAM total.
+
+Code, constants (including the label strings) and all of these buffers share
+the 1 MB `AXISRAM1_S` region the application is loaded into. The 2.0 hybrid
+build (1,013 classes, release labels) uses 1,034,348 of its 1,048,576 bytes:
+`spec_buf` 384 KB, `audio_buf` 234 KB, about 45 KB of label strings. With 256-byte
+paths it overflowed by 31 KB, so `SD_MAX_PATH` is 128 since 2.0. More classes or
+a wider spectrogram need some of these buffers moved to another SRAM bank.
 
 ### NPU Memory
 
