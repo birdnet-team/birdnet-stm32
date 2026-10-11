@@ -76,6 +76,12 @@ and a 25-file board test (25/25 agree with the host).
   distribution, under a minute instead of hours for 1,013 classes over 53k files.
 - Model names: `GLOBAL` is the region code for models covering birds worldwide,
   and from 1,000 bird species the count is rounded to thousands (`1K`).
+- **Release labels read `<scientific name>_<common name>`**, as BirdNET's do:
+  `Cardinalis cardinalis_Northern Cardinal`, `Homo sapiens_Human`,
+  `Canis familiaris_Domestic Dog`; the non-bird outputs that are no species
+  repeat their name (`Engine_Engine`). The bundle's `_labels.txt` and the
+  config's `class_names` both carry them, in the same output order. Bundles
+  before 2.0 keep their lowercase machine labels.
 
 ### Removed
 

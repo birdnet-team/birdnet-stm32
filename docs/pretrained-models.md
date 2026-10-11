@@ -17,7 +17,7 @@ count is rounded to thousands, so 2.0's 1,007 species read `1K`.
 |---|---|
 | `<basename>_INT8.tflite` | Deploying to the STM32N6 — this is the model you flash |
 | `<basename>_model_config.json` | Input, frontend, and class contract; drives the firmware config |
-| `<basename>_labels.txt` | Ordered output labels |
+| `<basename>_labels.txt` | Ordered output labels; from 2.0 `<scientific name>_<common name>` as in BirdNET (`Cardinalis cardinalis_Northern Cardinal`, `Canis familiaris_Domestic Dog`; non-bird outputs that are no species repeat their name, `Engine_Engine`), before 2.0 lowercase machine names (`northern_cardinal`) |
 | `<basename>_FP32.keras` | Host inference, fine-tuning, re-conversion |
 | `<basename>_original_FP32.keras` | The untouched trained checkpoint (before QAT in 1.x, before frontend equalization in 2.0), for retraining from it |
 | `<basename>_FP32.onnx` | Host and interchange inference |
