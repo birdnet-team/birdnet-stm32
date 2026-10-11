@@ -46,7 +46,12 @@ class DeployConfig:
         """Derive tool paths from x_cube_ai_path."""
         if self.x_cube_ai_path:
             self.stedgeai_path = os.path.join(self.x_cube_ai_path, "Utilities", "linux", "stedgeai")
-            self.n6_loader_script = os.path.join(self.x_cube_ai_path, "scripts", "N6_scripts", "n6_loader.py")
+            # scripts/N6_scripts up to ST Edge AI Core 4.0, Utilities/scripts/N6_scripts from 4.1.
+            candidates = [
+                os.path.join(self.x_cube_ai_path, *parts, "N6_scripts", "n6_loader.py")
+                for parts in (("scripts",), ("Utilities", "scripts"))
+            ]
+            self.n6_loader_script = next((c for c in candidates if os.path.isfile(c)), candidates[0])
 
 
 def _load_config_file(config_path: str) -> tuple[dict, dict]:

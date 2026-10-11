@@ -377,6 +377,36 @@ def optimize_thresholds(
     return optimal
 
 
+def _ap_categories(y_true: np.ndarray, y_scores: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Split one class's samples into the groups its AP depends on.
+
+    AP is evaluated at each distinct score that holds a positive. Sorted by
+    score, every such threshold k has its positives (``positives[k]``) and the
+    negatives ranked above or tied with it but not counted at an earlier one
+    (``negatives[k]``); the negatives below the last positive score never enter.
+    A resample's AP follows from how many draws fall in each group alone.
+    """
+    order = np.argsort(-y_scores, kind="stable")
+    y_sorted = y_true[order] > 0
+    starts = np.r_[0, np.flatnonzero(np.diff(y_scores[order])) + 1]
+    pos = np.add.reduceat(y_sorted.astype(np.int64), starts)
+    neg = np.diff(np.r_[starts, len(y_sorted)]) - pos
+    scored = pos > 0
+    negatives = np.diff(np.r_[0, np.cumsum(neg)[scored]])
+    return pos[scored], negatives
+
+
+def _grouped_ap(pos_draws: np.ndarray, neg_draws: np.ndarray) -> np.ndarray:
+    """AP of each resample (row) from its draws per group (see ``_ap_categories``); NaN without a positive."""
+    tp = np.cumsum(pos_draws, axis=1)
+    drawn = tp + np.cumsum(neg_draws, axis=1)
+    total = tp[:, -1]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ap = (pos_draws * tp / np.maximum(drawn, 1)).sum(axis=1) / total
+    ap[total == 0] = np.nan
+    return ap
+
+
 def bootstrap_ap_ci(
     y_true: np.ndarray,
     y_scores: np.ndarray,
@@ -386,6 +416,12 @@ def bootstrap_ap_ci(
     seed: int = 42,
 ) -> list[dict]:
     """Compute per-class AP with bootstrap confidence intervals.
+
+    A resample's AP depends only on how many draws land in each group of
+    ``_ap_categories``, so each class's resamples are drawn as multinomial counts
+    over those groups (plus one for the samples below the last positive) --
+    exactly the bootstrap distribution of resampling every sample, at the cost
+    of a few hundred categories instead of the whole test set.
 
     Args:
         y_true: Binary ground-truth array ``(n_samples, n_classes)``.
@@ -416,7 +452,7 @@ def bootstrap_ap_ci(
         except Exception:
             ap = float("nan")
 
-        if n_pos == 0 or n_pos == n_samples:
+        if n_pos == 0 or n_pos == n_samples or n_bootstrap == 0:
             results.append(
                 {
                     "class": cls_name,
@@ -429,20 +465,16 @@ def bootstrap_ap_ci(
             )
             continue
 
-        # Bootstrap
-        boot_aps: list[float] = []
-        for _ in range(n_bootstrap):
-            idx = rng.integers(0, n_samples, size=n_samples)
-            bt = col_true[idx]
-            bs = col_scores[idx]
-            if bt.sum() == 0 or bt.sum() == len(bt):
-                continue
-            try:
-                boot_aps.append(float(average_precision_score(bt, bs)))
-            except Exception:
-                continue
+        pos, neg = _ap_categories(col_true, col_scores)
+        rest = n_samples - pos.sum() - neg.sum()
+        draws = rng.multinomial(n_samples, np.r_[pos, neg, rest] / n_samples, size=n_bootstrap)
+        k = len(pos)
+        boot_aps = _grouped_ap(draws[:, :k], draws[:, k : 2 * k])
+        # A resample with no negative at all has no defined AP either.
+        boot_aps[draws[:, :k].sum(axis=1) == n_samples] = np.nan
+        boot_aps = boot_aps[np.isfinite(boot_aps)]
 
-        if boot_aps:
+        if boot_aps.size:
             ci_lower = float(np.percentile(boot_aps, 100 * alpha))
             ci_upper = float(np.percentile(boot_aps, 100 * (1 - alpha)))
         else:

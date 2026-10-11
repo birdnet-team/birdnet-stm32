@@ -22,7 +22,7 @@ reports bird species detections over UART.
 | CPU | Arm Cortex-M55 with Helium @ 400 MHz by default (800 MHz overdrive) |
 | NPU | ST Neural-ART @ 400 MHz by default (1 GHz overdrive) |
 | Build system | Overlay on ST's NPU_Validation Makefile |
-| Flash method | GDB via `n6_loader.py` (part of X-CUBE-AI) |
+| Flash method | GDB via `n6_loader.py` (part of ST Edge AI Core) |
 
 ## Processing Pipeline
 

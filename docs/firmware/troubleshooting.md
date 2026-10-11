@@ -34,7 +34,7 @@ manage the cache:
 memcpy(input_ptr, input, input_bytes);
 SCB_CleanDCache_by_Addr((uint32_t *)input_ptr, (int32_t)input_bytes);  // (1)
 
-LL_ATON_RT_Main(&NN_Instance_Default);
+LL_ATON_RT_Main(&NN_Instance_network);
 
 SCB_InvalidateDCache_by_Addr((uint32_t *)output_ptr, (int32_t)output_bytes);  // (2)
 memcpy(output, output_ptr, output_bytes);
@@ -49,7 +49,7 @@ External memory init **must** happen before `NPU_Config()`.
 
 The NPU weights are stored in external NOR flash (memory-mapped at
 `0x7200_0000`). If the NOR is not initialized and memory-mapped when the NPU
-tries to read weights during `LL_ATON_EC_Network_Init_Default()`, you get a
+tries to read weights during `LL_ATON_EC_Network_Init_network()`, you get a
 **bus fault** (HardFault).
 
 **Correct order:**
@@ -65,7 +65,7 @@ NPU_Config()
 RISAF_Config()
 ```
 
-**Symptom:** HardFault immediately after `LL_ATON_EC_Network_Init_Default()`,
+**Symptom:** HardFault immediately after `LL_ATON_EC_Network_Init_network()`,
 or the board appears to hang right after the `[INIT] Configuring NPU...` line.
 
 ## TrustZone and RISAF
@@ -76,7 +76,7 @@ Access Filter) must be configured to allow the NPU to access its SRAM banks.
 `RISAF_Config()` from `misc_toolbox.c` handles this. It opens the npuRAM
 regions for NPU access.
 
-**Symptom:** If RISAF is not configured before `LL_ATON_EC_Network_Init_Default()`:
+**Symptom:** If RISAF is not configured before `LL_ATON_EC_Network_Init_network()`:
 
 - `[ERROR] NPU network init failed` on UART
 - Or a silent HardFault (no UART output at all if the fault happens before
@@ -220,5 +220,5 @@ Useful breakpoints:
 | FatFs R0.15 | BSD-1-Clause | [elm-chan.org](http://elm-chan.org/fsw/ff/) |
 | STM32N6xx HAL | BSD-3-Clause | STM32CubeN6 |
 | BSP STM32N6570-DK | BSD-3-Clause | STM32CubeN6 |
-| LL_ATON NPU Runtime | ST Proprietary | X-CUBE-AI 10.2.0 |
+| LL_ATON NPU Runtime | ST Proprietary | ST Edge AI Core 4.1.0 |
 | sd_diskio driver | ST Proprietary | STM32CubeN6 FatFs middleware |

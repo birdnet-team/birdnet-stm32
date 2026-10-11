@@ -7,6 +7,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-10
+
+Two models ship, the first global BirdNET Tiny models: 1,007 bird species from
+around the world plus the six non-bird outputs of 1.9 (1,013 outputs), trained
+on dataset v0.4.0. `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Raw` runs entirely on the NPU
+at 22 ms per 2.5 s chunk; `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid` finds 11% more
+annotated calls at 53 ms (33 ms of it the STFT on the Cortex-M55). For the
+northeastern United States, 1.9 Raw remains the better model; it stays available.
+
+### Model performance
+
+Scored on all 61 [WABAD](https://zenodo.org/records/14191524) sites on six
+continents (59,418 annotated calls, 434 species inside the output list), on the
+INT8 model that gets flashed:
+
+| Model | Event recall @0.5 | Macro recall @0.5 | Window cMAP | Window AUPRC |
+|---|---:|---:|---:|---:|
+| v2.0 Raw | 0.165 | 0.120 | 0.190 | 0.282 |
+| **v2.0 Hybrid** | **0.183** | **0.134** | **0.209** | **0.303** |
+| BirdNET+ V3.0 preview 3.1 (the teacher, 70x the parameters) | 0.545 | 0.450 | 0.459 | 0.597 |
+
+On the five northeastern sites and the same 44 species as the 1.x table, v2.0
+Hybrid ranks calls as well as v1.9 Raw (window cMAP 0.355 vs 0.351) and v2.0 Raw
+nearly so (0.313), but both are far less confident: event recall at 0.5 is 0.164
+and 0.142 against 0.370. With 1,013 classes the hybrid frontend's lead over raw
+has grown (+0.049 AUPRC on those 44 species, against +0.031 between v1.8 Hybrid
+and v1.9 Raw). Per region and
+per site: [Pre-trained Models](docs/pretrained-models.md#the-global-benchmark-20).
+
+**The models:** one wider backbone (width 1.5, 5 × 5 depthwise kernels, 1024-d
+embedding) behind each frontend.
+
+- **v2.0 Raw:** the 1.9 Raw frontend (two-exposure learned filterbank, 448
+  frames per 2.5 s), 1.94 M parameters, 2.2 MB as INT8. Keras/TFLite parity
+  cosine 0.9996, INT8 catalog cMAP 0.534 against 0.546 float, 49 NPU epochs (2
+  in software), on target cos 0.99995 at 11.2 ms per inference.
+- **v2.0 Hybrid:** the 1.5-1.8 hybrid frontend (512-point STFT on the M55,
+  square-root compressed, 384 frames, then a learned mel mixer on the NPU),
+  1.88 M parameters, 2.1 MB as INT8. Parity cosine 0.9999, INT8 catalog cMAP
+  0.542 against 0.549 float, 36 NPU epochs (2 in software), on target cos
+  0.99993 at 9.3 ms per inference.
+
+Both passed the release gates: Keras/TFLite parity, ONNX validation, INT8
+catalog cMAP at most 0.05 below the float model, STM32N6 compilation,
+on-target validation and a 25-file board test (25/25 agree with the host).
+
+### Changed
+
+- **Percentile activation ranges.** INT8 conversion cuts every activation range
+  to the 99.999th percentile of its values on the calibration data instead of
+  their min/max (input and output keep min/max). On 2.0 Raw over the 61 WABAD
+  sites: window AUPRC 0.258 -> 0.282 (float 0.302) and 17% more annotated calls
+  found at 0.5, at the same size and on-device speed; catalog cMAP 0.525 ->
+  0.534. See [Conversion](docs/conversion.md#activation-ranges).
+- **ST Edge AI Core 4.1.** The deployment toolchain is now ST Edge AI Core 4.1
+  (`stedgeai`, installed with ST's modular installer), replacing X-CUBE-AI 10.2.
+  `generate` and `validate` enable the NPU's epoch controller from 4.0: 2.0 Raw
+  runs in 11.24 ms instead of 12.55 ms in `stedgeai validate --mode target`
+  (22 ms instead of 25 ms per chunk in the firmware), with identical outputs.
+  `board-test`, `deploy` and the standalone firmware Makefile handle the 4.x
+  layout (shared `Applications/Drivers`, the moved `N6_scripts`, the `network`
+  C name instead of `Default`) and still work with 10.2 and 4.0.1. ST Edge AI
+  Core 3.0 dropped the STM32N6 and is not supported. See
+  [Deployment](docs/deployment.md).
+- `convert` emits logits by default (`--output_activation logit`, as every
+  release since 1.5); `--output_activation sigmoid` keeps the sigmoid.
+- `train` defaults are the 2.0 recipe: width 1.5, 5 × 5 depthwise kernels,
+  1024-d embedding, 448 frames for `raw` (384 `hybrid`, 256 `librosa`), the
+  two-exposure raw filterbank at gain 16 trained from scratch, a per-class cap
+  of 3,000 files per epoch, learning rate 2e-4 after a half-epoch warm-up, no
+  weight decay on the depthwise kernels (with it, 54-62% of the depthwise
+  channels died during training), and with `--teacher_cache` a teacher weight
+  of 0.5 and teacher-chosen crops. On a GPU, float training runs XLA-compiled
+  in mixed precision.
+- **QAT is no longer part of the recipe** (train, equalize, convert). On 2.0
+  Raw no QAT epoch beat its starting point (INT8 cMAP 0.545 at epoch 0,
+  0.520-0.541 after each of 8 epochs), and on hybrid models it scored below
+  plain post-training quantization at every epoch. `--qat` remains available.
+- `evaluate`'s per-species bootstrap confidence intervals draw each class's
+  resamples as counts over the groups its AP depends on: the same bootstrap
+  distribution, under a minute instead of hours for 1,013 classes over 53k files.
+- Model names: `GLOBAL` is the region code for models covering birds worldwide,
+  and from 1,000 bird species the count is rounded to thousands (`1K`).
+- **Release labels read `<scientific name>_<common name>`**, as BirdNET's do:
+  `Cardinalis cardinalis_Northern Cardinal`, `Homo sapiens_Human`,
+  `Canis familiaris_Domestic Dog`; the non-bird outputs that are no species
+  repeat their name (`Engine_Engine`). The bundle's `_labels.txt` and the
+  config's `class_names` both carry them, in the same output order. Bundles
+  before 2.0 keep their lowercase machine labels.
+
+- Firmware: SD file paths are at most 127 characters (`SD_MAX_PATH` 128, was
+  256), and longer names are skipped with a warning instead of cut. The file
+  list shares the 1 MB application SRAM with the code and every buffer, and a
+  hybrid build with 1,013 classes overflowed it by 31 KB.
+
+### Removed
+
+- `convert --quantization dynamic`: dynamic-range models keep float
+  activations, which the STM32N6 NPU cannot run. Conversion is full INT8 only.
+- `add-exposure`: two exposures train from scratch from 2.0.
+- `train --upsample_ratio` (the per-epoch class cap balances classes),
+  `--raw_exposure_mode` (always the compressor), `--dw_weight_decay` (always
+  0), `--dw_activation` (always ReLU6), `--frontend_trainable`,
+  `--mixed_precision` and `--jit_compile` (automatic on a GPU).
+
 ## [1.9.0] - 2026-10-03
 
 One model ships: `BirdNET_Tiny_N6_USNE_90_V1.9_Raw`. It is the v1.8 Raw design

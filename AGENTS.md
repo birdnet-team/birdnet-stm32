@@ -6,9 +6,14 @@ Public model families use this exact basename:
 
 `BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>`
 
-- Use an uppercase region code. The northeastern United States code is `USNE`.
+- Use an uppercase region code. The northeastern United States code is `USNE`;
+  a model for birds worldwide is `GLOBAL`.
 - `SPECIES_COUNT` counts bird species only. Nuisance and background outputs stay
-  in the label/config contract but do not change this number.
+  in the label/config contract but do not change this number. From 1,000 bird
+  species on it is rounded to thousands with a `K` suffix: version 2.0 (1,007
+  birds) is `BirdNET_Tiny_N6_GLOBAL_1K_V2.0`, with the frontend token after the
+  version as in 1.3 to 1.9 (`..._V2.0_Raw`). The exact count is in the model card
+  and the config.
 - Version 1.0 of the 30-species USNE model is
   `BirdNET_Tiny_N6_USNE_30_V1.0`.
 - Precision-bearing artifacts append exactly one uppercase precision token:

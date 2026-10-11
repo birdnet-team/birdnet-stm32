@@ -306,7 +306,6 @@ class TestSplitConversion:
 
         defaults = dict(
             output_path=str(tmp_path / "model.tflite"),
-            quantization="ptq",
             per_tensor=False,
             min_cosine_sim=0.90,
             min_cosine_p05=0.80,
@@ -413,7 +412,6 @@ class TestHeadOnlyConversion:
             checkpoint_path=str(tmp_path / "probe.keras"),
             backbone_path=backbone_path,
             allow_backbone_mismatch=False,
-            quantization="ptq",
             per_tensor=False,
             min_cosine_sim=0.90,
             min_cosine_p05=0.80,
@@ -432,7 +430,7 @@ class TestHeadOnlyConversion:
         """Quantize and fingerprint a backbone the way a release would."""
         backbone, _ = split_model(model)
         path = str(tmp_path / "flashed_backbone.tflite")
-        convert_to_tflite(backbone, gen, path, quantization="ptq", per_tensor=False)
+        convert_to_tflite(backbone, gen, path, per_tensor=False)
         write_fingerprint(path, backbone_fingerprint(backbone), embedding_dimension(backbone))
         return path
 
@@ -492,7 +490,7 @@ class TestHeadOnlyConversion:
         gen = self._gen(samples)
         backbone_path = self._flashed_backbone(tmp_path, base, gen)
         replacement, _ = split_model(_tiny_model(seed=26, width=64))
-        convert_to_tflite(replacement, gen, backbone_path, quantization="ptq", per_tensor=False)
+        convert_to_tflite(replacement, gen, backbone_path, per_tensor=False)
         probe = self._retrained_head(base, 4, seed=27)
 
         with pytest.raises(RuntimeError, match="Backbone mismatch"):

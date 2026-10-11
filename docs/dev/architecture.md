@@ -32,7 +32,7 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    A["WAV files"] --> B["load_file_paths\n+ upsample"]
+    A["WAV files"] --> B["load_file_paths\n+ class cap"]
     B --> C["data.generator\nbatches"]
     C --> D["AudioFrontendLayer\nhybrid / raw"]
     D --> E["DS-CNN\nsigmoid"]

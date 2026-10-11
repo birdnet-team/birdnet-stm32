@@ -4,8 +4,8 @@
 
 | Tool | Version | Required For |
 |---|---|---|
-| [X-CUBE-AI](https://www.st.com/en/embedded-software/x-cube-ai.html) | 10.2.0+ | `stedgeai` CLI, `n6_loader.py`, LL_ATON runtime, NPU_Validation project |
-| [ARM GNU Toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads) | 13.3+ | `arm-none-eabi-gcc` cross-compiler |
+| [ST Edge AI Core](https://www.st.com/en/development-tools/stedgeai-core.html) | 4.1.0 (4.0.1, X-CUBE-AI 10.2 also work) | `stedgeai` CLI, `n6_loader.py`, LL_ATON runtime, NPU_Validation project |
+| [ARM GNU Toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads) | 14.3+ | `arm-none-eabi-gcc` cross-compiler |
 | [STM32CubeIDE](https://www.st.com/en/development-tools/stm32cubeide.html) | 1.19+ | Provides `STM32_Programmer_CLI` and GDB server |
 | Python | 3.12+ | Host-side orchestration (`board_test.py`) |
 | pyserial | 3.5+ | UART capture during board-test |
@@ -19,7 +19,7 @@ The `board-test` CLI command handles everything — model compilation, firmware
 patching, building, flashing, UART capture, and cleanup:
 
 ```bash
-# Make sure config.json points to your X-CUBE-AI and CubeIDE installs
+# Make sure config.json points to your ST Edge AI Core and CubeIDE installs
 python -m birdnet_stm32 board-test --config config.json --timeout 300
 ```
 
@@ -37,10 +37,10 @@ BSP, LL_ATON runtime, linker scripts, startup code, and Makefile.
 The NPU_Validation project contains ~50 source files, pre-built LL_ATON
 libraries, and complex linker scripts specific to the N6's multi-bank SRAM
 layout. Reproducing this as a standalone project would be fragile and hard to
-maintain across X-CUBE-AI versions. The overlay approach:
+maintain across ST toolchain versions. The overlay approach:
 
 - Uses ST's tested build infrastructure as-is.
-- Stays compatible across X-CUBE-AI updates (just re-extract).
+- Stays compatible across toolchain updates (X-CUBE-AI 10.2, ST Edge AI Core 4.0 and 4.1).
 - Adds only the files we need (6 `.c` + 12 `.h` + FatFs + HAL_SD).
 - Cleans up after itself (backup/restore of every patched file).
 
@@ -56,10 +56,15 @@ stedgeai generate \
   --model checkpoints/best_model_quantized.tflite \
   --target stm32n6 \
   --st-neural-art \
+  --enable-epoch-controller \
   --compression none \
   --output st_ai_output \
   --workspace st_ai_ws
 ```
+
+`--enable-epoch-controller` is added from ST Edge AI Core 4.0 (older cores
+lack it): the NPU's epoch controller then runs the schedule without the
+Cortex-M55 stepping each epoch.
 
 This compiles the TFLite model into:
 
@@ -77,9 +82,13 @@ tree:
 | `firmware/Src/*.c` | `Core/Src/` |
 | `firmware/Inc/*.h` | `Core/Inc/` |
 | `firmware/Drivers/HAL_SD/*.c` | `Drivers/STM32N6xx_HAL_Driver/Src/` |
-| `firmware/Drivers/HAL_SD/*.h` | `Drivers/STM32N6xx_HAL_Driver/Inc/` |
+| `firmware/Drivers/HAL_SD/*.h` | `Drivers/STM32N6xx_HAL_Driver/Inc/` (only if the HAL lacks them) |
 | `firmware/Drivers/stm32n6570_discovery_sd.*` | `Drivers/BSP/STM32N6570-DK/` |
 | `firmware/Drivers/FatFs/` | `FatFs/` (new directory) |
+
+`Drivers/` is the project's own up to X-CUBE-AI 10.2; from ST Edge AI Core 4.0
+the projects share `Projects/STM32N6570-DK/Applications/Drivers`. The 4.x HAL
+ships its own SD headers (with renamed delay-block registers), so they are kept.
 
 It also:
 
@@ -90,8 +99,19 @@ It also:
   defines (`USE_OVERDRIVE`, `USE_UART_BAUDRATE`, etc.).
 - **Auto-generates `app_labels.h`** from the labels file (class name string
   array).
-- **Patches the Makefile** to compile the new `.c` files and add include paths.
+- **Patches the Makefile** to compile the new `.c` files and add include paths,
+  and passes the generated network's name (`-DAPP_NN_NAME`, see below).
 - **Enables `HAL_SD_MODULE_ENABLED`** in `stm32n6xx_hal_conf.h`.
+
+!!! note "Network name"
+    `stedgeai` names the generated C symbols after the network:
+    `LL_ATON_Input_Buffers_Info_Default()` and `NN_Instance_Default` up to
+    X-CUBE-AI 10.2, `..._network` from ST Edge AI Core 4.0. The firmware calls
+    them through `NN_FN()` / `NN_INSTANCE` in `main.c`, built from
+    `APP_NN_NAME`; `board-test` and the standalone Makefile read the name from
+    the generated `network.c` and pass `-DAPP_NN_NAME`. A link error such as
+    *undefined reference to `LL_ATON_EC_Network_Init_Default`* means the name
+    was not passed.
 
 !!! warning "Every patched file is backed up"
     Before modifying any NPU_Validation file, the orchestrator creates a `.bak`
@@ -109,7 +129,8 @@ produces a `.elf` binary.
 
 #### 4. Flash via `n6_loader.py`
 
-The `n6_loader.py` script (part of X-CUBE-AI) uses GDB to:
+The `n6_loader.py` script (part of ST Edge AI Core, in `Utilities/scripts/N6_scripts`
+from 4.1 and `scripts/N6_scripts` before) uses GDB to:
 
 1. Load the `.elf` binary into internal SRAM.
 2. Set a hardware breakpoint at `aiValidationInit()`.
@@ -167,13 +188,13 @@ If you want to build without the Python orchestrator:
 
 ```bash
 # 1. Set paths
-export XCUBEAI="/path/to/X-CUBE-AI.10.2.0"
+export XCUBEAI="/path/to/STEdgeAI/4.1"
 export NPU_VAL="$XCUBEAI/Projects/STM32N6570-DK/Applications/NPU_Validation"
 
 # 2. Generate network files
 $XCUBEAI/Utilities/linux/stedgeai generate \
   --model checkpoints/best_model_quantized.tflite \
-  --target stm32n6 --st-neural-art \
+  --target stm32n6 --st-neural-art --enable-epoch-controller \
   --output "$NPU_VAL/Model"
 
 # 3. Copy firmware sources
@@ -184,10 +205,9 @@ cp firmware/Inc/*.h "$NPU_VAL/Core/Inc/"
 # 4. Build
 make -C "$NPU_VAL" -j$(nproc)
 
-# 5. Flash
-python "$XCUBEAI/Utilities/linux/n6_loader.py" \
-  --board_config "$NPU_VAL/board_cfg.json" \
-  --elf "$NPU_VAL/build/NPU_Validation.elf"
+# 5. Build and flash (n6_loader.py builds the project named in config_n6l.json)
+python "$XCUBEAI/Utilities/scripts/N6_scripts/n6_loader.py" \
+  --n6-loader-config config_n6l.json
 ```
 
 This is error-prone — the automated `board-test` command handles dozens of
@@ -203,11 +223,18 @@ Maps tool paths on your machine. **Do not commit this file** — it's in
 
 ```json
 {
-    "x_cube_ai_path": "/path/to/X-CUBE-AI.10.2.0",
-    "gcc_path": "/path/to/arm-gnu-toolchain-13.3.rel1/bin",
-    "cube_ide_path": "/path/to/stm32cubeide/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.linux64/tools/bin"
+  "compiler_type": "gcc",
+  "cubeide_path": "/path/to/stm32cubeide",
+  "x_cube_ai_path": "/path/to/STEdgeAI/4.1",
+  "model_path": "checkpoints/best_model_quantized.tflite",
+  "output_dir": "validation/st_ai_output",
+  "workspace_dir": "validation/st_ai_ws",
+  "n6_loader_config": "config_n6l.json"
 }
 ```
+
+`x_cube_ai_path` is the version folder of the ST Edge AI Core install (the one
+holding `Utilities/` and `Projects/`), or the root of an X-CUBE-AI 10.2 tree.
 
 ### `config_n6l.json` (Machine-Local)
 

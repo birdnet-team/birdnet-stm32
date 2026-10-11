@@ -33,10 +33,26 @@ the page cache.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import mmap
 from pathlib import Path
 
 import numpy as np
+
+
+def _random_access(array: np.ndarray) -> np.ndarray:
+    """Have the kernel read only the pages a lookup touches.
+
+    A cache is many times larger than RAM and is read a few rows at a time, all over the file.
+    By default every page fault on a memory map also reads the pages around it (128 kB on a
+    SATA disk): measured, ~590 kB of disk reads per training chunk, enough to saturate the disk.
+    """
+    mm = getattr(array, "_mmap", None)
+    if mm is not None and hasattr(mmap, "MADV_RANDOM"):
+        with contextlib.suppress(OSError, ValueError):
+            mm.madvise(mmap.MADV_RANDOM)
+    return array
 
 
 class TeacherTargets:
@@ -61,13 +77,13 @@ class TeacherTargets:
         if self.mask.shape != (len(classes),):
             raise ValueError(f"teacher_mask has shape {self.mask.shape}, expected ({len(classes)},)")
         self.window_s = float(meta["teacher_window_s"])
-        self.mapped = np.load(root / "mapped.npy", mmap_mode="r")
-        self.starts = np.load(root / "starts.npy", mmap_mode="r")
+        self.mapped = _random_access(np.load(root / "mapped.npy", mmap_mode="r"))
+        self.starts = _random_access(np.load(root / "starts.npy", mmap_mode="r"))
         self.emb: np.ndarray | None = None
         if embeddings:
             if not (root / "emb.npy").is_file():
                 raise FileNotFoundError(f"teacher cache {root} has no emb.npy (build it with embeddings)")
-            self.emb = np.load(root / "emb.npy", mmap_mode="r")
+            self.emb = _random_access(np.load(root / "emb.npy", mmap_mode="r"))
             if self.emb.shape[0] != self.mapped.shape[0]:
                 raise ValueError(f"emb.npy has {self.emb.shape[0]} rows, mapped.npy {self.mapped.shape[0]}")
         index = np.load(root / "index.npz")

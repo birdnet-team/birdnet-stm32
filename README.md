@@ -20,10 +20,11 @@ Bird sound classification for edge deployment on the [STM32N6570-DK](https://www
 
 A compact DS-CNN trained on raw waveforms or spectral features, quantized to
 INT8 with post-training quantization or quantization-aware fine-tuning, and
-deployed using ST's X-CUBE-AI toolchain. The standalone firmware supports raw
+deployed using ST Edge AI Core. The standalone firmware supports raw
 waveform, hybrid STFT, and precomputed-mel deployment paths. A released raw
-model scores a 2.5-second window at 24 kHz in **16 ms on the NPU** (75 ms per
+model scores a 2.5-second window at 24 kHz in **22 ms on the NPU** (82 ms per
 file on the board including the SD-card read), with CPU and NPU at 400 MHz.
+Release 2.0 is the first global model: 1,007 bird species from around the world.
 
 ## Running the models anywhere: the reference implementation
 
@@ -147,7 +148,7 @@ and never mix files across bundles. Models are licensed under the
 
 Everything the firmware needs is in the bundle — no extra downloads.
 
-1. Install the toolchain (X-CUBE-AI, STM32CubeProgrammer/IDE, ARM GNU) and copy
+1. Install the toolchain (ST Edge AI Core 4.1, STM32CubeProgrammer/IDE, ARM GNU) and copy
    `config.example.json` to `config.json`, filling in your local tool paths.
 2. Prepare an SD card with test audio as described above, matching the sample
    rate in `_model_config.json`.
@@ -178,13 +179,13 @@ for toolchain setup and troubleshooting.
 - **Model**: DS-CNN with configurable width (`--alpha`) and depth (`--depth_multiplier`) built from plain depthwise separable blocks
 - **Augmentation**: Dirichlet multi-source mixup with multi-label union targets for overlapping vocalizations, SpecAugment (on by default), smart crop for long recordings
 - **Optimization**: linear warmup into cosine LR decay, Adam/SGD/AdamW, gradient clipping (on by default), mixed precision (FP16). Standard training checkpoints track exact validation cMAP; QAT selects matching Keras/TFLite artifacts using actual converted INT8 file cMAP, including the starting checkpoint
-- **QAT**: native Keras 3 quantization-aware fine-tuning via `--qat` — uses the converter's exact calibration manifest to simulate the INT8 input, per-channel kernels, fused activation boundaries, and otherwise-opaque raw-frontend internals; frozen-teacher KL plus mean and configurable worst-sample cosine consistency protect probability calibration and lower-tail parity while exact converted INT8 validation cMAP selects the deployment checkpoint
+- **QAT** (not in the 2.x recipe: on 2.0 Raw no epoch beat its starting point): native Keras 3 quantization-aware fine-tuning via `--qat` — uses the converter's exact calibration manifest to simulate the INT8 input, per-channel kernels, fused activation boundaries, and otherwise-opaque raw-frontend internals; frozen-teacher KL plus mean and configurable worst-sample cosine consistency protect probability calibration and lower-tail parity while exact converted INT8 validation cMAP selects the deployment checkpoint
 - **Linear probing**: `--linear_probe` freezes a pretrained backbone and trains only the classifier head
 
 ### Conversion
 
-- **Post-training quantization**: INT8 internals, float32 I/O, per-channel (default) or per-tensor
-- **Dynamic range quantization**: `--quantization dynamic` — no calibration data needed
+- **Post-training quantization**: INT8 internals, float32 I/O, per-channel (default) or per-tensor; activation ranges cut to the 99.999th percentile of the calibration data instead of its min/max (2.0 Raw on WABAD: AUPRC 0.258 → 0.286, float 0.302)
+- **Logit output** by default: the converted model leaves the sigmoid to the caller, keeping scores off the INT8 1/256 grid
 - **Backbone/classifier split**: `--split_head` also emits the backbone (audio to embeddings) and the classifier head (embeddings to scores) as separate gated artifacts with deterministic `.gz` copies, so a species-list change can be pushed over a narrowband satellite link as a few kB instead of the whole model. The head is calibrated on the quantized backbone's embeddings, and the chained pair must clear the same parity gates as the monolithic model
 - **Validation**: mean and tail cosine similarity, MSE, MAE, and Pearson r on a deterministic held-out calibration split
 - **Atomic quality gate**: failed conversions never promote a release-looking `.tflite`
@@ -203,32 +204,33 @@ for toolchain setup and troubleshooting.
 ### Public benchmark results
 
 Published models are scored on **WABAD** ([Zenodo 14191524](https://zenodo.org/records/14191524)),
-a public passive acoustic monitoring benchmark — 3,794 annotated calls across
-five northeastern sites, 44 of its species inside the 90-output list. Every figure is from the INT8 model that gets flashed, on 2.5 s windows at a 1.25 s hop, pooled over all five sites.
+a public passive acoustic monitoring benchmark — 59,418 annotated calls across
+61 sites on six continents, 434 of its species inside the 2.0 output list. Every figure is from the INT8 model that gets flashed, on 2.5 s windows at a 1.25 s hop, pooled over all sites.
 
 | Model | Event recall @0.5 | Window cMAP | Window AUPRC | Params | Compute per 2.5 s chunk |
 |---|---:|---:|---:|---:|---:|
-| `BirdNET_Tiny_N6_USNE_90_V1.9_Raw_INT8` | **0.370** | 0.351 | 0.430 | 1.01 M | **22 ms** (all NPU) |
-| `BirdNET_Tiny_N6_USNE_90_V1.8_Hybrid_INT8` | 0.361 | 0.376 | 0.461 | 946 k | 52 ms (33 ms STFT on the M55) |
-| BirdNET+ V3.0 preview 3.1, the teacher | 0.656 | 0.517 | 0.617 | 135 M | does not run on this hardware |
+| `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Raw_INT8` | 0.165 | 0.190 | 0.282 | 1.94 M | **22 ms** (all NPU) |
+| `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid_INT8` | **0.183** | **0.209** | **0.303** | 1.88 M | 53 ms (33 ms STFT on the M55) |
+| BirdNET+ V3.0 preview 3.1, the teacher | 0.545 | 0.459 | 0.597 | 135 M | does not run on this hardware |
 
 Timings are measured on an STM32N6570-DK for one chunk, excluding the audio
 read, with CPU, NPU and buses at 400 MHz (the firmware's clock profile, no
 overdrive). Raw runs its learned filterbank on the NPU, which is why it costs
 about 40% of hybrid's compute; hybrid buys its accuracy with a 512-point STFT
-on the Cortex-M55. Since 1.7 raw computes its filterbank twice, the second time
-at 16x gain, compressing the two into one envelope so quiet field audio survives
-its INT8 grids; 1.8 reads 448 frames per chunk (1.7: 384). 1.9 trains the same raw
-design on about five times the audio and is the first raw model to find more calls
-than hybrid, at well under half its compute. The hybrid model is unchanged since 1.5
-and was not re-issued for 1.9.
+on the Cortex-M55. Raw computes its filterbank twice, the second time at 16x
+gain, compressing the two into one envelope so quiet field audio survives its
+INT8 grids. With 1,007 species the hybrid finds 11% more annotated calls than raw.
+
+The 2.0 models are global. For the northeastern United States the 90-species
+`BirdNET_Tiny_N6_USNE_90_V1.9_Raw` remains the better choice: on the five
+northeastern sites it logs far more calls at a 0.5 threshold.
 
 Per-version history and what each metric means:
 [Pre-trained Models](https://birdnet-team.github.io/birdnet-stm32/pretrained-models/#benchmark-results).
 
 ### Deployment
 
-- **X-CUBE-AI / stedgeai**: generate → flash → validate pipeline
+- **ST Edge AI Core / stedgeai** (4.1; 4.0 and X-CUBE-AI 10.2 also work): generate → flash → validate pipeline, with the NPU's epoch controller from 4.0
 - **Board test**: standalone on-device inference (`board-test`) — reads WAV from SD, performs frontend-specific preprocessing, runs the NPU, and captures results over UART
 
 

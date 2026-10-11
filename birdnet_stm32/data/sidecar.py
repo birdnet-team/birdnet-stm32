@@ -37,3 +37,13 @@ def load_label_sidecar(path: str | Path, classes: list[str]) -> dict[str, tuple[
                 old_pos, old_neg = out.get(row["sample_id"], ((), ()))
                 out[row["sample_id"]] = (tuple(sorted(set(old_pos) | set(pos))), tuple(sorted(set(old_neg) | set(neg))))
     return out
+
+
+def load_field_table(path: str | Path) -> dict[str, tuple[str, str]]:
+    """Map sample id -> (site, recording) for the field clips the class cap draws for diversity.
+
+    A CSV with ``sample_id,site,recording``: field recordings (soundscape segments, field
+    clips) and where they come from. Files not listed are focal. See ``ClassCappedPasses``.
+    """
+    with Path(path).open(newline="") as f:
+        return {row["sample_id"]: (row["site"], row["recording"]) for row in csv.DictReader(f) if row.get("sample_id")}

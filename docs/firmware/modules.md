@@ -240,7 +240,8 @@ Uses FatFs `f_opendir` / `f_readdir` to enumerate files:
 - Non-recursive (flat directory only).
 - Checks extension: `.wav` or `.WAV`.
 - Stores full paths (`/audio/filename.wav`) in an `SdFileList` struct.
-- Limited to `SD_MAX_FILES` (512) entries.
+- Limited to `SD_MAX_FILES` (512) entries; a path longer than `SD_MAX_PATH - 1`
+  (127) characters is skipped with a `[WARN]` line rather than cut.
 
 ### `sd_append_result()`
 
@@ -251,7 +252,7 @@ support `%f`. Scores are multiplied by 10,000 and written as integers (e.g.,
 ### Data Structures
 
 ```c
-#define SD_MAX_PATH  256
+#define SD_MAX_PATH  128
 #define SD_MAX_FILES 512
 
 typedef struct {

@@ -9,8 +9,11 @@
 #include <stdbool.h>
 #include "ff.h"
 
-/** Maximum path length for SD card files. */
-#define SD_MAX_PATH 256
+/** Maximum path length for SD card files, including the directory and the
+ *  terminating NUL. 128 rather than FatFs's 255: the list lives in the same
+ *  1 MB SRAM as the code and every buffer, and a hybrid build with 1,013
+ *  classes needs the 64 KB this saves. Longer names are skipped, not cut. */
+#define SD_MAX_PATH 128
 
 /** Maximum number of audio files to enumerate. */
 #define SD_MAX_FILES 512

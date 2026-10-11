@@ -58,7 +58,7 @@ fi
 
 echo
 
-# --- X-CUBE-AI / stedgeai ---
+# --- ST Edge AI Core / stedgeai ---
 if [[ -n "${X_CUBE_AI_PATH:-}" ]]; then
     STEDGEAI="$X_CUBE_AI_PATH/Utilities/linux/stedgeai"
     if [[ -x "$STEDGEAI" ]]; then
@@ -69,10 +69,10 @@ if [[ -n "${X_CUBE_AI_PATH:-}" ]]; then
 elif command -v stedgeai &>/dev/null; then
     ok "stedgeai: $(which stedgeai)"
 else
-    fail "stedgeai (X-CUBE-AI) not found"
-    echo "  Set X_CUBE_AI_PATH to the X-CUBE-AI installation directory,"
+    fail "stedgeai (ST Edge AI Core) not found"
+    echo "  Set X_CUBE_AI_PATH to the ST Edge AI Core version folder (e.g. ~/STEdgeAI/4.1),"
     echo "  or add stedgeai to your PATH."
-    echo "  Download: https://www.st.com/en/embedded-software/x-cube-ai.html"
+    echo "  Download: https://www.st.com/en/development-tools/stedgeai-core.html"
 fi
 
 echo

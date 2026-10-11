@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from birdnet_stm32.audio.activity import pick_random_samples
 from birdnet_stm32.conversion.quantize import (
+    ACTIVATION_RANGE_PERCENTILE,
     calibration_source,
     convert_to_tflite,
     representative_data_gen,
@@ -51,12 +52,12 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         "--output_activation",
         type=str,
-        default="sigmoid",
+        default="logit",
         choices=["sigmoid", "logit"],
         help=(
-            "What the converted model emits. 'logit' removes the final sigmoid before "
-            "conversion, so the output stays off the INT8 1/256 probability grid: measured "
-            "+0.021 (raw) and +0.044 (hybrid) catalog cMAP. The caller applies the sigmoid, "
+            "What the converted model emits. 'logit' (default, every release from 1.5) removes the "
+            "final sigmoid before conversion, so the output stays off the INT8 1/256 probability grid: "
+            "measured +0.021 (raw) and +0.044 (hybrid) catalog cMAP. The caller applies the sigmoid, "
             "or compares logits against log(t/(1-t)); see docs/inference.md. A config recording "
             "the choice is written next to the model."
         ),
@@ -83,13 +84,6 @@ def get_args() -> argparse.Namespace:
         type=float,
         default=0.90,
         help="Minimum fifth-percentile cosine similarity (0 to disable).",
-    )
-    parser.add_argument(
-        "--quantization",
-        type=str,
-        default="ptq",
-        choices=["ptq", "dynamic"],
-        help="Quantization mode: 'ptq' (full INT8 with calibration, default) or 'dynamic' (dynamic range, no calibration data needed).",
     )
     parser.add_argument(
         "--per_tensor",
@@ -293,7 +287,6 @@ def _convert_split_head(
             backbone,
             rep_data_gen,
             tmp_backbone,
-            quantization=args.quantization,
             per_tensor=args.per_tensor,
         )
 
@@ -312,7 +305,6 @@ def _convert_split_head(
             classifier,
             head_rep_gen,
             tmp_classifier,
-            quantization=args.quantization,
             per_tensor=args.per_tensor,
         )
 
@@ -493,7 +485,6 @@ def _convert_head_only(
             classifier,
             head_rep_gen,
             staged,
-            quantization=args.quantization,
             per_tensor=args.per_tensor,
         )
 
@@ -675,14 +666,15 @@ def main():
         tmp_path = tmp_handle.name
     report: dict = {
         "output_path": args.output_path,
-        "quantization": args.quantization,
+        "quantization": "ptq",
+        "activation_range_percentile": ACTIVATION_RANGE_PERCENTILE,
         "per_tensor": args.per_tensor,
         "quality_gate_passed": False,
         "data_manifests": data_manifests,
     }
 
     try:
-        convert_to_tflite(model, rep_data_gen, tmp_path, quantization=args.quantization, per_tensor=args.per_tensor)
+        convert_to_tflite(model, rep_data_gen, tmp_path, per_tensor=args.per_tensor)
 
         n_runs = max(1, args.batch_validate) if args.batch_validate > 0 else 1
         all_metrics: list[dict] = []

@@ -61,8 +61,13 @@ uint32_t sd_scan_audio_dir(const char *dir_path, SdFileList *list)
         if (list->count >= SD_MAX_FILES)
             break;
 
-        snprintf(list->paths[list->count], SD_MAX_PATH,
-                 "%s/%s", dir_path, fno.fname);
+        int n = snprintf(list->paths[list->count], SD_MAX_PATH,
+                         "%s/%s", dir_path, fno.fname);
+        if (n < 0 || n >= SD_MAX_PATH) {         /* would be cut: unopenable */
+            printf("[WARN] Skipping %s: path longer than %d characters\n",
+                   fno.fname, SD_MAX_PATH - 1);
+            continue;
+        }
         list->count++;
     }
 
