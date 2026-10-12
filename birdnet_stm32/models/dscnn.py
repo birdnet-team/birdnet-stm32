@@ -14,7 +14,7 @@ All channel counts are aligned to multiples of 8 for NPU vectorization.
 import math
 
 import tensorflow as tf
-from tensorflow.keras import layers, regularizers
+from tensorflow.keras import layers
 
 from birdnet_stm32.models.blocks import _make_divisible
 from birdnet_stm32.models.frontend import (
@@ -37,7 +37,6 @@ def ds_conv_block(
     stride_f: int = 1,
     stride_t: int = 1,
     name: str = "ds",
-    weight_decay: float = 1e-4,
     drop_rate: float = 0.1,
     dw_kernel_size: int = 3,
 ) -> tf.Tensor:
@@ -49,16 +48,18 @@ def ds_conv_block(
         stride_f: Stride along frequency axis.
         stride_t: Stride along time axis.
         name: Base name for layers.
-        weight_decay: L2 regularization for the PW kernel. The DW kernel has none:
-            with it, 54-62% of the depthwise channels died during 2.x training
-            (zero after ReLU6 on all data); without it, none did.
         drop_rate: Spatial dropout rate after PW BN.
         dw_kernel_size: Square depthwise kernel size.
 
     Returns:
         Output tensor [B, H', W', out_ch].
+
+    Neither kernel carries weight decay. On the depthwise kernels it killed
+    54-62% of the depthwise channels during 2.0 training (zero after ReLU6 on
+    all data); on the pointwise kernels (1e-4) it killed 35-49% of them in a
+    model widened in stages 3-4 and left it behind the narrower one. Without
+    either, none died.
     """
-    reg = regularizers.l2(weight_decay) if weight_decay and weight_decay > 0 else None
     in_ch = x.shape[-1]
 
     y = layers.DepthwiseConv2D(
@@ -77,7 +78,6 @@ def ds_conv_block(
         strides=(1, 1),
         padding="same",
         use_bias=False,
-        kernel_regularizer=reg,
         name=f"{name}_pw",
     )(y)
     y = layers.BatchNormalization(name=f"{name}_pw_bn")(y)
@@ -131,7 +131,6 @@ def build_dscnn_model(
     raw_exposure_mode: str = "compress",
     frontend_trainable: bool = False,
     dropout_rate: float = 0.5,
-    weight_decay: float = 1e-4,
     head_pooling: str = "gap",
     dw_kernel_size: int = 3,
     stage_widths: tuple[int, ...] | list[int] | None = None,
@@ -165,8 +164,6 @@ def build_dscnn_model(
             channel before band_bn).
         frontend_trainable: Make frontend sub-layers trainable.
         dropout_rate: Dropout rate before the classifier head.
-        weight_decay: L2 regularization weight for the pointwise kernels of the
-            DS-CNN blocks (the depthwise kernels have none).
         head_pooling: Pooling head, one of ``HEAD_POOLINGS``.
         dw_kernel_size: Depthwise kernel size in stages 2-4; stage 1, which
             carries the largest feature map, stays 3x3.
@@ -273,7 +270,6 @@ def build_dscnn_model(
             stride_f=sf,
             stride_t=st,
             name=f"stage{si}_ds1",
-            weight_decay=weight_decay,
             dw_kernel_size=k,
         )
         for bi in range(2, reps + 1):
@@ -283,7 +279,6 @@ def build_dscnn_model(
                 stride_f=1,
                 stride_t=1,
                 name=f"stage{si}_ds{bi}",
-                weight_decay=weight_decay,
                 dw_kernel_size=k,
             )
 

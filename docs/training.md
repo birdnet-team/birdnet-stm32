@@ -89,9 +89,11 @@ Two options change the backbone shape:
   memory. When the last stage is as wide as `--embeddings_size`, the separate
   1 × 1 embedding convolution is left out.
 
-The depthwise kernels carry no weight decay (the pointwise kernels keep
-1e-4): with it, 54–62% of the depthwise channels died during 2.x training,
-without it none did.
+No convolution kernel in the DS-CNN blocks carries weight decay. On the
+depthwise kernels it killed 54–62% of the depthwise channels during 2.0
+training; on the pointwise kernels (1e-4) it killed 35–49% of them in a model
+widened in stages 3–4, which then trailed the narrower model. Without either,
+none died, and the widened model learned several times faster.
 
 !!! tip "Channel alignment"
     Keep channel counts as multiples of 8 for optimal NPU vectorization. The

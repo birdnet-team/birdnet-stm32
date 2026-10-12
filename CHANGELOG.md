@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The pointwise kernels of the DS-CNN blocks no longer carry an L2 penalty
+  (was 1e-4), as the depthwise kernels already did not. In a model widened in
+  stages 3–4 it left 35–49% of the depthwise channels permanently inactive and
+  the model behind the narrower 2.0 one; without it no channel died, and after
+  four epochs the widened model matched the WABAD float score of 2.0 Raw after
+  fifty. Saved models keep the regularizer they were trained with.
+
 ## [2.0.0] - 2026-10-10
 
 Two models ship, the first global BirdNET Tiny models: 1,007 bird species from
