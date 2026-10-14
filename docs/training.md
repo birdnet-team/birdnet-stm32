@@ -14,7 +14,9 @@ chunks, width 1.5 with 5 × 5 depthwise kernels and a 1024-d embedding, 50
 epochs of one pass each under a per-class cap of 3,000 files, at learning rate
 2e-4 after a half-epoch warm-up. With `--teacher_cache` the teacher's scores
 make up half of each target and choose the training chunk. On a GPU, float
-training runs XLA-compiled in mixed precision.
+training runs XLA-compiled in mixed precision. 2.1 Raw is this recipe with
+`--stage_widths 32 86 342 683`, followed by the
+[head fine-tune](#head-fine-tuning).
 
 For a leakage-safe precomputed validation split and stable output order, pass a
 separate validation root and a one-label-per-line classes file:
@@ -309,6 +311,9 @@ micro window AP:
 
 - **+3.3%** for the plain refit;
 - **+3.9%** with co-occurrence weighting.
+
+The released 2.1 Raw INT8 model, built this way, reaches 0.356 against 0.342
+for the same checkpoint without the refit (+4.1%).
 
 With each region's species mask, the gain over the unrefitted head is +10% in
 North America and Europe and +16% to +19% in the Neotropics. Starting from the

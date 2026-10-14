@@ -22,9 +22,11 @@ A compact DS-CNN trained on raw waveforms or spectral features, quantized to
 INT8 with post-training quantization or quantization-aware fine-tuning, and
 deployed using ST Edge AI Core. The standalone firmware supports raw
 waveform, hybrid STFT, and precomputed-mel deployment paths. A released raw
-model scores a 2.5-second window at 24 kHz in **22 ms on the NPU** (82 ms per
-file on the board including the SD-card read), with CPU and NPU at 400 MHz.
-Release 2.0 is the first global model: 1,007 bird species from around the world.
+model scores a 2.5-second window at 24 kHz in **22–32 ms on the NPU** (82–92 ms
+per file on the board including the SD-card read), with CPU and NPU at 400 MHz.
+Release 2.0 was the first global model, 1,007 bird species from around the world.
+Release 2.1 ships a raw model only, which finds 66% more of WABAD's annotated calls
+than 2.0 Raw; the hybrid model stays 2.0 Hybrid.
 
 ## Running the models anywhere: the reference implementation
 
@@ -103,20 +105,26 @@ See the [full documentation](https://birdnet-team.github.io/birdnet-stm32) for d
 
 ## Pre-trained models
 
-Trained and converted models are published as release assets — grab a bundle from
-the [latest release](https://github.com/birdnet-team/birdnet-stm32/releases/latest).
+Trained and converted models are published as release assets. Not every release
+ships every frontend, so the current models live in different releases:
+
+| Model | Release | Use it for |
+|---|---|---|
+| **`BirdNET_Tiny_N6_GLOBAL_1K_V2.1_Raw`** | [v2.1](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v2.1) (latest) | The recommended model: 1,007 bird species worldwide, all on the NPU |
+| `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid` | [v2.0](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v2.0) | The current hybrid model; 2.1 has no hybrid model |
+| `BirdNET_Tiny_N6_USNE_90_V1.9_Raw` | [v1.9](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v1.9) | 90 species of the northeastern United States |
 
 ### What's in a bundle
 
 Every file shares one basename, `BirdNET_Tiny_N6_<REGION>_<SPECIES>_V<VERSION>`,
-with a `_Raw` or `_Hybrid` suffix from 1.3 on, when a release ships both
-frontends:
+with a `_Raw` or `_Hybrid` frontend suffix from 1.3 on:
 
-- **`_Raw`** takes 2.5 s of audio; the whole pipeline runs on the NPU (75 ms per
-  file on the board). This is the reference release model.
-- **`_Hybrid`** takes a spectrogram the firmware computes on the Cortex-M55; it
-  has the better INT8 accuracy, at 113 ms per file. On any other device, compute
-  its input exactly as specified in
+- **`_Raw`** takes 2.5 s of audio; the whole pipeline runs on the NPU (92 ms per
+  file on the board for 2.1 Raw, 82 ms for 2.0 Raw, including the SD-card read).
+  This is the reference release model, and from 2.1 the most accurate one.
+- **`_Hybrid`** takes a spectrogram the firmware computes on the Cortex-M55
+  (113 ms per file for 2.0 Hybrid). On any other device, compute its input
+  exactly as specified in
   [Spectrogram Input](https://birdnet-team.github.io/birdnet-stm32/dev/spectrogram-input/).
 
 
@@ -126,7 +134,7 @@ frontends:
 | `<basename>_model_config.json` | Input, frontend, and class contract; drives firmware config |
 | `<basename>_labels.txt` | Ordered output labels |
 | `<basename>_FP32.keras` | Host inference, fine-tuning, re-conversion |
-| `<basename>_original_FP32.keras` | Pre-QAT checkpoint, for retraining from an untouched state |
+| `<basename>_original_FP32.keras` | The untouched trained checkpoint (before QAT in 1.x, before equalization in 2.0, before the head fine-tune and equalization in 2.1), for retraining from it |
 | `<basename>_FP32.onnx` | Host and interchange inference |
 | `<basename>_model_card.md` | Contract, provenance, measured accuracy, and on-board timing |
 
@@ -205,25 +213,31 @@ for toolchain setup and troubleshooting.
 
 Published models are scored on **WABAD** ([Zenodo 14191524](https://zenodo.org/records/14191524)),
 a public passive acoustic monitoring benchmark — 59,418 annotated calls across
-61 sites on six continents, 434 of its species inside the 2.0 output list. Every figure is from the INT8 model that gets flashed, on 2.5 s windows at a 1.25 s hop, pooled over all sites.
+61 sites on six continents, 434 of its species inside the 2.x output list. Every figure is from the INT8 model that gets flashed, on 2.5 s windows at a 1.25 s hop, pooled over all sites.
 
 | Model | Event recall @0.5 | Window cMAP | Window AUPRC | Params | Compute per 2.5 s chunk |
 |---|---:|---:|---:|---:|---:|
 | `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Raw_INT8` | 0.165 | 0.190 | 0.282 | 1.94 M | **22 ms** (all NPU) |
-| `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid_INT8` | **0.183** | **0.209** | **0.303** | 1.88 M | 53 ms (33 ms STFT on the M55) |
+| `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid_INT8` | 0.183 | 0.209 | 0.303 | 1.88 M | 53 ms (33 ms STFT on the M55) |
+| **`BirdNET_Tiny_N6_GLOBAL_1K_V2.1_Raw_INT8`** | **0.274** | **0.241** | **0.356** | 3.70 M | 32 ms (all NPU) |
 | BirdNET+ V3.0 preview 3.1, the teacher | 0.545 | 0.459 | 0.597 | 135 M | does not run on this hardware |
 
 Timings are measured on an STM32N6570-DK for one chunk, excluding the audio
 read, with CPU, NPU and buses at 400 MHz (the firmware's clock profile, no
-overdrive). Raw runs its learned filterbank on the NPU, which is why it costs
-about 40% of hybrid's compute; hybrid buys its accuracy with a 512-point STFT
-on the Cortex-M55. Raw computes its filterbank twice, the second time at 16x
-gain, compressing the two into one envelope so quiet field audio survives its
-INT8 grids. With 1,007 species the hybrid finds 11% more annotated calls than raw.
+overdrive). Raw runs its learned filterbank on the NPU, so it skips the 33 ms
+STFT that hybrid computes on the Cortex-M55. Raw computes its filterbank twice,
+the second time at 16x gain, compressing the two into one envelope so quiet field
+audio survives its INT8 grids. With 1,007 species the 2.0 hybrid finds 11% more
+annotated calls than 2.0 raw. 2.1 ships a raw model only: it widens the raw
+backbone where 2.0 used its width and refits the classifier after training. It
+finds 66% more calls than 2.0 Raw and 50% more than 2.0 Hybrid, and more than
+either in every region, at 32 ms per chunk. 2.0 Hybrid stays the hybrid model.
 
-The 2.0 models are global. For the northeastern United States the 90-species
-`BirdNET_Tiny_N6_USNE_90_V1.9_Raw` remains the better choice: on the five
-northeastern sites it logs far more calls at a 0.5 threshold.
+The 2.x models are global. For the northeastern United States the 90-species
+`BirdNET_Tiny_N6_USNE_90_V1.9_Raw` still logs the most calls at a 0.5 threshold
+on the five northeastern sites (0.370 against 2.1 Raw's 0.268 on the same 44
+species), though 2.1 Raw now ranks them about as well (window cMAP 0.361 vs
+0.351, AUPRC 0.422 vs 0.430).
 
 Per-version history and what each metric means:
 [Pre-trained Models](https://birdnet-team.github.io/birdnet-stm32/pretrained-models/#benchmark-results).
