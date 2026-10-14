@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `finetune-head`, a post-training step between `train` and `equalize`: it
+  embeds every training file once through the frozen backbone (cached on disk,
+  cut and targeted as training does) and refits only the classifier from its
+  trained weights, class-capped per epoch as in training. Optionally it weighs
+  negatives by geographic co-occurrence (`--cooccurrence_csv`, `--far_weight`).
+  On 2.1 Raw it adds 3.9% WABAD micro AP in INT8 without a species mask, and
+  10–19% per region with one.
+
 ### Changed
 
 - The pointwise kernels of the DS-CNN blocks no longer carry an L2 penalty

@@ -249,7 +249,7 @@ quantizes every tensor the converter quantizes, including each partial
 filterbank convolution, so its validation cMAP (`val_sim_int8_cmap`) tracks
 the converted model's (`val_int8_cmap`) to within a few thousandths.
 
-The full raw pipeline (the 2.0 recipe):
+The full raw pipeline (the 2.1 recipe):
 
 ```bash
 # Step 1: Normal training (with a teacher cache, as the releases are trained)
@@ -257,11 +257,16 @@ python -m birdnet_stm32 train --data_path_train data/train \
   --data_path_val data/validation --classes_file data/labels.txt \
   --teacher_cache data/teacher_cache --checkpoint_path checkpoints/model.keras
 
-# Step 2: Equalize the frontend's per-band ranges (raw only; exact in float)
-python -m birdnet_stm32 equalize --checkpoint_path checkpoints/model.keras \
+# Step 2: Refit the classifier head on every training file (see below)
+python -m birdnet_stm32 finetune-head --checkpoint_path checkpoints/model.keras \
+  --data_path_train data/train --data_path_val data/validation \
+  --teacher_cache data/teacher_cache --output_path checkpoints/model_ft.keras
+
+# Step 3: Equalize the frontend's per-band ranges (raw only; exact in float)
+python -m birdnet_stm32 equalize --checkpoint_path checkpoints/model_ft.keras \
   --data_path_train data/train --output_path checkpoints/model_eq.keras
 
-# Step 3: Convert
+# Step 4: Convert
 python -m birdnet_stm32 convert \
   --checkpoint_path checkpoints/model_eq.keras \
   --model_config checkpoints/model_eq_model_config.json \
@@ -274,8 +279,41 @@ gets the same share of the tensors' INT8 grids, and refuses to save if the
 float output changes. See [INT8 quality](dev/int8-parity-plan.md) for the
 measurements.
 
-For `hybrid` and `librosa`, skip step 2 and convert the trained checkpoint
+For `hybrid` and `librosa`, skip step 3 and convert the fine-tuned checkpoint
 directly.
+
+### Head fine-tuning
+
+`finetune-head` is a post-training step that refits only the classifier
+(`pred`) on the frozen backbone, over every training file. It embeds each
+training file once: one chunk, cut and targeted as the training loader cuts it
+(crop policy, teacher targets, label sidecar). The embeddings go to a disk cache
+(`--cache_dir`; 2 kB per file for the embedding plus 2 bytes per output, so
+about 12 GB for 3 million files and 1,013 outputs; resumable, and reused when
+the files and settings match). The head then trains from its trained weights:
+each epoch draws the cached files class-capped as training does
+(`--class_cap_per_epoch`, with the field table's share). The epoch with the best
+validation class-mean AP plus micro AP is kept (`--epochs` 30, `--patience` 5,
+`--learning_rate` 3e-4). Only `pred` changes; the config is copied unchanged.
+
+Optionally, `--cooccurrence_csv` makes the head weigh its negatives by
+geography. The CSV lists `label,group` rows (for example each species' regions);
+a negative from a species that shares no group with an output counts
+`--far_weight` (0.3). Labels not in the CSV, such as non-bird outputs,
+co-occur with everything. With a species range filter at inference, the head
+then spends its capacity on the confusions that remain; without one, it costs
+nothing.
+
+Measured on 2.1 Raw (1,013 outputs, INT8, all 61 WABAD sites, no species mask),
+micro window AP:
+
+- **+3.3%** for the plain refit;
+- **+3.9%** with co-occurrence weighting.
+
+With each region's species mask, the gain over the unrefitted head is +10% in
+North America and Europe and +16% to +19% in the Neotropics. Starting from the
+trained rows matters: heads fitted from scratch, or on a few hundred files per
+class, lose to the trained head.
 
 ### Two-exposure raw frontend
 

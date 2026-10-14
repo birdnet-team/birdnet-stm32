@@ -2,6 +2,7 @@
 
 Usage:
     python -m birdnet_stm32 train ...
+    python -m birdnet_stm32 finetune-head ...
     python -m birdnet_stm32 convert ...
     python -m birdnet_stm32 equalize ...
     python -m birdnet_stm32 evaluate ...
@@ -17,7 +18,9 @@ import sys
 def main():
     """Dispatch to the appropriate CLI subcommand."""
     if len(sys.argv) < 2:
-        print("Usage: birdnet-stm32 {train,convert,equalize,evaluate,measure-operational,deploy,board-test}")
+        print(
+            "Usage: birdnet-stm32 {train,finetune-head,convert,equalize,evaluate,measure-operational,deploy,board-test}"
+        )
         sys.exit(1)
 
     command = sys.argv[1]
@@ -35,6 +38,12 @@ def main():
         from birdnet_stm32.cli.train import main as train_main
 
         train_main()
+    elif command == "finetune-head":
+        # The embedding pass forks loader workers, as train does.
+        os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+        from birdnet_stm32.cli.finetune_head import main as finetune_head_main
+
+        finetune_head_main()
     elif command == "convert":
         from birdnet_stm32.cli.convert import main as convert_main
 
@@ -61,7 +70,9 @@ def main():
         board_test_main()
     else:
         print(f"Unknown command: {command}")
-        print("Usage: birdnet-stm32 {train,convert,equalize,evaluate,measure-operational,deploy,board-test}")
+        print(
+            "Usage: birdnet-stm32 {train,finetune-head,convert,equalize,evaluate,measure-operational,deploy,board-test}"
+        )
         sys.exit(1)
 
 
