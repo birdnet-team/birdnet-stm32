@@ -17,7 +17,9 @@ Keep the version synchronized in:
 3. `CITATION.cff` (`version` and `date-released`);
 4. the README badge and `CHANGELOG.md`.
 
-Repository tags use full SemVer, such as `v1.0.0`.
+The package version is full SemVer (`2.1.0`); repository tags and GitHub
+releases use the short form `v<MAJOR.MINOR>`, such as `v2.1`, as every tag from
+`v1.3` on does.
 
 ## Model naming
 
@@ -196,7 +198,7 @@ Keep the repository preparation and any quantization fix in focused commits.
 After review, create an annotated tag and push it:
 
 ```bash
-git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git tag -a vX.Y -m "Release vX.Y"
 git push origin <release-branch> --tags
 ```
 
