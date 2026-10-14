@@ -310,6 +310,9 @@ micro window AP:
 - **+3.3%** for the plain refit;
 - **+3.9%** with co-occurrence weighting.
 
+The released 2.1 Raw INT8 model, built this way, reaches 0.356 against 0.342
+for the same checkpoint without the refit (+4.1%).
+
 With each region's species mask, the gain over the unrefitted head is +10% in
 North America and Europe and +16% to +19% in the Neotropics. Starting from the
 trained rows matters: heads fitted from scratch, or on a few hundred files per

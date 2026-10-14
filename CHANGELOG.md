@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-14
+
+One model ships: `BirdNET_Tiny_N6_GLOBAL_1K_V2.1_Raw`, the same 1,007 bird
+species and six non-bird outputs as 2.0, trained on dataset v0.4.0. It finds 66%
+more annotated calls on WABAD than 2.0 Raw and 50% more than 2.0 Hybrid, more
+than either in every region, and runs entirely on the NPU at 32 ms per 2.5 s
+chunk. The 2.0 models stay available.
+
+### Model performance
+
+Scored on all 61 [WABAD](https://zenodo.org/records/14191524) sites on six
+continents (59,418 annotated calls, 434 species inside the output list), on the
+INT8 model that gets flashed:
+
+| Model | Event recall @0.5 | Macro recall @0.5 | Window cMAP | Window AUPRC |
+|---|---:|---:|---:|---:|
+| v2.0 Raw | 0.165 | 0.120 | 0.190 | 0.282 |
+| v2.0 Hybrid | 0.183 | 0.134 | 0.209 | 0.303 |
+| **v2.1 Raw** | **0.274** | **0.220** | **0.241** | **0.356** |
+| BirdNET+ V3.0 preview 3.1 (the teacher, 37x the parameters) | 0.545 | 0.450 | 0.459 | 0.597 |
+
+The largest gains are in the Neotropics (Central America and the Caribbean:
+event recall at 0.5 0.045 -> 0.185); in Africa v2.1 Raw logs more calls at 0.5
+than the teacher. On the five northeastern sites and the same 44 species as the
+1.x table it ranks calls about as well as v1.9 Raw (window cMAP 0.361 vs 0.351)
+and logs nearly twice as many as 2.0 Raw at 0.5 (0.268 against 0.142), still
+fewer than v1.9's 0.370. Per region and per site:
+[Pre-trained Models](docs/pretrained-models.md#the-global-benchmark-20).
+
+**The model:** the 2.0 Raw frontend (two-exposure learned filterbank, 448
+frames per 2.5 s) in a backbone widened where 2.0 used its width (stage widths
+48 / 128 / 512 / 1024, the 1024-d embedding merged into the last stage), trained
+50 epochs without an L2 penalty on the pointwise kernels, then the classifier
+refit with `finetune-head` (co-occurrence weighting 0.3 over 23 geographic
+regions). 3.70 M parameters (backbone 2.66 M), 4.0 MB as INT8, 392 M MACs.
+It passed the release gates: Keras/TFLite parity (cosine 0.9993), ONNX
+validation, INT8 catalog cMAP 0.648 against 0.663 float (gate: at most 0.05
+below; 2.0 Raw: 0.534), STM32N6 compilation (49 epochs, 2 in software, the same
+945 kB of NPU activation memory as 2.0), on-target validation (cos 0.99986, 18.0
+ms per inference) and a 25-file board test (25/25 agree with the host on the top
+species; two scores move by up to 0.22 between board and host, against none for
+2.0 Raw).
+
 ### Added
 
 - `finetune-head`, a post-training step between `train` and `equalize`: it
