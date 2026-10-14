@@ -13,12 +13,8 @@ One model ships: `BirdNET_Tiny_N6_GLOBAL_1K_V2.1_Raw`, the same 1,007 bird
 species and six non-bird outputs as 2.0, trained on dataset v0.4.0. It finds 66%
 more annotated calls on WABAD than 2.0 Raw and 50% more than 2.0 Hybrid, more
 than either in every region, and runs entirely on the NPU at 32 ms per 2.5 s
-<<<<<<< HEAD
 chunk. 2.1 ships no hybrid model: `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid`
 (release v2.0) stays the hybrid model.
-=======
-chunk. The 2.0 models stay available.
->>>>>>> 6c7ec4c3198e6e2ffb5b1040b2edc57b90632257
 
 ### Model performance
 
