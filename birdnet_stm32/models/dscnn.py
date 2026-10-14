@@ -27,7 +27,9 @@ from birdnet_stm32.models.frontend import (
 )
 
 HEAD_POOLINGS = ("gap",)
-STAGE_WIDTHS = (32, 64, 128, 256)
+# The 2.1 widths: 48 / 128 / 512 / 1024 at alpha 1.5, placed where the 2.0 model (32, 64, 128, 256) used its width.
+# Configs saved before the field existed were built at (32, 64, 128, 256); ModelConfig.load keeps that.
+STAGE_WIDTHS = (32, 86, 342, 683)
 DW_KERNEL_SIZES = (3, 5)
 
 

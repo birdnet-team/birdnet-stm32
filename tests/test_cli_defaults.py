@@ -91,7 +91,7 @@ class TestBestPathDefaults:
         assert args.embeddings_size == 1024
         assert args.alpha == pytest.approx(1.5)
         assert args.dw_kernel_size == 5
-        assert args.stage_widths == [32, 64, 128, 256]
+        assert args.stage_widths == [32, 86, 342, 683]
         assert args.spec_width == 448
         assert args.raw_exposure_gain == pytest.approx(16.0)
         assert args.max_chunks_per_file == 1

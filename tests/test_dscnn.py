@@ -5,7 +5,7 @@ import pytest
 tf = pytest.importorskip("tensorflow", reason="TensorFlow required for model tests")
 
 from birdnet_stm32.models.blocks import _make_divisible
-from birdnet_stm32.models.dscnn import build_dscnn_model, ds_conv_block
+from birdnet_stm32.models.dscnn import STAGE_WIDTHS, build_dscnn_model, ds_conv_block
 
 
 class TestMakeDivisible:
@@ -217,6 +217,7 @@ class TestBuildDscnnModel:
 
 
 def _raw_model(**kwargs):
+    kwargs.setdefault("stage_widths", (32, 64, 128, 256))  # the small pre-2.1 shape the tests below were written for
     return build_dscnn_model(
         num_mels=64,
         spec_width=256,
@@ -263,7 +264,10 @@ class TestBackboneOptions:
         def pw_filters(model):
             return [model.get_layer(f"stage{i}_ds1_pw").filters for i in range(1, 5)]
 
-        assert pw_filters(_raw_model()) == [8, 16, 32, 64]  # alpha 0.25 of the default widths
+        assert STAGE_WIDTHS == (32, 86, 342, 683)  # the 2.1 widths
+        default = _raw_model(stage_widths=None)
+        assert pw_filters(default) == pw_filters(_raw_model(stage_widths=STAGE_WIDTHS))
+        assert pw_filters(_raw_model()) == [8, 16, 32, 64]  # alpha 0.25 of the pre-2.1 widths
         wide = _raw_model(stage_widths=[32, 64, 256, 512])
         assert pw_filters(wide) == [8, 16, 64, 128]
         assert wide.count_params() > _raw_model().count_params()

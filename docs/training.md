@@ -8,14 +8,14 @@ python -m birdnet_stm32 train \
   --checkpoint_path checkpoints/my_model.keras
 ```
 
-The defaults are the 2.0 release recipe: `raw` frontend at 448 frames with the
+The defaults are the 2.1 release recipe: `raw` frontend at 448 frames with the
 two-exposure filterbank (gain 16), `pwl` magnitude scaling, 24 kHz, 2.5 s
-chunks, width 1.5 with 5 × 5 depthwise kernels and a 1024-d embedding, 50
+chunks, width 1.5 with stage widths 48 / 128 / 512 / 1024 (the last stage is the
+1024-d embedding) and 5 × 5 depthwise kernels, 50
 epochs of one pass each under a per-class cap of 3,000 files, at learning rate
 2e-4 after a half-epoch warm-up. With `--teacher_cache` the teacher's scores
 make up half of each target and choose the training chunk. On a GPU, float
-training runs XLA-compiled in mixed precision. 2.1 Raw is this recipe with
-`--stage_widths 32 86 342 683`, followed by the
+training runs XLA-compiled in mixed precision. The 2.1 release then runs the
 [head fine-tune](#head-fine-tuning).
 
 For a leakage-safe precomputed validation split and stable output order, pass a
@@ -86,10 +86,12 @@ Two options change the backbone shape:
 - **`--dw_kernel_size`**: depthwise kernel size in stages 2–4, `5` (default) or
   `3`. Stage 1 stays 3 × 3.
 - **`--stage_widths`**: base output channels of the four stages before
-  `--alpha`, default `32 64 128 256`. Use it to widen only the late stages,
-  where the feature map is small and extra channels are cheap in activation
-  memory. When the last stage is as wide as `--embeddings_size`, the separate
-  1 × 1 embedding convolution is left out.
+  `--alpha`, default `32 86 342 683` (2.1: 48 / 128 / 512 / 1024 at width 1.5).
+  2.0 used `32 64 128 256`, which configs saved before the option existed are
+  still read as. The 2.1 widths go where the 2.0 model used its width: the late
+  stages, where the feature map is small and extra channels are cheap in
+  activation memory. When the last stage is as wide as `--embeddings_size`, the
+  separate 1 × 1 embedding convolution is left out.
 
 No convolution kernel in the DS-CNN blocks carries weight decay. On the
 depthwise kernels it killed 54–62% of the depthwise channels during 2.0
@@ -410,7 +412,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--alpha` | 1.5 | Model width scaling |
 | `--depth_multiplier` | 1 | Block repeats per stage |
 | `--dw_kernel_size` | 5 | Depthwise kernel in stages 2–4: `5` or `3` |
-| `--stage_widths` | 32 64 128 256 | Base channels of the four stages, before `--alpha` (experimental) |
+| `--stage_widths` | 32 86 342 683 | Base channels of the four stages, before `--alpha` (2.0: 32 64 128 256) |
 | `--raw_exposure_gain` | 16 (raw) | Gain of the raw filterbank's second, clamped exposure, mixed per band into a knee compressor; 1 = one exposure (raw only) |
 | `--mixup_alpha` | 0.2 | Mixup alpha (0 disables) |
 | `--mixup_probability` | 0.25 | Fraction of batch to mix |

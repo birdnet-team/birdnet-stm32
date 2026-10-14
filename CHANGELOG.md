@@ -69,6 +69,10 @@ species; two scores move by up to 0.22 between board and host, against none for
   the model behind the narrower 2.0 one; without it no channel died, and after
   four epochs the widened model matched the WABAD float score of 2.0 Raw after
   fifty. Saved models keep the regularizer they were trained with.
+- `train` defaults to the 2.1 stage widths, `--stage_widths 32 86 342 683`
+  (48 / 128 / 512 / 1024 at width 1.5, the last stage doubling as the 1024-d
+  embedding); 2.0 used `32 64 128 256`. Configs saved without the field still
+  load with the 2.0 widths.
 
 ## [2.0.0] - 2026-10-10
 

@@ -51,7 +51,9 @@ class ModelConfig:
         depth_multiplier: Block repeat count per stage.
         head_pooling: Pooling head; 'gap' is the only one.
         dw_kernel_size: Depthwise kernel size in stages 2-4 (3 or 5).
-        stage_widths: Base output channels of the four stages, before alpha.
+        stage_widths: Base output channels of the four stages, before alpha. The
+            default is what configs saved before the field existed were built
+            with; ``train`` defaults to ``models.dscnn.STAGE_WIDTHS``.
         num_classes: Number of output classes.
         class_names: Ordered list of class label strings.
         frontend_trainable: Whether frontend weights are trainable.
