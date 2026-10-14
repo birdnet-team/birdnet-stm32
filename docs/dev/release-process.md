@@ -17,7 +17,9 @@ Keep the version synchronized in:
 3. `CITATION.cff` (`version` and `date-released`);
 4. the README badge and `CHANGELOG.md`.
 
-Repository tags use full SemVer, such as `v1.0.0`.
+The package version is full SemVer (`2.1.0`); repository tags and GitHub
+releases use the short form `v<MAJOR.MINOR>`, such as `v2.1`, as every tag from
+`v1.3` on does.
 
 ## Model naming
 
@@ -28,19 +30,22 @@ BirdNET_Tiny_N6_<REGION>_<SPECIES_COUNT>_V<MAJOR.MINOR>
 ```
 
 So `BirdNET_Tiny_N6_USNE_60_V1.2` would identify a version 1.2 model for the
-northeastern United States covering 60 bird species. When one release ships the
-same model family with more than one frontend, every family basename carries
-the frontend as a suffix: `BirdNET_Tiny_N6_USNE_90_V1.3_Raw` and
-`BirdNET_Tiny_N6_USNE_90_V1.3_Hybrid`. Each is its own bundle and its own
-contract; files never mix between them. `SPECIES_COUNT` does not
+northeastern United States covering 60 bird species. From 1.3 every family
+basename carries its frontend as a suffix, whether or not the release ships
+both: `BirdNET_Tiny_N6_USNE_90_V1.3_Raw` and `BirdNET_Tiny_N6_USNE_90_V1.3_Hybrid`
+shipped together, 2.1 ships only `BirdNET_Tiny_N6_GLOBAL_1K_V2.1_Raw`. From 1,000
+bird species the count is rounded to thousands with a `K` suffix (`GLOBAL_1K`:
+1,007 species); the exact count is in the model card and config. Each frontend
+is its own bundle and its own contract; files never mix between them. `SPECIES_COUNT` does not
 include nuisance or background outputs; those remain in the ordered labels and
 model config, so the output count is generally higher than the name suggests.
 
 Every precision-bearing filename appends `_FP32`, `_FP16`, or `_INT8` to that
 family basename. The precision token describes stored model computation, not
 the external tensor type: a full-INT8 TFLite model with float32 audio I/O is
-still named `<basename>_INT8.tflite`. If QAT changes the release checkpoint,
-also preserve the untouched pre-QAT checkpoint as
+still named `<basename>_INT8.tflite`. If a step after training changes the
+release checkpoint (QAT in 1.x, the raw frontend's equalization, from 2.1 the
+head fine-tune), also preserve the untouched trained checkpoint as
 `<basename>_original_FP32.keras`.
 
 ## 1. Prepare the repository
@@ -129,6 +134,15 @@ class-count-dependent cost than the INT8 step, and reusing a budget measured on
 a model with far fewer outputs will fail a healthy model. The mean/p05 cosine
 gates remain 0.95/0.90 regardless.
 
+**From 2.0 the only metric gate is INT8 catalog cMAP at most 0.05 below the
+pre-compression float** — the checkpoint after training and, from 2.1, the head
+fine-tune, which are training steps; equalization is exact in float. The 1.x
+floors and budgets above are not comparable at 1,013 outputs, so 2.x releases
+carry no absolute or operational floors; `measure-operational` still reports.
+Parity, ONNX, compilation, on-target validation and the board test (steps 3 and
+5–8) are unchanged, and a release still ships only when the maintainers judge
+the gain worth it.
+
 The converter promotes its temporary TFLite file only after mean and tail
 parity gates pass. A failed report is diagnostic only. Audit calibration first;
 use QAT if PTQ cannot pass reliably, then repeat every downstream check.
@@ -149,18 +163,19 @@ nothing else. It must contain exactly:
 | File | Purpose |
 |---|---|
 | `<basename>_FP32.keras` | Deployable FP32 Keras checkpoint used for exports |
-| `<basename>_original_FP32.keras` | Pre-QAT FP32 checkpoint; only when QAT changed the release checkpoint |
+| `<basename>_original_FP32.keras` | Untouched trained checkpoint; only when a later step changed the release checkpoint |
 | `<basename>_INT8.tflite` | Validated full-INT8 model with float32 I/O |
+| `<basename>_INT8_backbone.tflite`, `<basename>_INT8_classifier.tflite` | The INT8 model split at the embedding, when exported split |
 | `<basename>_FP32.onnx` | Validated FP32 ONNX export |
 | `<basename>_model_config.json` | Input, frontend, architecture, and class contract |
 | `<basename>_labels.txt` | Ordered output labels |
-| `<basename>_INT8_stedgeai_report.txt` | INT8 STM32N6 compiler analysis |
 | `<basename>_model_card.md` | Contract, provenance, intended target, and file guide |
 | `LICENSE-MODELS.md` | Apache License 2.0 covering the model artifacts |
 | `ACCEPTABLE_USE.md` | BirdNET acceptable use policy (guidance, not a license condition) |
 
-Benchmark and validation reports, fixed validation inputs, `manifest.json`, and
-checksum files are **not** published. Sanitize what does ship: public files must
+Benchmark and validation reports, the compiler report, fixed validation inputs,
+`manifest.json`, and checksum files are **not** published (from 1.6; earlier
+bundles carried the compiler report and compressed copies of the split halves). Sanitize what does ship: public files must
 not expose workstation paths.
 
 ### Validation record
@@ -183,7 +198,7 @@ Keep the repository preparation and any quantization fix in focused commits.
 After review, create an annotated tag and push it:
 
 ```bash
-git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git tag -a vX.Y -m "Release vX.Y"
 git push origin <release-branch> --tags
 ```
 

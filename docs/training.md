@@ -8,13 +8,15 @@ python -m birdnet_stm32 train \
   --checkpoint_path checkpoints/my_model.keras
 ```
 
-The defaults are the 2.0 release recipe: `raw` frontend at 448 frames with the
+The defaults are the 2.1 release recipe: `raw` frontend at 448 frames with the
 two-exposure filterbank (gain 16), `pwl` magnitude scaling, 24 kHz, 2.5 s
-chunks, width 1.5 with 5 × 5 depthwise kernels and a 1024-d embedding, 50
+chunks, width 1.5 with stage widths 48 / 128 / 512 / 1024 (the last stage is the
+1024-d embedding) and 5 × 5 depthwise kernels, 50
 epochs of one pass each under a per-class cap of 3,000 files, at learning rate
 2e-4 after a half-epoch warm-up. With `--teacher_cache` the teacher's scores
 make up half of each target and choose the training chunk. On a GPU, float
-training runs XLA-compiled in mixed precision.
+training runs XLA-compiled in mixed precision. The 2.1 release then runs the
+[head fine-tune](#head-fine-tuning).
 
 For a leakage-safe precomputed validation split and stable output order, pass a
 separate validation root and a one-label-per-line classes file:
@@ -84,14 +86,18 @@ Two options change the backbone shape:
 - **`--dw_kernel_size`**: depthwise kernel size in stages 2–4, `5` (default) or
   `3`. Stage 1 stays 3 × 3.
 - **`--stage_widths`**: base output channels of the four stages before
-  `--alpha`, default `32 64 128 256`. Use it to widen only the late stages,
-  where the feature map is small and extra channels are cheap in activation
-  memory. When the last stage is as wide as `--embeddings_size`, the separate
-  1 × 1 embedding convolution is left out.
+  `--alpha`, default `32 86 342 683` (2.1: 48 / 128 / 512 / 1024 at width 1.5).
+  2.0 used `32 64 128 256`, which configs saved before the option existed are
+  still read as. The 2.1 widths go where the 2.0 model used its width: the late
+  stages, where the feature map is small and extra channels are cheap in
+  activation memory. When the last stage is as wide as `--embeddings_size`, the
+  separate 1 × 1 embedding convolution is left out.
 
-The depthwise kernels carry no weight decay (the pointwise kernels keep
-1e-4): with it, 54–62% of the depthwise channels died during 2.x training,
-without it none did.
+No convolution kernel in the DS-CNN blocks carries weight decay. On the
+depthwise kernels it killed 54–62% of the depthwise channels during 2.0
+training; on the pointwise kernels (1e-4) it killed 35–49% of them in a model
+widened in stages 3–4, which then trailed the narrower model. Without either,
+none died, and the widened model learned several times faster.
 
 !!! tip "Channel alignment"
     Keep channel counts as multiples of 8 for optimal NPU vectorization. The
@@ -247,7 +253,7 @@ quantizes every tensor the converter quantizes, including each partial
 filterbank convolution, so its validation cMAP (`val_sim_int8_cmap`) tracks
 the converted model's (`val_int8_cmap`) to within a few thousandths.
 
-The full raw pipeline (the 2.0 recipe):
+The full raw pipeline (the 2.1 recipe):
 
 ```bash
 # Step 1: Normal training (with a teacher cache, as the releases are trained)
@@ -255,11 +261,16 @@ python -m birdnet_stm32 train --data_path_train data/train \
   --data_path_val data/validation --classes_file data/labels.txt \
   --teacher_cache data/teacher_cache --checkpoint_path checkpoints/model.keras
 
-# Step 2: Equalize the frontend's per-band ranges (raw only; exact in float)
-python -m birdnet_stm32 equalize --checkpoint_path checkpoints/model.keras \
+# Step 2: Refit the classifier head on every training file (see below)
+python -m birdnet_stm32 finetune-head --checkpoint_path checkpoints/model.keras \
+  --data_path_train data/train --data_path_val data/validation \
+  --teacher_cache data/teacher_cache --output_path checkpoints/model_ft.keras
+
+# Step 3: Equalize the frontend's per-band ranges (raw only; exact in float)
+python -m birdnet_stm32 equalize --checkpoint_path checkpoints/model_ft.keras \
   --data_path_train data/train --output_path checkpoints/model_eq.keras
 
-# Step 3: Convert
+# Step 4: Convert
 python -m birdnet_stm32 convert \
   --checkpoint_path checkpoints/model_eq.keras \
   --model_config checkpoints/model_eq_model_config.json \
@@ -272,8 +283,44 @@ gets the same share of the tensors' INT8 grids, and refuses to save if the
 float output changes. See [INT8 quality](dev/int8-parity-plan.md) for the
 measurements.
 
-For `hybrid` and `librosa`, skip step 2 and convert the trained checkpoint
+For `hybrid` and `librosa`, skip step 3 and convert the fine-tuned checkpoint
 directly.
+
+### Head fine-tuning
+
+`finetune-head` is a post-training step that refits only the classifier
+(`pred`) on the frozen backbone, over every training file. It embeds each
+training file once: one chunk, cut and targeted as the training loader cuts it
+(crop policy, teacher targets, label sidecar). The embeddings go to a disk cache
+(`--cache_dir`; 2 kB per file for the embedding plus 2 bytes per output, so
+about 12 GB for 3 million files and 1,013 outputs; resumable, and reused when
+the files and settings match). The head then trains from its trained weights:
+each epoch draws the cached files class-capped as training does
+(`--class_cap_per_epoch`, with the field table's share). The epoch with the best
+validation class-mean AP plus micro AP is kept (`--epochs` 30, `--patience` 5,
+`--learning_rate` 3e-4). Only `pred` changes; the config is copied unchanged.
+
+Optionally, `--cooccurrence_csv` makes the head weigh its negatives by
+geography. The CSV lists `label,group` rows (for example each species' regions);
+a negative from a species that shares no group with an output counts
+`--far_weight` (0.3). Labels not in the CSV, such as non-bird outputs,
+co-occur with everything. With a species range filter at inference, the head
+then spends its capacity on the confusions that remain; without one, it costs
+nothing.
+
+Measured on 2.1 Raw (1,013 outputs, INT8, all 61 WABAD sites, no species mask),
+micro window AP:
+
+- **+3.3%** for the plain refit;
+- **+3.9%** with co-occurrence weighting.
+
+The released 2.1 Raw INT8 model, built this way, reaches 0.356 against 0.342
+for the same checkpoint without the refit (+4.1%).
+
+With each region's species mask, the gain over the unrefitted head is +10% in
+North America and Europe and +16% to +19% in the Neotropics. Starting from the
+trained rows matters: heads fitted from scratch, or on a few hundred files per
+class, lose to the trained head.
 
 ### Two-exposure raw frontend
 
@@ -365,7 +412,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--alpha` | 1.5 | Model width scaling |
 | `--depth_multiplier` | 1 | Block repeats per stage |
 | `--dw_kernel_size` | 5 | Depthwise kernel in stages 2–4: `5` or `3` |
-| `--stage_widths` | 32 64 128 256 | Base channels of the four stages, before `--alpha` (experimental) |
+| `--stage_widths` | 32 86 342 683 | Base channels of the four stages, before `--alpha` (2.0: 32 64 128 256) |
 | `--raw_exposure_gain` | 16 (raw) | Gain of the raw filterbank's second, clamped exposure, mixed per band into a knee compressor; 1 = one exposure (raw only) |
 | `--mixup_alpha` | 0.2 | Mixup alpha (0 disables) |
 | `--mixup_probability` | 0.25 | Fraction of batch to mix |

@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-14
+
+One model ships: `BirdNET_Tiny_N6_GLOBAL_1K_V2.1_Raw`, the same 1,007 bird
+species and six non-bird outputs as 2.0, trained on dataset v0.4.0. It finds 66%
+more annotated calls on WABAD than 2.0 Raw and 50% more than 2.0 Hybrid, more
+than either in every region, and runs entirely on the NPU at 32 ms per 2.5 s
+chunk. 2.1 ships no hybrid model: `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid`
+(release v2.0) stays the hybrid model.
+
+### Model performance
+
+Scored on all 61 [WABAD](https://zenodo.org/records/14191524) sites on six
+continents (59,418 annotated calls, 434 species inside the output list), on the
+INT8 model that gets flashed:
+
+| Model | Event recall @0.5 | Macro recall @0.5 | Window cMAP | Window AUPRC |
+|---|---:|---:|---:|---:|
+| v2.0 Raw | 0.165 | 0.120 | 0.190 | 0.282 |
+| v2.0 Hybrid | 0.183 | 0.134 | 0.209 | 0.303 |
+| **v2.1 Raw** | **0.274** | **0.220** | **0.241** | **0.356** |
+| BirdNET+ V3.0 preview 3.1 (the teacher, 37x the parameters) | 0.545 | 0.450 | 0.459 | 0.597 |
+
+The largest gains are in the Neotropics (Central America and the Caribbean:
+event recall at 0.5 0.045 -> 0.185); in Africa v2.1 Raw logs more calls at 0.5
+than the teacher. On the five northeastern sites and the same 44 species as the
+1.x table it ranks calls about as well as v1.9 Raw (window cMAP 0.361 vs 0.351)
+and logs nearly twice as many as 2.0 Raw at 0.5 (0.268 against 0.142), still
+fewer than v1.9's 0.370. Per region and per site:
+[Pre-trained Models](docs/pretrained-models.md#the-global-benchmark-20).
+
+**The model:** the 2.0 Raw frontend (two-exposure learned filterbank, 448
+frames per 2.5 s) in a backbone widened where 2.0 used its width (stage widths
+48 / 128 / 512 / 1024, the 1024-d embedding merged into the last stage), trained
+50 epochs without an L2 penalty on the pointwise kernels, then the classifier
+refit with `finetune-head` (co-occurrence weighting 0.3 over 23 geographic
+regions). 3.70 M parameters (backbone 2.66 M), 4.0 MB as INT8, 392 M MACs.
+It passed the release gates: Keras/TFLite parity (cosine 0.9993), ONNX
+validation, INT8 catalog cMAP 0.648 against 0.663 float (gate: at most 0.05
+below; 2.0 Raw: 0.534), STM32N6 compilation (49 epochs, 2 in software, the same
+945 kB of NPU activation memory as 2.0), on-target validation (cos 0.99986, 18.0
+ms per inference) and a 25-file board test (25/25 agree with the host on the top
+species; two scores move by up to 0.22 between board and host, against none for
+2.0 Raw).
+
+### Added
+
+- `finetune-head`, a post-training step between `train` and `equalize`: it
+  embeds every training file once through the frozen backbone (cached on disk,
+  cut and targeted as training does) and refits only the classifier from its
+  trained weights, class-capped per epoch as in training. Optionally it weighs
+  negatives by geographic co-occurrence (`--cooccurrence_csv`, `--far_weight`).
+  On 2.1 Raw it adds 3.9% WABAD micro AP in INT8 without a species mask, and
+  10–19% per region with one.
+
+### Changed
+
+- The pointwise kernels of the DS-CNN blocks no longer carry an L2 penalty
+  (was 1e-4), as the depthwise kernels already did not. In a model widened in
+  stages 3–4 it left 35–49% of the depthwise channels permanently inactive and
+  the model behind the narrower 2.0 one; without it no channel died, and after
+  four epochs the widened model matched the WABAD float score of 2.0 Raw after
+  fifty. Saved models keep the regularizer they were trained with.
+- `train` defaults to the 2.1 stage widths, `--stage_widths 32 86 342 683`
+  (48 / 128 / 512 / 1024 at width 1.5, the last stage doubling as the 1024-d
+  embedding); 2.0 used `32 64 128 256`. Configs saved without the field still
+  load with the 2.0 widths.
+
 ## [2.0.0] - 2026-10-10
 
 Two models ship, the first global BirdNET Tiny models: 1,007 bird species from

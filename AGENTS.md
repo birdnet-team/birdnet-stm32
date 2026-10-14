@@ -37,8 +37,9 @@ Public model families use this exact basename:
   the untouched pre-QAT checkpoint as `<basename>_original_FP32.keras` and use
   `<basename>_FP32.keras` for the checkpoint from which release exports were
   made.
-- Repository releases and Python packages use full SemVer (`v1.0.0`); the model
-  basename intentionally uses the shorter `V1.0` token.
+- Python packages use full SemVer (`2.1.0` in `pyproject.toml`). Repository tags
+  and GitHub releases use the short `v<MAJOR.MINOR>` form (`v2.1`), as every tag
+  from `v1.3` on does; the model basename uses the matching `V2.1` token.
 - Stage binary assets only under the gitignored `release/<basename>/` directory.
 
 Do not publish an artifact that merely converted successfully. A release model
