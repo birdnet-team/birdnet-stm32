@@ -24,9 +24,14 @@ deployed using ST Edge AI Core. The standalone firmware supports raw
 waveform, hybrid STFT, and precomputed-mel deployment paths. A released raw
 model scores a 2.5-second window at 24 kHz in **22–32 ms on the NPU** (82–92 ms
 per file on the board including the SD-card read), with CPU and NPU at 400 MHz.
+<<<<<<< HEAD
 Release 2.0 was the first global model, 1,007 bird species from around the world.
 Release 2.1 ships a raw model only, which finds 66% more of WABAD's annotated calls
 than 2.0 Raw; the hybrid model stays 2.0 Hybrid.
+=======
+Release 2.0 was the first global model, 1,007 bird species from around the world;
+2.1 Raw finds 66% more of WABAD's annotated calls than 2.0 Raw.
+>>>>>>> 6c7ec4c3198e6e2ffb5b1040b2edc57b90632257
 
 ## Running the models anywhere: the reference implementation
 
@@ -228,10 +233,17 @@ overdrive). Raw runs its learned filterbank on the NPU, so it skips the 33 ms
 STFT that hybrid computes on the Cortex-M55. Raw computes its filterbank twice,
 the second time at 16x gain, compressing the two into one envelope so quiet field
 audio survives its INT8 grids. With 1,007 species the 2.0 hybrid finds 11% more
+<<<<<<< HEAD
 annotated calls than 2.0 raw. 2.1 ships a raw model only: it widens the raw
 backbone where 2.0 used its width and refits the classifier after training. It
 finds 66% more calls than 2.0 Raw and 50% more than 2.0 Hybrid, and more than
 either in every region, at 32 ms per chunk. 2.0 Hybrid stays the hybrid model.
+=======
+annotated calls than 2.0 raw. 2.1 Raw widens the raw backbone where 2.0 used its
+width and refits the classifier after training. It finds 66% more calls than 2.0
+Raw and 50% more than 2.0 Hybrid, and more than either in every region, at 32 ms
+per chunk.
+>>>>>>> 6c7ec4c3198e6e2ffb5b1040b2edc57b90632257
 
 The 2.x models are global. For the northeastern United States the 90-species
 `BirdNET_Tiny_N6_USNE_90_V1.9_Raw` still logs the most calls at a 0.5 threshold

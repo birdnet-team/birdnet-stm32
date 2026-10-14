@@ -172,8 +172,12 @@ is level in Asia. Its lead over raw has grown with the class count: on the 44
 northeastern species above it is +0.049 AUPRC, against +0.031 between v1.8
 Hybrid and v1.9 Raw.
 
+<<<<<<< HEAD
 v2.1 ships a new Raw model only; the hybrid model stays v2.0 Hybrid. v2.1 Raw
 finds **66% more calls than v2.0 Raw** and 50% more than v2.0 Hybrid
+=======
+v2.1 Raw finds **66% more calls than v2.0 Raw** and 50% more than v2.0 Hybrid
+>>>>>>> 6c7ec4c3198e6e2ffb5b1040b2edc57b90632257
 (+0.074 and +0.053 AUPRC), and more than either in every region; in Africa it
 logs more calls at 0.5 than the teacher. The largest gains are in the
 Neotropics: four times 2.0 Raw's recall in Central America and the Caribbean.
