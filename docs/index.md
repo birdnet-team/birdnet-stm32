@@ -9,19 +9,19 @@ development board with neural processing unit (NPU).
 BirdNET-STM32 trains a compact depthwise-separable CNN (DS-CNN) on raw
 waveforms or spectral features, quantizes it to INT8 via post-training
 quantization, and deploys the resulting TFLite model to the STM32N6570-DK
-using ST's X-CUBE-AI toolchain.
+using ST Edge AI Core.
 
 ```mermaid
 flowchart LR
     A["Train\nDS-CNN"] --> B["Quantize\nINT8 TFLite"] --> C["Deploy\nSTM32N6 NPU"]
 ```
 
-Performance depends on the frontend, model, and SD card. A compact DS-CNN in the
-verified 24 kHz, 2.5-second raw configuration averages **under 10 ms NPU time**
-and **well under 100 ms total** including SD-card reads — comfortably faster
-than real time, with SD reads dominating rather than inference. See
-[Pretrained models](pretrained-models.md) for the figures measured on a given
-release.
+The current release, **2.1 Raw**, classifies 1,007 bird species from 2.5
+seconds of 24 kHz audio in **32 ms of NPU time** (92 ms per file on the board
+including the SD-card read), about 78x faster than real time. Raw models run
+entirely on the NPU; the hybrid model (2.0 Hybrid) computes its STFT on the
+Cortex-M55 first. See [Pre-trained Models](pretrained-models.md) for every
+release's accuracy and on-board figures.
 
 ## Quick start
 
@@ -32,9 +32,8 @@ cd birdnet-stm32
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Train
-python -m birdnet_stm32 train --data_path_train data/train \
-  --audio_frontend hybrid --mag_scale pwl
+# Train (the defaults are the release recipe: raw frontend, 2.5 s at 24 kHz)
+python -m birdnet_stm32 train --data_path_train data/train
 
 # Convert to quantized TFLite
 python -m birdnet_stm32 convert \
@@ -61,8 +60,12 @@ what a bundle contains and how to run one on the board.
 - **Three audio frontends**: `librosa` (precomputed mel), `hybrid` (linear STFT
   + learned mel mixer), and `raw` (waveform → learned filterbank) — all
   quantization-friendly and all supported by the firmware.
-- **Scalable DS-CNN**: width (`alpha`) and depth (`depth_multiplier`) knobs over
-  plain depthwise separable blocks.
+- **Scalable DS-CNN**: width (`alpha`), per-stage widths (`--stage_widths`) and
+  depth (`depth_multiplier`) knobs over plain depthwise separable blocks.
+- **Head fine-tuning** (`finetune-head`): after training, refits the classifier
+  on the frozen backbone over every training file, optionally weighing negatives
+  by geographic co-occurrence; +4% WABAD AUPRC on 2.1 Raw. See
+  [Training](training.md#head-fine-tuning).
 - **Post-training quantization**: float32 I/O with INT8 internals, targeting
   >0.95 cosine similarity vs. the float model. Activation ranges at the
   99.999th percentile of the calibration data; per-channel (default) or
@@ -72,9 +75,10 @@ what a bundle contains and how to run one on the board.
   calibration manifest. Frozen-teacher KL plus mean and worst-sample cosine
   consistency protect mean and tail parity. The saved deployment checkpoint
   has no FakeQuant ops and remains N6 compatible.
-- **Device-facing release gate**: `measure-operational` scores the converted
-  INT8 model on its own at a real operating threshold, so a release is judged
-  on the detections and false alarms a device would see.
+- **Device-facing operational report**: `measure-operational` scores the
+  converted INT8 model on its own at a real operating threshold, reporting the
+  detections and false alarms a device would see (a release gate in 1.x,
+  reported from 2.0).
 - **Comprehensive evaluation**: ROC-AUC, cmAP, F1, species-level AP with
   bootstrap CI, DET curves, latency measurement, benchmark mode, and HTML
   reports.

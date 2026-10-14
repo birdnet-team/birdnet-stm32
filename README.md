@@ -9,7 +9,7 @@
   <a href="https://github.com/birdnet-team/birdnet-stm32/actions/workflows/lint.yml"><img src="https://github.com/birdnet-team/birdnet-stm32/actions/workflows/lint.yml/badge.svg?branch=master" alt="Lint"></a>
   <a href="https://birdnet-team.github.io/birdnet-stm32"><img src="https://github.com/birdnet-team/birdnet-stm32/actions/workflows/docs.yml/badge.svg?branch=master" alt="Documentation build"></a>
   <a href="https://github.com/birdnet-team/birdnet-stm32/releases/latest"><img src="https://img.shields.io/github/v/release/birdnet-team/birdnet-stm32?display_name=tag&sort=semver" alt="Latest release"></a>
-  <a href="https://github.com/birdnet-team/birdnet-stm32/releases/latest"><img src="https://img.shields.io/badge/classes-100-orange.svg" alt="Latest release classes: 100"></a>
+  <a href="https://github.com/birdnet-team/birdnet-stm32/releases/latest"><img src="https://img.shields.io/badge/bird%20species-1%2C007-orange.svg" alt="Latest release: 1,007 bird species"></a>
 </p>
 
 Bird sound classification for edge deployment on the [STM32N6570-DK](https://www.st.com/en/evaluation-tools/stm32n6570-dk.html) development board with neural processing unit (NPU).
