@@ -9,17 +9,20 @@ import argparse
 import json
 import math
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers
 
+# The converter's per-tensor range percentiles (by tensor name): QAT simulates the grids the deployed model gets.
+from birdnet_stm32.conversion.quantize import range_percentile  # noqa: E402
 from birdnet_stm32.training.distillation import DistilledModel, all_layers, validate_loss_weights
 
 QUANTIZABLE_TYPES = (layers.Conv2D, layers.DepthwiseConv2D, layers.Dense)
 ACTIVATION_BOUNDARY_TYPES = (
     layers.BatchNormalization,
+    layers.Activation,  # SiLU / sigmoid / hard-swish outputs (EfficientNet backbones) are requantized tensors too
     layers.ReLU,
     layers.LeakyReLU,
     layers.Add,
@@ -244,21 +247,73 @@ class _FrontendQuantizationHook:
 _DistilledQATModel = DistilledModel
 
 
+class _ActivationHistogramCollector:
+    """Second calibration pass: histogram every internal custom-layer tensor over its first-pass range."""
+
+    def __init__(self, ranges: dict[str, tuple[float, float]], bins: int):
+        self.ranges, self.bins = ranges, bins
+        self.hist: dict[str, np.ndarray] = {}
+
+    def activation(self, name: str, inputs):
+        """Add one tensor's values to its histogram and return it unchanged."""
+        add_to_histogram(self.hist, name, np.asarray(inputs), self.ranges, self.bins)
+        return inputs
+
+    def kernel(self, layer, inputs):
+        """Call an ordinary full-precision kernel without adding a boundary."""
+        return layer(inputs)
+
+
+def add_to_histogram(hist: dict, name: str, values: np.ndarray, ranges: dict, bins: int) -> None:
+    """Accumulate ``values`` into ``hist[name]`` over the tensor's calibrated range (skipped when it cannot be binned)."""
+    from birdnet_stm32.conversion.quantize import _binnable
+
+    lo, hi = ranges.get(name, (0.0, 0.0))
+    if not _binnable(lo, hi):
+        return
+    counts = np.histogram(np.asarray(values, np.float32), bins=bins, range=(np.float32(lo), np.float32(hi)))[0]
+    hist[name] = hist.get(name, 0) + counts
+
+
+def percentile_range(lo: float, hi: float, counts: np.ndarray, percentile: float) -> tuple[float, float]:
+    """Cut a histogrammed range to ``percentile`` at each end as the converter does (the low end only if negative)."""
+    total = counts.sum()
+    if total == 0:
+        return lo, hi
+    bins = len(counts)
+    tail = (100.0 - percentile) / 100.0
+    edges = np.linspace(lo, hi, bins + 1)
+    cdf = np.cumsum(counts) / total
+    new_hi = min(hi, float(edges[min(bins, np.searchsorted(cdf, 1.0 - tail) + 1)]))
+    new_lo = max(lo, float(edges[np.searchsorted(cdf, tail)])) if lo < 0 else lo
+    return (lo, hi) if new_hi <= new_lo else (min(new_lo, 0.0), max(new_hi, 0.0))
+
+
 def calibrate_activation_ranges(
     model: tf.keras.Model,
     dataset: Iterable,
     max_samples: int = 64,
+    percentile: float | Callable[[str], float] | None = None,
 ) -> dict[str, tuple[float, float]]:
-    """Measure absolute min/max activation ranges on real inputs, as the converter does.
+    """Measure activation ranges on real inputs, as the converter does.
 
-    Percentile-clipped ranges were measured and removed: p99.9 and p99.99 both
-    scored below the full range (see docs/dev/int8-parity-plan.md).
+    Min/max by default. With ``percentile`` (``run_qat`` passes the converter's
+    ``range_percentile``, a function of the tensor name), a second pass histograms every tensor over
+    its min/max and cuts the range to that percentile, as
+    ``quantize.clip_activation_ranges`` cuts the deployed model's ranges since 2.0;
+    the model input and the output logits keep min/max there and here. Without it
+    QAT would train against coarser grids than the converted model has: on the B0
+    probe, min/max ranges outside the frontend turned a 0.997-cosine conversion into
+    a 0.71 one.
 
     Args:
         model: Deployment model to probe.
-        dataset: Calibration data.
+        dataset: Calibration data (iterated twice with ``percentile``).
         max_samples: Number of samples to observe.
+        percentile: None for min/max, or the per-tensor percentile kept at each end.
     """
+    from birdnet_stm32.conversion.quantize import _RANGE_BINS
+
     if max_samples <= 0:
         raise ValueError("Calibration sample count must be positive")
     boundaries = [layer for layer in model.layers if _is_activation_boundary(layer)]
@@ -268,46 +323,65 @@ def calibrate_activation_ranges(
     probe = tf.keras.Model(
         model.inputs, [layer.output for layer in boundaries] + [layer.input for layer in sigmoid_heads]
     )
+    frontends = [layer for layer in all_layers(model) if layer.__class__.__name__ == "AudioFrontendLayer"]
+
+    def observe(hook, record) -> int:
+        """Run up to ``max_samples`` through the probe; ``record(name, array)`` sees every observed tensor."""
+        for frontend in frontends:
+            frontend.set_quantization_hook(hook)
+        seen = 0
+        try:
+            for batch in dataset:
+                inputs = np.asarray(batch[0] if isinstance(batch, (tuple, list)) else batch)
+                for sample in inputs:
+                    record("__input__", sample)
+                    outputs = probe([sample[None]], training=False)
+                    if not isinstance(outputs, (tuple, list)):
+                        outputs = [outputs]
+                    for layer, output in zip(boundaries, outputs[: len(boundaries)], strict=True):
+                        record(layer.name, np.asarray(output))
+                    for layer, features in zip(sigmoid_heads, outputs[len(boundaries) :], strict=True):
+                        logits = np.asarray(features) @ np.asarray(layer.kernel)
+                        if layer.bias is not None:
+                            logits += np.asarray(layer.bias)
+                        hook.activation(f"{layer.name}__logits", logits)
+                    seen += 1
+                    if seen >= max_samples:
+                        return seen
+        finally:
+            for frontend in frontends:
+                frontend.set_quantization_hook(None)
+        return seen
+
     ranges = {layer.name: [float("inf"), -float("inf")] for layer in boundaries}
     ranges["__input__"] = [float("inf"), -float("inf")]
-    frontends = [layer for layer in all_layers(model) if layer.__class__.__name__ == "AudioFrontendLayer"]
     collector = _ActivationRangeCollector()
-    for frontend in frontends:
-        frontend.set_quantization_hook(collector)
 
-    seen = 0
-    try:
-        for batch in dataset:
-            inputs = batch[0] if isinstance(batch, (tuple, list)) else batch
-            inputs = np.asarray(inputs)
-            for sample in inputs:
-                ranges["__input__"][0] = min(ranges["__input__"][0], float(np.min(sample)), 0.0)
-                ranges["__input__"][1] = max(ranges["__input__"][1], float(np.max(sample)), 0.0)
-                outputs = probe([sample[None]], training=False)
-                if not isinstance(outputs, (tuple, list)):
-                    outputs = [outputs]
-                for layer, output in zip(boundaries, outputs[: len(boundaries)], strict=True):
-                    array = np.asarray(output)
-                    ranges[layer.name][0] = min(ranges[layer.name][0], float(np.min(array)), 0.0)
-                    ranges[layer.name][1] = max(ranges[layer.name][1], float(np.max(array)), 0.0)
-                for layer, features in zip(sigmoid_heads, outputs[len(boundaries) :], strict=True):
-                    logits = np.asarray(features) @ np.asarray(layer.kernel)
-                    if layer.bias is not None:
-                        logits += np.asarray(layer.bias)
-                    collector.activation(f"{layer.name}__logits", logits)
-                seen += 1
-                if seen >= max_samples:
-                    break
-            if seen >= max_samples:
-                break
-    finally:
-        for frontend in frontends:
-            frontend.set_quantization_hook(None)
+    def record_minmax(name, array):
+        ranges[name][0] = min(ranges[name][0], float(np.min(array)), 0.0)
+        ranges[name][1] = max(ranges[name][1], float(np.max(array)), 0.0)
+
+    seen = observe(collector, record_minmax)
     if seen == 0:
         raise ValueError("Activation calibration dataset yielded no samples")
-
     ranges.update(collector.ranges)
     result = {name: (values[0], values[1]) for name, values in ranges.items()}
+
+    if percentile is not None:
+        hist_hook = _ActivationHistogramCollector(result, _RANGE_BINS)
+        observe(hist_hook, lambda name, array: add_to_histogram(hist_hook.hist, name, array, result, _RANGE_BINS))
+        outputs = {layer.name for layer in model.layers if any(layer.output is o for o in model.outputs)}
+        keep = {"__input__"} | outputs | {f"{name}__logits" for name in outputs}
+        clipped = 0
+        for name, counts in hist_hook.hist.items():
+            if name in keep:
+                continue
+            new = percentile_range(*result[name], counts, percentile(name) if callable(percentile) else percentile)
+            clipped += new != result[name]
+            result[name] = new
+        label = "per-tensor" if callable(percentile) else percentile
+        print(f"[QAT] Percentile {label} ranges: {clipped} of {len(result)} tensors cut below min/max")
+
     print(f"[QAT] Calibrated {len(result)} activation tensors on {seen} samples")
     for layer in sigmoid_heads:
         # TFLite LOGISTIC has fixed scale 1/256 and zero point -128.
@@ -322,8 +396,17 @@ def _is_sigmoid_dense(layer):
 def build_qat_model(
     deployment_model: tf.keras.Model,
     activation_ranges: dict[str, tuple[float, float]],
+    logit_output: bool = True,
 ) -> tf.keras.Model:
-    """Build an activation-fake-quant graph sharing deployment model weights."""
+    """Build an activation-fake-quant graph sharing deployment model weights.
+
+    A sigmoid head is simulated as the release converts it: INT8 logits, the
+    sigmoid applied after (``convert --output_activation logit``, every release
+    from 1.5). ``logit_output=False`` also puts the probabilities on the INT8
+    output grid of a sigmoid-output conversion (1/256 steps), which floors every
+    score below ~0.002: QAT trained against that grid while the releases shipped
+    logits (2.2's N6-B0: simulated logits -15 where the float model has -9).
+    """
 
     def clone_function(layer):
         if layer.__class__.__name__ != "AudioFrontendLayer":
@@ -347,7 +430,7 @@ def build_qat_model(
                 output = kernel_call(*args, **kwargs)
         else:
             output = layer(*args, **kwargs)
-        if layer.name in activation_ranges:
+        if layer.name in activation_ranges and not (logit_output and _is_sigmoid_dense(layer)):
             minimum, maximum = activation_ranges[layer.name]
             output = FakeQuantActivation(
                 minimum,
@@ -414,7 +497,9 @@ class RangeRefresh(tf.keras.callbacks.Callback):
 
     def on_epoch_end(self, epoch, logs=None):
         self.sync()
-        ranges = calibrate_activation_ranges(self.deployment, self.calibration, max_samples=self.samples)
+        ranges = calibrate_activation_ranges(
+            self.deployment, self.calibration, max_samples=self.samples, percentile=range_percentile
+        )
         moved = refresh_activation_ranges(self.qat_student, ranges)
         print(f"[QAT] Refreshed {moved} activation ranges on epoch {epoch + 1} weights")
 
@@ -555,6 +640,19 @@ def run_qat(args: argparse.Namespace) -> None:
 
         teacher_kwargs["label_sidecar"] = load_label_sidecar(args.label_sidecar, classes)
         print(f"[QAT] Label sidecar: {len(teacher_kwargs['label_sidecar'])} files with label additions")
+    # The float run's draw: without the class cap QAT trains on the raw, unbalanced stream (and without the field
+    # table on focal audio only), which moved 2.2's N6-B0 away from its float model each epoch (INT8 selection cMAP
+    # 0.739 -> 0.729 -> 0.712).
+    draw_kwargs: dict = {}
+    if getattr(args, "class_cap_per_epoch", 0):
+        draw_kwargs["class_cap_per_epoch"] = args.class_cap_per_epoch
+        if getattr(args, "field_table", None):
+            from birdnet_stm32.data.sidecar import load_field_table
+
+            draw_kwargs.update(field_table=load_field_table(args.field_table), field_share=args.field_share,
+                               field_per_recording=args.field_per_recording)
+        print(f"[QAT] Class cap {args.class_cap_per_epoch} per epoch"
+              + (f", field share {args.field_share}" if "field_table" in draw_kwargs else ""))
     train_dataset = load_dataset(
         train_paths,
         classes,
@@ -566,6 +664,7 @@ def run_qat(args: argparse.Namespace) -> None:
         snr_threshold=0.1,
         spec_augment=False,
         **teacher_kwargs,
+        **draw_kwargs,
         **common_kwargs,
     )
     # Selection converts and scores an INT8 model every epoch, twice over the
@@ -624,6 +723,7 @@ def run_qat(args: argparse.Namespace) -> None:
         deployment_model,
         calibration_data,
         max_samples=calibration_count,
+        percentile=range_percentile,
     )
     print(f"[QAT] Activation ranges use the converter's exact stratified {calibration_count}-sample manifest (seed=42)")
     extra_callbacks: list[tf.keras.callbacks.Callback] = []

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -159,12 +160,24 @@ class Int8Selection(FileCmap):
         self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".int8-selection-", dir=self.checkpoint_path.parent) as directory:
             candidate = Path(directory) / "candidate.tflite"
-            data = convert_to_tflite(
-                self.deployment,
-                lambda: iter(self.calibration),
-                str(candidate),
-            )
+            # Converted as the release converts it: a sigmoid head emits INT8 logits (convert
+            # --output_activation logit); the probabilities' INT8 grid would floor every score below ~0.002.
+            # Ranking per class is the same, so the score needs no sigmoid.
+            head = self.deployment.layers[-1]
+            sigmoid = getattr(head, "activation", None) == tf.keras.activations.sigmoid
+            if sigmoid:
+                head.activation = tf.keras.activations.linear
+            try:
+                data = convert_to_tflite(
+                    self.deployment,
+                    lambda: iter(self.calibration),
+                    str(candidate),
+                )
+            finally:
+                if sigmoid:
+                    head.activation = tf.keras.activations.sigmoid
             int8_cmap = self.score(TFLiteRunner(str(candidate)))
+            shutil.copy(candidate, self.checkpoint_path.with_name(f"{self.checkpoint_path.stem}_ep{epoch:02d}_INT8.tflite"))
             float_cmap = self.score(self.keras_runner(self.deployment))
             if not np.isfinite(int8_cmap) or not np.isfinite(float_cmap):
                 raise RuntimeError("Non-finite validation cMAP")
