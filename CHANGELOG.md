@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- N6-B0, an EfficientNet-B0 backbone built for INT8 on the N6 (`--backbone
+  efficientnet_b0_n6`): ReLU6 instead of SiLU, no squeeze-and-excite and a
+  bounded residual stream, at 128 bands into a 1,280-channel top conv (4.9 M
+  parameters, 523 M MACs, 34 ms on the STM32N6570-DK). `efficientnet_b0_n6w`
+  widens its bottlenecks (experimental).
+- Two-exposure PWL conversion: a raw frontend with a PWL compressor is converted
+  as its float-exact two-exposure rewrite, the band magnitude and the PWL split
+  per band into a quiet path on a fine INT8 grid and a loud path that is exactly
+  zero on quiet bins (`conversion/pwl_split.py`). On 2.2's N6-B0, INT8 WABAD-61
+  window AUPRC 0.4366 -> 0.4409 at 34.6 ms (33.7), every op on the NPU.
+- `--teacher_background` (`train`, `finetune-head`, experimental): a species a
+  file does not name takes the teacher's own score from 0.3 and 1 from 0.8.
+
+### Changed
+
+- `train` builds N6-B0 by default (`--backbone efficientnet_b0_n6`, `--num_mels
+  128`, `--embeddings_size 1280`); `dscnn` stays for the releases up to 2.1.
+- The raw frontend's activation ranges are cut at the 99.99th percentile, the
+  rest stays at 99.999: INT8 WABAD-61 window AUPRC 0.429 -> 0.437 and catalog
+  cMAP 0.7115 -> 0.7150 on 2.2's N6-B0.
+
+### Fixed
+
+- QAT drew from the raw, unbalanced training list and ignored the class cap and
+  the field table; it now draws as the float run does.
+- QAT simulated a sigmoid-output INT8 model (probabilities on a 1/256 grid) and
+  its selection converted one, while every release since 1.5 emits INT8 logits;
+  it now simulates and selects the logit output, with the converter's frontend
+  ranges and two-exposure PWL.
+- `train --resume` kept training a mixed-precision checkpoint in float32.
+
+### Removed
+
+- `--calibration_dir` (`convert`, `equalize`, `train --qat`): field calibration
+  never helped (2.2's N6-B0: WABAD bench 0.4685 -> 0.4619).
+
 ## [2.1.0] - 2026-10-14
 
 One model ships: `BirdNET_Tiny_N6_GLOBAL_1K_V2.1_Raw`, the same 1,007 bird
