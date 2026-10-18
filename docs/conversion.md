@@ -275,9 +275,12 @@ sigmoid automatically. A caller outside this package applies
   identities for both path manifests
 - **Target hardware**: STM32N6 NPU (requires channel counts in multiples of 8)
 - **Activation ranges**: the converter calibrates every activation's min/max,
-  then each range is cut to the 99.999th percentile of that activation's values
-  on the same calibration data (input and output keep min/max), and the model is
-  quantized with those ranges. See [Activation ranges](#activation-ranges).
+  then each range is cut to a percentile of that activation's values on the same
+  calibration data — the raw frontend's at 99.99, the rest at 99.999 (input and
+  output keep min/max) — and the model is quantized with those ranges. See
+  [Activation ranges](#activation-ranges).
+- **Two-exposure PWL**: a raw frontend with a PWL compressor is converted as its
+  float-exact two-exposure rewrite. See [Two-exposure PWL](#two-exposure-pwl).
 - **Per-channel** (default): quantizes each output channel separately — better accuracy
 - **Per-tensor**: single scale per tensor — use only if per-channel causes N6 issues
 
@@ -313,6 +316,43 @@ The gain is all in the audio frontend's tensors; clipping only the backbone's
 changes nothing. 99.9 clips too far (below min/max) and 99.9999 too little. On
 the STM32N6 the clipped model runs at the same 11.2 ms and tracks the host more
 closely (`stedgeai validate` cos 0.99994 vs 0.99984).
+
+From 2.2 the raw frontend's tensors are cut harder, at the 99.99th percentile:
+their ranges are set by loud focal calls while soundscape bins sit a few INT8
+steps above zero. The backbone keeps 99.999 (99.99 there costs). On 2.2's
+N6-B0 over the 61 WABAD sites, INT8 window AUPRC 0.429 → 0.437 (float 0.465)
+and calls found @0.5 0.357 → 0.368; catalog cMAP 0.7115 → 0.7150 (float
+0.7341).
+
+### Two-exposure PWL
+
+The raw frontend's band magnitude *x* and its PWL compressor
+*y = k₀x + Σᵢ kᵢ·relu(sᵢx + bᵢ)* are the tensors that lose most in INT8: on
+WABAD windows N6-B0's PWL output sits at level 3 of 255 in the median bin, and
+the hinge chain compounds the rounding. With every slope *sᵢ > 0* and a split
+point *x_T* per band where its PWL reaches 2.0,
+*PWL(x) = PWL(min(x, x_T)) + [PWL(x) − PWL(min(x, x_T))]* exactly. The
+conversion builds both terms as their own paths (`conversion/pwl_split.py`):
+
+- **low**: a copy of the band mix with ReLU6 at gain *6 / x_T*, i.e.
+  *min(x, x_T)* on a [0, 6] grid, then the PWL rescaled to it. Every tensor of
+  this path spans the quiet range only.
+- **high**: a copy of the band mix minus *x_T* with ReLU, then the PWL
+  re-anchored at *x_T*. It is exactly 0 on quiet bins.
+
+Their sum feeds the stem as before. The float model, its checkpoint and the
+ONNX export are unchanged; the converted model is validated against the float
+model as always. On 2.2's N6-B0 (61 WABAD sites):
+
+| INT8 conversion | Window AUPRC | Loss vs float | On board |
+|---|---:|---:|---:|
+| ranges at 99.999 | 0.4286 | 7.9% | 33.7 ms |
+| frontend at 99.99 | 0.4366 | 6.2% | 33.7 ms |
+| **+ two-exposure PWL** | **0.4409** | **5.2%** | **34.6 ms** |
+| float model (reference) | 0.4653 | | |
+
+Every op stays on the NPU: 82 epochs (74 without), 2 in software either way;
+`stedgeai validate` on target: cos 0.99991, SNR 37.4 dB (35.0 without).
 
 !!! note "No INT8 I/O"
     Audio spectrograms are continuous-valued signals. Quantizing model inputs

@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 
+from birdnet_stm32.conversion.pwl_split import can_split, split_pwl
 from birdnet_stm32.conversion.quantize import convert_to_tflite, stratified_sample_paths
 from birdnet_stm32.evaluation.metrics import evaluate, macro_cmap
 from birdnet_stm32.models.runners import KerasRunner, TFLiteRunner
@@ -160,7 +161,7 @@ class Int8Selection(FileCmap):
         self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".int8-selection-", dir=self.checkpoint_path.parent) as directory:
             candidate = Path(directory) / "candidate.tflite"
-            # Converted as the release converts it: a sigmoid head emits INT8 logits (convert
+            # Converted as the release converts it (two-exposure PWL, see conversion.pwl_split): a sigmoid head emits INT8 logits (convert
             # --output_activation logit); the probabilities' INT8 grid would floor every score below ~0.002.
             # Ranking per class is the same, so the score needs no sigmoid.
             head = self.deployment.layers[-1]
@@ -169,7 +170,7 @@ class Int8Selection(FileCmap):
                 head.activation = tf.keras.activations.linear
             try:
                 data = convert_to_tflite(
-                    self.deployment,
+                    split_pwl(self.deployment) if can_split(self.deployment) else self.deployment,
                     lambda: iter(self.calibration),
                     str(candidate),
                 )

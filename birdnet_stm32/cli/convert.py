@@ -14,6 +14,7 @@ import tensorflow as tf
 from tqdm import tqdm
 
 from birdnet_stm32.audio.activity import pick_random_samples
+from birdnet_stm32.conversion.pwl_split import SPLIT_YT, can_split, split_pwl
 from birdnet_stm32.conversion.quantize import (
     ACTIVATION_RANGE_PERCENTILE,
     FRONTEND_RANGE_PERCENTILE,
@@ -285,7 +286,7 @@ def _convert_split_head(
         tmp_backbone, tmp_classifier = staged
 
         convert_to_tflite(
-            backbone,
+            split_pwl(backbone) if can_split(backbone) else backbone,
             rep_data_gen,
             tmp_backbone,
             per_tensor=args.per_tensor,
@@ -670,13 +671,18 @@ def main():
         "quantization": "ptq",
         "activation_range_percentile": ACTIVATION_RANGE_PERCENTILE,
         "frontend_range_percentile": FRONTEND_RANGE_PERCENTILE,
+        "pwl_split": {"yt": SPLIT_YT} if can_split(model) else None,
         "per_tensor": args.per_tensor,
         "quality_gate_passed": False,
         "data_manifests": data_manifests,
     }
 
     try:
-        convert_to_tflite(model, rep_data_gen, tmp_path, per_tensor=args.per_tensor)
+        # The INT8 graph of a raw PWL frontend is its float-exact two-exposure rewrite (conversion.pwl_split);
+        # validation below still compares against the float model itself.
+        if can_split(model):
+            print(f"Two-exposure PWL: the frontend's band magnitude and compressor split at y = {SPLIT_YT:g}")
+        convert_to_tflite(split_pwl(model) if can_split(model) else model, rep_data_gen, tmp_path, per_tensor=args.per_tensor)
 
         n_runs = max(1, args.batch_validate) if args.batch_validate > 0 else 1
         all_metrics: list[dict] = []
