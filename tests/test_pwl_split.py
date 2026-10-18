@@ -51,7 +51,20 @@ def test_split_is_float_exact():
     names = {layer.name for layer in split.layers}
     assert {"audio_frontend_split_mix_low", "audio_frontend_split_mix_high", "audio_frontend_split_sum"} <= names
     assert "audio_frontend" not in names
-    assert split.get_layer("pred") is model.get_layer("pred")  # the backbone is reused, not copied
+    for a, b in zip(split.get_layer("pred").get_weights(), model.get_layer("pred").get_weights(), strict=True):
+        np.testing.assert_array_equal(a, b)
+
+
+def test_split_leaves_the_source_graph_alone():
+    """convert splits the model for INT8 and then cuts the same model into backbone and head."""
+    from birdnet_stm32.conversion.split import split_model
+
+    model = _model()
+    split_pwl(model)
+    assert all(len(layer._inbound_nodes) == 1 for layer in model.layers[1:])
+    backbone, _ = split_model(model)
+    assert can_split(backbone)
+    split_pwl(backbone)
 
 
 def test_split_points_reach_the_target_output():

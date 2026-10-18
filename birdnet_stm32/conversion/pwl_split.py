@@ -101,8 +101,10 @@ def split_points(k0: np.ndarray, shifts: list, ks: list, yt: float) -> np.ndarra
 def split_pwl(model: tf.keras.Model, yt: float = SPLIT_YT) -> tf.keras.Model:
     """The model with its frontend's band magnitude and PWL split in two exposures (float-identical).
 
-    Layers outside the frontend are reused, so the result shares their weights;
-    the frontend's filterbank and smoother are shared too.
+    Layers outside the frontend are cloned with their weights, so the source
+    model's graph is left as it was (a reused layer would gain a second inbound
+    node, and ``split.split_model`` then sees a branched head). The frontend's
+    filterbank and smoother, internal to it, are shared.
     """
     if not can_split(model):
         raise ValueError("split_pwl needs a raw frontend with a fused bank, a compress mix and a 3-hinge PWL")
@@ -151,17 +153,24 @@ def split_pwl(model: tf.keras.Model, yt: float = SPLIT_YT) -> tf.keras.Model:
         y = layers.Add(name="audio_frontend_split_sum")([y_low, y_high])
         return _ToSpec(f.spec_width, name="audio_frontend_split_out")(y)
 
-    # Replay the functional graph layer by layer, the frontend swapped for its split.
+    # Replay the functional graph layer by layer on clones, the frontend swapped for its split.
     first = model.layers[0]
-    new_input = tf.keras.Input(model.input.shape[1:], dtype=model.input.dtype, name=first.name if isinstance(first, layers.InputLayer) else None)
-    tensors = {id(model.input): new_input}
+    source = model.inputs[0]  # a sub-model built from ``model.inputs`` has a list as ``input``
+    new_input = tf.keras.Input(source.shape[1:], dtype=source.dtype, name=first.name if isinstance(first, layers.InputLayer) else None)
+    tensors = {id(source): new_input}
     for layer in model.layers:
         if isinstance(layer, layers.InputLayer):
             continue
         ins = [tensors[id(t)] for t in layer._inbound_nodes[0].input_tensors]
-        out = frontend_split(ins[0]) if layer is f else layer(ins if len(ins) > 1 else ins[0])
+        if layer is f:
+            out = frontend_split(ins[0])
+        else:
+            clone = layer.__class__.from_config(layer.get_config())
+            out = clone(ins if len(ins) > 1 else ins[0])
+            if layer.weights:
+                pending.append((clone, layer.get_weights()))
         tensors[id(layer.output)] = out
-    split = tf.keras.Model(new_input, tensors[id(model.output)], name=model.name)
+    split = tf.keras.Model(new_input, tensors[id(model.outputs[0])], name=model.name)
     for layer, weights in pending:
         layer.set_weights(weights)
     return split
