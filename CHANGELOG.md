@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `efficientnet_b0_n6w` (experimental) doubles the residual stream in stages
+  4–6 (160 / 224 / 384 channels; 2.2.0 widened it by 1.5): 12.1 M parameters,
+  1.18 G MACs, 62 ms on the STM32N6570-DK with the same 1,751 KiB of NPU
+  activations.
+
 ## [2.2.0] - 2026-10-18
 
 One model ships: `BirdNET_Tiny_N6_GLOBAL_1K_V2.2_Raw`, the same 1,007 bird

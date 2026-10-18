@@ -82,7 +82,7 @@ projection and residual add). B0 as published lost 14% of its WABAD AP to
 post-training quantization. N6-B0 runs at 128 bands (`--num_mels`) into a
 1,280-channel top convolution (`--embeddings_size`), 4.9 M parameters and 523 M
 MACs, 34 ms per inference on the STM32N6570-DK. `efficientnet_b0_n6w` widens
-its bottlenecks (experimental).
+its bottlenecks (experimental): 12.1 M parameters, 1.18 G MACs, 62 ms.
 
 `dscnn` is the backbone of every release up to 2.1. It is scaled with two knobs:
 
@@ -436,7 +436,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--depth_multiplier` | 1 | Block repeats per stage |
 | `--dw_kernel_size` | 5 | Depthwise kernel in stages 2–4: `5` or `3` |
 | `--stage_widths` | 32 86 342 683 | Base channels of the four stages, before `--alpha` (2.0: 32 64 128 256) |
-| `--backbone` | efficientnet_b0_n6 | `efficientnet_b0_n6` (2.2, N6-B0: EfficientNet-B0 with ReLU6, no squeeze-and-excite and a bounded residual stream), `efficientnet_b0_n6w` (that with wider bottlenecks: expansion 4 in stages 2–4, residual stream ×1.5 in stages 4–6; experimental) or `dscnn` (releases up to 2.1); `--alpha`, `--depth_multiplier`, `--dw_kernel_size` and `--stage_widths` apply to `dscnn` only |
+| `--backbone` | efficientnet_b0_n6 | `efficientnet_b0_n6` (2.2, N6-B0: EfficientNet-B0 with ReLU6, no squeeze-and-excite and a bounded residual stream), `efficientnet_b0_n6w` (that with wider bottlenecks: expansion 4 in stages 2–4, residual stream ×2 in stages 4–6; experimental) or `dscnn` (releases up to 2.1); `--alpha`, `--depth_multiplier`, `--dw_kernel_size` and `--stage_widths` apply to `dscnn` only |
 | `--raw_exposure_gain` | 16 (raw) | Gain of the raw filterbank's second, clamped exposure, mixed per band into a knee compressor; 1 = one exposure (raw only) |
 | `--mixup_alpha` | 0.2 | Mixup alpha (0 disables) |
 | `--mixup_probability` | 0.25 | Fraction of batch to mix |

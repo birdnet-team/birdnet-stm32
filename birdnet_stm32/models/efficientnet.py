@@ -28,15 +28,15 @@ B0_BLOCKS = (
     (6, 3, 1, 320, 1),
 )
 # N6-B0 with wider bottlenecks (Stefan, 2026-10-16; from the PCA of the 2.2 run: the residual stream needed 92-96% of
-# its channels for 99% of the variance, the expansions of stages 2-3 about half): expansion 4 in stages 2-4, residual
-# stream x1.5 in stages 4-6 (80 -> 120, 112 -> 168, 192 -> 288).
+# its channels for 99% of the variance, the expansions of stages 2-3 about half, stage 7 and the top conv 84% and 69%):
+# expansion 4 in stages 2-4, residual stream x2 in stages 4-6 (80 -> 160, 112 -> 224, 192 -> 384). 2.2.0 had x1.5.
 B0_WIDE_BLOCKS = (
     (1, 3, 1, 16, 1),
     (4, 3, 2, 24, 2),
     (4, 5, 2, 40, 2),
-    (4, 3, 3, 120, 2),
-    (6, 5, 3, 168, 1),
-    (6, 5, 4, 288, 2),
+    (4, 3, 3, 160, 2),
+    (6, 5, 3, 224, 1),
+    (6, 5, 4, 384, 2),
     (6, 3, 1, 320, 1),
 )
 DROP_CONNECT_RATE = 0.2
