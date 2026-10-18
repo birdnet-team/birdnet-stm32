@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-18
+
+One model ships: `BirdNET_Tiny_N6_GLOBAL_1K_V2.2_Raw`, the same 1,007 bird
+species and six non-bird outputs as 2.0 and 2.1, trained on dataset v0.4.0. It
+finds 46% more annotated calls on WABAD than 2.1 Raw, more in every region
+(+36% in North America to +206% in Oceania and the Pacific), and runs entirely
+on the NPU at 35 ms per 2.5 s chunk. 2.2 ships no hybrid model:
+`BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid` (release v2.0) stays the hybrid model.
+
+### Model performance
+
+Scored on all 61 [WABAD](https://zenodo.org/records/14191524) sites on six
+continents (59,418 annotated calls, 434 species inside the output list), on the
+INT8 model that gets flashed:
+
+| Model | Event recall @0.5 | Macro recall @0.5 | Window cMAP | Window AUPRC |
+|---|---:|---:|---:|---:|
+| v2.0 Raw | 0.165 | 0.120 | 0.190 | 0.282 |
+| v2.0 Hybrid | 0.183 | 0.134 | 0.209 | 0.303 |
+| v2.1 Raw | 0.274 | 0.220 | 0.241 | 0.356 |
+| **v2.2 Raw** | **0.401** | **0.329** | **0.309** | **0.445** |
+| BirdNET+ V3.0 preview 3.1 (the teacher, 28x the parameters) | 0.545 | 0.450 | 0.459 | 0.597 |
+
+Per region and per site:
+[Pre-trained Models](docs/pretrained-models.md#the-global-benchmark-20).
+
+**The model:** the 2.0 Raw frontend (two-exposure learned filterbank, 448
+frames per 2.5 s) at 128 bands, into N6-B0: EfficientNet-B0 with ReLU6 instead
+of SiLU, no squeeze-and-excite and a bounded residual stream, the changes that
+let it survive INT8 on the N6 (B0 as published lost 14% of its WABAD AP to
+quantization). Trained 50 epochs, then the classifier refit with `finetune-head`
+(as in 2.1) and two epochs of quantization-aware training, which helps for the
+first time since its two bugs are fixed (below). The INT8 conversion runs the
+frontend's band mix and compressor as two exposures and keeps 95.5% of the float
+WABAD AUPRC (0.445 against 0.465 before QAT). 4.9 M parameters (backbone
+3.58 M), 5.6 MB as INT8, 539 M MACs. It passed the release gates: Keras/TFLite
+parity (cosine 0.9996), ONNX validation, INT8 catalog cMAP 0.726 against 0.734
+float before QAT (gate: at most 0.05 below; 2.1 Raw: 0.648), STM32N6 compilation
+(82 epochs, 2 in software; 1,751 kB of NPU activation memory), on-target
+validation (cos 0.99993, 34.6 ms per inference) and a 25-file board test (25/25
+agree with the host on the top species; scores within 0.053 of the host).
+
 ### Added
 
 - N6-B0, an EfficientNet-B0 backbone built for INT8 on the N6 (`--backbone

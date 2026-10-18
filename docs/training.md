@@ -224,14 +224,15 @@ python -m birdnet_stm32 train --epochs 50 --resume --checkpoint_path ckpt/model.
 Use `--qat` to fine-tune a pretrained model with simulated INT8 quantization
 noise, teaching the weights to survive quantization.
 
-!!! note "Not part of the 2.x recipe"
-    On 2.0 Raw no QAT epoch beat its starting point: INT8 cMAP 0.545 at epoch
-    0, 0.520–0.541 after each of 8 epochs, so the selection kept the untrained
-    checkpoint. On hybrid models QAT scored below plain post-training
-    quantization at every epoch. The release recipe converts the trained
-    (raw: equalized) checkpoint directly, with percentile activation ranges
-    (see [Conversion](conversion.md#activation-ranges)); QAT simulates min/max
-    ranges and does not model them.
+!!! note "Part of the recipe again from 2.2"
+    Up to 2.1 QAT never beat its starting point (2.0 Raw: INT8 cMAP 0.545 at
+    epoch 0, 0.520–0.541 after each of 8 epochs). It had two bugs: it drew
+    from the raw, unbalanced training list instead of the class-capped draw
+    with field clips the float run uses, and it simulated and selected a
+    probability output on the INT8 grid, while the releases ship logits. With
+    both fixed, two epochs at learning rate 1e-5 took 2.2's N6-B0 from INT8
+    validation cMAP 0.7665 to 0.7745 (float 0.781) and from 5.2% to 4.5% INT8
+    loss on WABAD.
 
 !!! warning "QAT requires a pretrained model"
     Always train normally first, then fine-tune with `--qat`. Do **not** use
@@ -257,13 +258,18 @@ configurable. This constrains background and low-confidence probabilities
 while directly optimizing the lower tail that the release parity gate measures.
 
 With `--qat`, the defaults switch to the fine-tuning schedule: 8 epochs at
-learning rate 2e-5, with activation ranges recalibrated on the current weights
-after every epoch (`--qat_range_refresh`, on by default). The simulation
-quantizes every tensor the converter quantizes, including each partial
-filterbank convolution, so its validation cMAP (`val_sim_int8_cmap`) tracks
-the converted model's (`val_int8_cmap`) to within a few thousandths.
+learning rate 2e-5 (2.2: `--epochs 2 --steps_per_epoch 2850 --learning_rate
+1e-5`), with activation ranges recalibrated on the current weights after every
+epoch (`--qat_range_refresh`, on by default). QAT draws its training audio as
+the float run does (`--class_cap_per_epoch`, `--field_table`), uses the
+converter's activation-range percentiles and simulates the logit output the
+releases ship. The simulation quantizes every tensor the converter quantizes,
+including each partial filterbank convolution, so its validation cMAP
+(`val_sim_int8_cmap`) tracks the converted model's (`val_int8_cmap`) to within
+a few thousandths; selection converts each epoch as the release does (logit
+output, two-exposure PWL) and keeps every epoch's INT8 candidate.
 
-The full raw pipeline (the 2.1 recipe):
+The full raw pipeline (the 2.2 recipe):
 
 ```bash
 # Step 1: Normal training (with a teacher cache, as the releases are trained)
@@ -280,10 +286,17 @@ python -m birdnet_stm32 finetune-head --checkpoint_path checkpoints/model.keras 
 python -m birdnet_stm32 equalize --checkpoint_path checkpoints/model_ft.keras \
   --data_path_train data/train --output_path checkpoints/model_eq.keras
 
-# Step 4: Convert
+# Step 4: Two epochs of quantization-aware training on the equalized checkpoint
+python -m birdnet_stm32 train --qat --checkpoint_path checkpoints/qat/model.keras \
+  --data_path_train data/train --data_path_val data/validation --classes_file data/labels.txt \
+  --teacher_cache data/teacher_cache --field_table data/field_table.csv \
+  --epochs 2 --steps_per_epoch 2850 --learning_rate 1e-5
+# (checkpoints/qat/model.keras is a copy of model_eq.keras; QAT writes model_qat.keras)
+
+# Step 5: Convert
 python -m birdnet_stm32 convert \
-  --checkpoint_path checkpoints/model_eq.keras \
-  --model_config checkpoints/model_eq_model_config.json \
+  --checkpoint_path checkpoints/qat/model_qat.keras \
+  --model_config checkpoints/qat/model_qat_model_config.json \
   --data_path_train data/train
 ```
 
@@ -293,8 +306,8 @@ gets the same share of the tensors' INT8 grids, and refuses to save if the
 float output changes. See [INT8 quality](dev/int8-parity-plan.md) for the
 measurements.
 
-For `hybrid` and `librosa`, skip step 3 and convert the fine-tuned checkpoint
-directly.
+For `hybrid` and `librosa`, skip step 3 (QAT on hybrid models scored below
+plain post-training quantization at every epoch up to 2.0).
 
 ### Head fine-tuning
 
