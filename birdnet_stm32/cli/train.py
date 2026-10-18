@@ -378,6 +378,14 @@ def get_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--teacher_background",
+        action="store_true",
+        help=(
+            "Background birds: a species the file does not name takes the teacher's own score from 0.3 and 1 from "
+            "0.8, instead of --teacher_weight times it (experimental)"
+        ),
+    )
+    parser.add_argument(
         "--teacher_embedding_weight",
         type=float,
         default=None,
@@ -580,6 +588,8 @@ def get_args() -> argparse.Namespace:
         parser.error(f"--teacher_weight must be in [0, 1], got {args.teacher_weight}")
     if args.teacher_weight > 0 and not args.teacher_cache:
         parser.error("--teacher_weight > 0 needs --teacher_cache")
+    if args.teacher_background and not args.teacher_weight > 0:
+        parser.error("--teacher_background needs teacher targets (--teacher_cache, --teacher_weight > 0)")
     has_embeddings = bool(args.teacher_cache) and os.path.isfile(os.path.join(args.teacher_cache, "emb.npy"))
     if args.teacher_embedding_weight is None:
         # On wherever the cache can feed it: float training with teacher embeddings.
@@ -793,6 +803,7 @@ def main():
         crop_policy=args.crop_policy,
         teacher_cache=args.teacher_cache,
         teacher_weight=args.teacher_weight,
+        teacher_background=args.teacher_background,
         teacher_embeddings=embed,
     )
     if args.label_sidecar:

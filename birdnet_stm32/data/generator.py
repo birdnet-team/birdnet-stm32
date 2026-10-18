@@ -182,6 +182,7 @@ def _worker_config(
         "classes": list(classes),
         "teacher_cache": str(teacher_cache) if teacher_cache else None,
         "teacher_weight": teacher_weight,
+        "teacher_background": bool(kwargs.get("teacher_background", False)),
         "teacher_embeddings": teacher_embeddings,
         "label_sidecar": kwargs.get("label_sidecar") or {},
     }

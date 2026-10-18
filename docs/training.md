@@ -432,6 +432,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--time_mask_max` | 25 | Max time mask width (frames) |
 | `--teacher_cache` | None | Directory of cached per-window teacher scores, and optionally embeddings |
 | `--teacher_weight` | 0.5 with `--teacher_cache`, else 0 | Teacher share of the training target in [0, 1] (0 = hard labels only) |
+| `--teacher_background` | off | Background birds: a species the file does not name takes the teacher's own score from 0.3 and 1 from 0.8 instead of the blend (experimental; also on `finetune-head`) |
 | `--label_sidecar` | None | CSV of per-file label additions (`sample_id`, `positives`, `negatives`; classes separated by `;`): positives join the folder's class in the hard label (recordings with several species), negatives are confirmed absent, held at 0 and never raised by the teacher's soft target |
 | `--teacher_embedding_weight` | 0.2 with embeddings | Weight of a cosine loss to the teacher's embedding of each chunk; on when `--teacher_cache` holds `emb.npy`, 0 disables |
 | `--crop_policy` | teacher with `--teacher_cache`, else energy | How training chunks are chosen: `energy` or `teacher` (needs `--teacher_cache`) |

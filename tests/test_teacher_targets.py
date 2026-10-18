@@ -104,6 +104,21 @@ class TestBlendTargets:
         blend_targets(hard, np.array([0.0, 1.0], np.float32), np.array([True, True]), 0.5)
         np.testing.assert_array_equal(hard, [1.0, 0.0])
 
+    def test_background_birds_take_the_teachers_score(self):
+        # file label, a background bird heard clearly, one heard moderately, one barely, a confirmed absence (no mask)
+        hard = np.array([1.0, 0.0, 0.0, 0.0, 0.0], np.float32)
+        teacher = np.array([0.2, 0.9, 0.5, 0.2, 0.9], np.float32)
+        mask = np.array([True, True, True, True, False])
+        plain = blend_targets(hard, teacher, mask, 0.5)
+        out = blend_targets(hard, teacher, mask, 0.5, background=True)
+        np.testing.assert_allclose(plain, [0.6, 0.45, 0.25, 0.1, 0.0])
+        np.testing.assert_allclose(out, [0.6, 1.0, 0.5, 0.1, 0.0])  # the label still blends; absences stay 0
+
+    def test_background_needs_a_teacher_share(self):
+        hard = np.array([0.0, 0.0], np.float32)
+        out = blend_targets(hard, np.array([0.9, 0.5], np.float32), np.array([True, True]), 0.0, background=True)
+        np.testing.assert_array_equal(out, hard)
+
     def test_rejects_a_weight_outside_zero_one(self):
         with pytest.raises(ValueError):
             blend_targets(np.zeros(2), np.zeros(2), np.ones(2, bool), 1.5)
