@@ -1,6 +1,7 @@
 """Percentile activation ranges in the PTQ conversion."""
 
 import numpy as np
+import pytest
 import tensorflow as tf
 
 from birdnet_stm32.conversion.quantize import _calibrated_ranges, clip_activation_ranges, convert_to_tflite
@@ -64,3 +65,44 @@ def test_convert_keeps_float_io_and_tracks_float(tmp_path):
     ref = model(x).numpy()
     cos = float(np.sum(out * ref) / (np.linalg.norm(out) * np.linalg.norm(ref)))
     assert cos > 0.98
+
+
+def test_a_range_too_narrow_to_bin_is_left_at_min_max():
+    from birdnet_stm32.conversion.quantize import _binnable
+
+    assert _binnable(-1.0, 1.0)
+    assert not _binnable(0.5, 0.5)
+    # a saturated gate: a range too narrow for 8,192 distinct float32 edges, which np.histogram refuses
+    assert not _binnable(0.9999, 1.0)
+    assert _binnable(0.999, 1.0)
+    with pytest.raises(ValueError):
+        np.histogram(np.ones(1, np.float32), bins=8192, range=(np.float32(0.9999), np.float32(1.0)))
+
+
+def test_frontend_tensors_take_their_own_percentile():
+    from birdnet_stm32.conversion.quantize import (
+        ACTIVATION_RANGE_PERCENTILE,
+        FRONTEND_RANGE_PERCENTILE,
+        range_percentile,
+    )
+
+    assert FRONTEND_RANGE_PERCENTILE < ACTIVATION_RANGE_PERCENTILE
+    assert range_percentile("dscnn_audio_1/audio_frontend_1/audio_frontend_mag_1/pwl_add_1") == FRONTEND_RANGE_PERCENTILE
+    assert range_percentile("dscnn_audio_1/block2a_expand_act/Relu6") == ACTIVATION_RANGE_PERCENTILE
+
+
+def test_a_percentile_function_cuts_tensors_by_name():
+    x = tf.keras.Input((16,))
+    fe = tf.keras.layers.Dense(32, activation="relu", name="audio_frontend_dense")(x)
+    h = tf.keras.layers.Dense(32, activation="relu", name="hidden")(fe)
+    model = tf.keras.Model(x, tf.keras.layers.Dense(4, name="logits")(h))
+    samples = _samples()
+    calibrated = _calibrated(model, samples)
+    uniform = _calibrated_ranges(clip_activation_ranges(calibrated, samples, percentile=100.0))
+    by_name = _calibrated_ranges(
+        clip_activation_ranges(calibrated, samples, percentile=lambda n: 99.0 if "audio_frontend" in n else 100.0)
+    )
+    names = {d["index"]: d["name"] for d in tf.lite.Interpreter(model_content=calibrated).get_tensor_details()}
+    fe = [i for i in uniform if "audio_frontend" in names[i]]
+    assert fe and all(by_name[i][1] < uniform[i][1] for i in fe)
+    assert all(by_name[i] == uniform[i] for i in uniform if i not in fe)

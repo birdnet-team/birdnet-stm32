@@ -60,8 +60,10 @@ what a bundle contains and how to run one on the board.
 - **Three audio frontends**: `librosa` (precomputed mel), `hybrid` (linear STFT
   + learned mel mixer), and `raw` (waveform → learned filterbank) — all
   quantization-friendly and all supported by the firmware.
-- **Scalable DS-CNN**: width (`alpha`), per-stage widths (`--stage_widths`) and
-  depth (`depth_multiplier`) knobs over plain depthwise separable blocks.
+- **N6-B0 backbone** (default from 2.2): EfficientNet-B0 with ReLU6, no
+  squeeze-and-excite and a bounded residual stream, built for INT8 on the N6.
+  The DS-CNN of the releases up to 2.1 stays available (`--backbone dscnn`)
+  with its width, per-stage width and depth knobs.
 - **Head fine-tuning** (`finetune-head`): after training, refits the classifier
   on the frozen backbone over every training file, optionally weighing negatives
   by geographic co-occurrence; +4% WABAD AUPRC on 2.1 Raw. See

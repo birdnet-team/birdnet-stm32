@@ -250,8 +250,18 @@ class TestActivationQAT:
         ranges = calibrate_activation_ranges(model, [[samples]], max_samples=2)
         assert ranges["pred"] == (0.0, 255.0 / 256)
         assert "pred__logits" in ranges
-        scores = np.asarray(build_qat_model(model, ranges)(samples))
+        scores = np.asarray(build_qat_model(model, ranges, logit_output=False)(samples))
         np.testing.assert_allclose(scores * 256, np.round(scores * 256), atol=1e-5)
+
+    def test_logit_output_keeps_scores_off_the_probability_grid(self):
+        """The default simulates the release conversion: INT8 logits, then the sigmoid, no 1/256 output grid."""
+        inputs = tf.keras.Input((3,))
+        model = tf.keras.Model(inputs, tf.keras.layers.Dense(4, activation="sigmoid", name="pred")(inputs))
+        samples = np.random.default_rng(1).normal(size=(64, 3)).astype(np.float32)
+        ranges = calibrate_activation_ranges(model, [[samples]], max_samples=64)
+        scores = np.asarray(build_qat_model(model, ranges)(samples))
+        assert not np.allclose(scores * 256, np.round(scores * 256), atol=1e-5)
+        assert np.all(scores > 0)  # small scores are not floored to zero
 
     def test_distillation_loss_is_finite_and_reported(self):
         """The QAT objective must constrain probabilities beyond hard labels."""
@@ -362,7 +372,7 @@ def test_range_refresh_moves_every_quantizer_without_rebuilding():
     deployment = tf.keras.Model(inputs, outputs)
     samples = np.random.default_rng(0).normal(size=(4, 4, 4, 1)).astype(np.float32)
     ranges = calibrate_activation_ranges(deployment, [(s[None],) for s in samples], max_samples=4)
-    qat = build_qat_model(deployment, ranges)
+    qat = build_qat_model(deployment, ranges, logit_output=False)
     qat(samples)
 
     quantizers = _fake_quantizers(qat)
@@ -374,3 +384,44 @@ def test_range_refresh_moves_every_quantizer_without_rebuilding():
     assert not np.allclose(qat(samples).numpy(), before)
     refresh_activation_ranges(qat, ranges)
     np.testing.assert_allclose(qat(samples).numpy(), before, atol=1e-6)
+
+
+def test_percentile_calibration_cuts_internal_tails_and_keeps_input_and_logits():
+    """run_qat's percentile mode: internal tensors are cut like the converter's ranges; input and logits keep min/max."""
+    from birdnet_stm32.training.qat import calibrate_activation_ranges
+
+    inputs = tf.keras.Input((8,))
+    hidden = tf.keras.layers.Dense(16, name="hidden")(inputs)
+    act = tf.keras.layers.Activation("swish", name="act")(hidden)
+    logits = tf.keras.layers.Dense(3, name="pred")(act)
+    model = tf.keras.Model(inputs, logits)
+    rng = np.random.default_rng(0)
+    data = rng.standard_normal((400, 8)).astype(np.float32)
+    data[0] *= 50.0  # one outlier sample stretches every min/max
+    dataset = [(data[i : i + 20],) for i in range(0, 400, 20)]
+    full = calibrate_activation_ranges(model, dataset, max_samples=400)
+    cut = calibrate_activation_ranges(model, dataset, max_samples=400, percentile=99.0)
+    assert "act" in full  # Activation layers (SiLU) are quantization boundaries
+    assert cut["act"][1] < full["act"][1]
+    assert cut["__input__"] == full["__input__"]
+    assert cut["pred"] == full["pred"]
+
+
+def test_percentile_calibration_takes_a_function_of_the_boundary_name():
+    """run_qat passes the converter's range_percentile: frontend boundaries are cut harder than the rest."""
+    from birdnet_stm32.training.qat import calibrate_activation_ranges
+
+    inputs = tf.keras.Input((8,))
+    fe = tf.keras.layers.Activation("relu", name="audio_frontend_act")(tf.keras.layers.Dense(16, name="fe_dense")(inputs))
+    act = tf.keras.layers.Activation("relu", name="act")(tf.keras.layers.Dense(16, name="hidden")(fe))
+    model = tf.keras.Model(inputs, tf.keras.layers.Dense(3, name="pred")(act))
+    rng = np.random.default_rng(0)
+    data = rng.standard_normal((400, 8)).astype(np.float32)
+    data[0] *= 50.0
+    dataset = [(data[i : i + 20],) for i in range(0, 400, 20)]
+    full = calibrate_activation_ranges(model, dataset, max_samples=400)
+    cut = calibrate_activation_ranges(
+        model, dataset, max_samples=400, percentile=lambda n: 99.0 if "audio_frontend" in n else 100.0
+    )
+    assert cut["audio_frontend_act"][1] < full["audio_frontend_act"][1]
+    assert cut["act"] == full["act"]

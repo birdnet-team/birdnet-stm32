@@ -118,6 +118,18 @@ def _build_optimizer(
     raise ValueError(f"Invalid optimizer: '{name}'. Valid options: {VALID_OPTIMIZERS}")
 
 
+
+def load_for_resume(checkpoint_path: str) -> tf.keras.Model:
+    """Load a checkpoint to continue training it, keeping each layer's saved dtype policy.
+
+    ``load_keras_model`` rebuilds a mixed-precision checkpoint in float32, which evaluation and conversion need; a
+    resumed run must keep the policy it was trained with, or it trains on in float32 (2026-10-14: 87 instead of
+    55 ms per step on the probe that resumed after a stop).
+    """
+    from birdnet_stm32.models.runners import _KERAS_CUSTOM_OBJECTS
+
+    return tf.keras.models.load_model(checkpoint_path, compile=False, custom_objects=_KERAS_CUSTOM_OBJECTS)
+
 def train_model(
     model: tf.keras.Model,
     train_dataset: tf.data.Dataset,
@@ -218,9 +230,7 @@ def train_model(
     state_path = checkpoint_path.replace(".keras", "_train_state.json")
     if resume and os.path.isfile(checkpoint_path):
         print(f"[resume] Loading model from {checkpoint_path}")
-        from birdnet_stm32.models.runners import load_keras_model
-
-        model = load_keras_model(checkpoint_path)
+        model = load_for_resume(checkpoint_path)
         if os.path.isfile(state_path):
             with open(state_path) as f:
                 state = json.load(f)

@@ -14,8 +14,10 @@ import tensorflow as tf
 from tqdm import tqdm
 
 from birdnet_stm32.audio.activity import pick_random_samples
+from birdnet_stm32.conversion.pwl_split import SPLIT_YT, can_split, split_pwl
 from birdnet_stm32.conversion.quantize import (
     ACTIVATION_RANGE_PERCENTILE,
+    FRONTEND_RANGE_PERCENTILE,
     calibration_source,
     convert_to_tflite,
     representative_data_gen,
@@ -65,13 +67,6 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--output_path", type=str, default="", help="Output .tflite path")
     parser.add_argument("--data_path_train", type=str, default="", help="Training data directory for rep. dataset")
     parser.add_argument("--num_samples", type=int, default=1024, help="Representative dataset samples")
-    parser.add_argument(
-        "--calibration_dir",
-        type=str,
-        default="",
-        help="Calibrate on this directory of audio (e.g. field recordings) instead of --data_path_train; "
-        "the parity validation set is still drawn from --data_path_train",
-    )
     parser.add_argument("--validate_samples", type=int, default=256, help="Validation samples")
     parser.add_argument(
         "--min_cosine_sim",
@@ -284,7 +279,7 @@ def _convert_split_head(
         tmp_backbone, tmp_classifier = staged
 
         convert_to_tflite(
-            backbone,
+            split_pwl(backbone) if can_split(backbone) else backbone,
             rep_data_gen,
             tmp_backbone,
             per_tensor=args.per_tensor,
@@ -594,7 +589,7 @@ def main():
         if not file_paths:
             raise ValueError("No training audio found for the classes in the model config.")
 
-        calibration_files = calibration_source(args.data_path_train, args.calibration_dir, configured_classes)
+        calibration_files = calibration_source(args.data_path_train, configured_classes)
         class_count = len({os.path.basename(os.path.dirname(path)) for path in calibration_files})
         stratified_paths = stratified_sample_paths(calibration_files, args.num_samples, seed=42)
         if len(stratified_paths) != args.num_samples:
@@ -602,7 +597,7 @@ def main():
                 f"Requested {args.num_samples} calibration paths but only {len(stratified_paths)} are available."
             )
         print(f"Representative dataset: {len(stratified_paths)} stratified samples from {class_count} folders.")
-        data_manifests["calibration"] = _manifest_record(stratified_paths, args.calibration_dir or args.data_path_train)
+        data_manifests["calibration"] = _manifest_record(stratified_paths, args.data_path_train)
 
         def rep_data_gen(num_samples: int | None = None):
             count = len(stratified_paths) if num_samples is None else min(num_samples, len(stratified_paths))
@@ -668,13 +663,19 @@ def main():
         "output_path": args.output_path,
         "quantization": "ptq",
         "activation_range_percentile": ACTIVATION_RANGE_PERCENTILE,
+        "frontend_range_percentile": FRONTEND_RANGE_PERCENTILE,
+        "pwl_split": {"yt": SPLIT_YT} if can_split(model) else None,
         "per_tensor": args.per_tensor,
         "quality_gate_passed": False,
         "data_manifests": data_manifests,
     }
 
     try:
-        convert_to_tflite(model, rep_data_gen, tmp_path, per_tensor=args.per_tensor)
+        # The INT8 graph of a raw PWL frontend is its float-exact two-exposure rewrite (conversion.pwl_split);
+        # validation below still compares against the float model itself.
+        if can_split(model):
+            print(f"Two-exposure PWL: the frontend's band magnitude and compressor split at y = {SPLIT_YT:g}")
+        convert_to_tflite(split_pwl(model) if can_split(model) else model, rep_data_gen, tmp_path, per_tensor=args.per_tensor)
 
         n_runs = max(1, args.batch_validate) if args.batch_validate > 0 else 1
         all_metrics: list[dict] = []

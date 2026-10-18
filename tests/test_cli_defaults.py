@@ -88,7 +88,9 @@ class TestBestPathDefaults:
         assert args.input_compression == "none"
         assert args.sample_rate == 24000
         assert args.chunk_duration == pytest.approx(2.5)
-        assert args.embeddings_size == 1024
+        assert args.backbone == "efficientnet_b0_n6"
+        assert args.num_mels == 128
+        assert args.embeddings_size == 1280
         assert args.alpha == pytest.approx(1.5)
         assert args.dw_kernel_size == 5
         assert args.stage_widths == [32, 86, 342, 683]

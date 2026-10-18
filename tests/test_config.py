@@ -149,6 +149,12 @@ class TestModelConfig:
         with pytest.raises(ValueError, match="stage_widths"):
             ModelConfig(stage_widths=[32, 64])
         assert ModelConfig.load(path).stage_widths == [32, 64, 128, 256]
+        assert ModelConfig.load(path).backbone == "dscnn"
+        probe = tmp_path / "probe.json"
+        ModelConfig(backbone="efficientnet_b0_n6").save(probe)
+        assert ModelConfig.load(probe).backbone == "efficientnet_b0_n6"
+        with pytest.raises(ValueError, match="backbone"):
+            ModelConfig(backbone="resnet")
 
 
 def test_config_ignores_removed_architecture_keys(tmp_path):

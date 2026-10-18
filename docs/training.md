@@ -74,7 +74,17 @@ was removed in 1.3.0: best float of any raw model, worst INT8.
 
 ## Model architecture
 
-The DS-CNN is scaled with two knobs:
+`--backbone` picks the network behind the frontend. The default from 2.2 is
+**N6-B0** (`efficientnet_b0_n6`): EfficientNet-B0's inverted-residual blocks
+with the three changes that let it survive INT8 on the N6 — ReLU6 instead of
+SiLU, no squeeze-and-excite, and a bounded residual stream (ReLU6 after each
+projection and residual add). B0 as published lost 14% of its WABAD AP to
+post-training quantization. N6-B0 runs at 128 bands (`--num_mels`) into a
+1,280-channel top convolution (`--embeddings_size`), 4.9 M parameters and 523 M
+MACs, 34 ms per inference on the STM32N6570-DK. `efficientnet_b0_n6w` widens
+its bottlenecks (experimental).
+
+`dscnn` is the backbone of every release up to 2.1. It is scaled with two knobs:
 
 - **`--alpha`** (width multiplier): scales channel counts across all stages.
   Default 1.5 (2.0 release). Values like 0.75 or 1.0 produce smaller models.
@@ -214,14 +224,15 @@ python -m birdnet_stm32 train --epochs 50 --resume --checkpoint_path ckpt/model.
 Use `--qat` to fine-tune a pretrained model with simulated INT8 quantization
 noise, teaching the weights to survive quantization.
 
-!!! note "Not part of the 2.x recipe"
-    On 2.0 Raw no QAT epoch beat its starting point: INT8 cMAP 0.545 at epoch
-    0, 0.520–0.541 after each of 8 epochs, so the selection kept the untrained
-    checkpoint. On hybrid models QAT scored below plain post-training
-    quantization at every epoch. The release recipe converts the trained
-    (raw: equalized) checkpoint directly, with percentile activation ranges
-    (see [Conversion](conversion.md#activation-ranges)); QAT simulates min/max
-    ranges and does not model them.
+!!! note "Part of the recipe again from 2.2"
+    Up to 2.1 QAT never beat its starting point (2.0 Raw: INT8 cMAP 0.545 at
+    epoch 0, 0.520–0.541 after each of 8 epochs). It had two bugs: it drew
+    from the raw, unbalanced training list instead of the class-capped draw
+    with field clips the float run uses, and it simulated and selected a
+    probability output on the INT8 grid, while the releases ship logits. With
+    both fixed, two epochs at learning rate 1e-5 took 2.2's N6-B0 from INT8
+    validation cMAP 0.7665 to 0.7745 (float 0.781) and from 5.2% to 4.5% INT8
+    loss on WABAD.
 
 !!! warning "QAT requires a pretrained model"
     Always train normally first, then fine-tune with `--qat`. Do **not** use
@@ -247,13 +258,18 @@ configurable. This constrains background and low-confidence probabilities
 while directly optimizing the lower tail that the release parity gate measures.
 
 With `--qat`, the defaults switch to the fine-tuning schedule: 8 epochs at
-learning rate 2e-5, with activation ranges recalibrated on the current weights
-after every epoch (`--qat_range_refresh`, on by default). The simulation
-quantizes every tensor the converter quantizes, including each partial
-filterbank convolution, so its validation cMAP (`val_sim_int8_cmap`) tracks
-the converted model's (`val_int8_cmap`) to within a few thousandths.
+learning rate 2e-5 (2.2: `--epochs 2 --steps_per_epoch 2850 --learning_rate
+1e-5`), with activation ranges recalibrated on the current weights after every
+epoch (`--qat_range_refresh`, on by default). QAT draws its training audio as
+the float run does (`--class_cap_per_epoch`, `--field_table`), uses the
+converter's activation-range percentiles and simulates the logit output the
+releases ship. The simulation quantizes every tensor the converter quantizes,
+including each partial filterbank convolution, so its validation cMAP
+(`val_sim_int8_cmap`) tracks the converted model's (`val_int8_cmap`) to within
+a few thousandths; selection converts each epoch as the release does (logit
+output, two-exposure PWL) and keeps every epoch's INT8 candidate.
 
-The full raw pipeline (the 2.1 recipe):
+The full raw pipeline (the 2.2 recipe):
 
 ```bash
 # Step 1: Normal training (with a teacher cache, as the releases are trained)
@@ -270,10 +286,17 @@ python -m birdnet_stm32 finetune-head --checkpoint_path checkpoints/model.keras 
 python -m birdnet_stm32 equalize --checkpoint_path checkpoints/model_ft.keras \
   --data_path_train data/train --output_path checkpoints/model_eq.keras
 
-# Step 4: Convert
+# Step 4: Two epochs of quantization-aware training on the equalized checkpoint
+python -m birdnet_stm32 train --qat --checkpoint_path checkpoints/qat/model.keras \
+  --data_path_train data/train --data_path_val data/validation --classes_file data/labels.txt \
+  --teacher_cache data/teacher_cache --field_table data/field_table.csv \
+  --epochs 2 --steps_per_epoch 2850 --learning_rate 1e-5
+# (checkpoints/qat/model.keras is a copy of model_eq.keras; QAT writes model_qat.keras)
+
+# Step 5: Convert
 python -m birdnet_stm32 convert \
-  --checkpoint_path checkpoints/model_eq.keras \
-  --model_config checkpoints/model_eq_model_config.json \
+  --checkpoint_path checkpoints/qat/model_qat.keras \
+  --model_config checkpoints/qat/model_qat_model_config.json \
   --data_path_train data/train
 ```
 
@@ -283,8 +306,8 @@ gets the same share of the tensors' INT8 grids, and refuses to save if the
 float output changes. See [INT8 quality](dev/int8-parity-plan.md) for the
 measurements.
 
-For `hybrid` and `librosa`, skip step 3 and convert the fine-tuned checkpoint
-directly.
+For `hybrid` and `librosa`, skip step 3 (QAT on hybrid models scored below
+plain post-training quantization at every epoch up to 2.0).
 
 ### Head fine-tuning
 
@@ -400,7 +423,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--max_classes` | None | Use only the N most populated classes |
 | `--max_samples` | None | Max files per class |
 | `--sample_rate` | 24000 | Audio sample rate (Hz) |
-| `--num_mels` | 64 | Number of mel frequency bins |
+| `--num_mels` | 128 | Number of mel frequency bins (up to 2.1: 64) |
 | `--spec_width` | per frontend | Frames per chunk: 448 raw, 384 hybrid, 256 librosa |
 | `--fft_length` | 512 | FFT window length |
 | `--chunk_duration` | 2.5 | Chunk duration (seconds) |
@@ -408,11 +431,12 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--audio_frontend` | raw | `raw`, `hybrid`, or `librosa` — raw models trained before the [NPU fixes](dev/audio-frontends.md#raw-waveform) must be retrained |
 | `--mag_scale` | pwl | `pwl` or `none` |
 | `--input_compression` | none | `none`, `sqrt` or `log`: compress a `librosa`/`hybrid` spectrogram before its first INT8 quantization; the firmware applies the same compression |
-| `--embeddings_size` | 1024 | Embedding channels before head |
+| `--embeddings_size` | 1280 | Embedding channels before head (N6-B0's top conv; up to 2.1: 1024) |
 | `--alpha` | 1.5 | Model width scaling |
 | `--depth_multiplier` | 1 | Block repeats per stage |
 | `--dw_kernel_size` | 5 | Depthwise kernel in stages 2–4: `5` or `3` |
 | `--stage_widths` | 32 86 342 683 | Base channels of the four stages, before `--alpha` (2.0: 32 64 128 256) |
+| `--backbone` | efficientnet_b0_n6 | `efficientnet_b0_n6` (2.2, N6-B0: EfficientNet-B0 with ReLU6, no squeeze-and-excite and a bounded residual stream), `efficientnet_b0_n6w` (that with wider bottlenecks: expansion 4 in stages 2–4, residual stream ×1.5 in stages 4–6; experimental) or `dscnn` (releases up to 2.1); `--alpha`, `--depth_multiplier`, `--dw_kernel_size` and `--stage_widths` apply to `dscnn` only |
 | `--raw_exposure_gain` | 16 (raw) | Gain of the raw filterbank's second, clamped exposure, mixed per band into a knee compressor; 1 = one exposure (raw only) |
 | `--mixup_alpha` | 0.2 | Mixup alpha (0 disables) |
 | `--mixup_probability` | 0.25 | Fraction of batch to mix |
@@ -421,6 +445,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--time_mask_max` | 25 | Max time mask width (frames) |
 | `--teacher_cache` | None | Directory of cached per-window teacher scores, and optionally embeddings |
 | `--teacher_weight` | 0.5 with `--teacher_cache`, else 0 | Teacher share of the training target in [0, 1] (0 = hard labels only) |
+| `--teacher_background` | off | Background birds: a species the file does not name takes the teacher's own score from 0.3 and 1 from 0.8 instead of the blend (experimental; also on `finetune-head`) |
 | `--label_sidecar` | None | CSV of per-file label additions (`sample_id`, `positives`, `negatives`; classes separated by `;`): positives join the folder's class in the hard label (recordings with several species), negatives are confirmed absent, held at 0 and never raised by the teacher's soft target |
 | `--teacher_embedding_weight` | 0.2 with embeddings | Weight of a cosine loss to the teacher's embedding of each chunk; on when `--teacher_cache` holds `emb.npy`, 0 disables |
 | `--crop_policy` | teacher with `--teacher_cache`, else energy | How training chunks are chosen: `energy` or `teacher` (needs `--teacher_cache`) |
@@ -447,7 +472,6 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--checkpoint_path` | checkpoints/best_model.keras | Output path (.keras) |
 | `--qat` | False | Quantization-aware fine-tuning |
 | `--qat_calibration_samples` | 1024 | Exact stratified samples used for QAT and conversion calibration |
-| `--calibration_dir` | — | QAT: draw the calibration audio from this directory (any layout, stratified by subfolder) instead of the training files, e.g. field recordings from the deployment domain; `equalize` and `convert` take the same option |
 | `--qat_distillation_weight` | 1.0 | Frozen-teacher Bernoulli-KL weight |
 | `--qat_cosine_weight` | 0.10 | Mean teacher/student cosine-loss weight |
 | `--qat_cosine_tail_weight` | 0.75 | Worst-sample cosine-loss weight |

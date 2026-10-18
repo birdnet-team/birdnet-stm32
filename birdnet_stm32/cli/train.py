@@ -15,7 +15,7 @@ from birdnet_stm32.data.dataset import (
     load_file_paths_from_directory,
 )
 from birdnet_stm32.data.generator import ClassCappedPasses, estimate_samples_per_epoch, load_dataset, sample_chunks
-from birdnet_stm32.models.dscnn import DW_KERNEL_SIZES, STAGE_WIDTHS, build_dscnn_model
+from birdnet_stm32.models.dscnn import BACKBONES, DW_KERNEL_SIZES, STAGE_WIDTHS, build_dscnn_model
 from birdnet_stm32.models.frontend import RELEASE_RAW_BANK, RELEASE_RAW_MAGNITUDE, normalize_frontend_name
 from birdnet_stm32.models.profiler import print_profile
 from birdnet_stm32.training.config import ModelConfig
@@ -248,7 +248,7 @@ def get_args() -> argparse.Namespace:
 
     # -- Audio ----------------------------------------------------------------
     parser.add_argument("--sample_rate", type=int, default=24000, help="Audio sample rate (Hz)")
-    parser.add_argument("--num_mels", type=int, default=64, help="Number of mel bins")
+    parser.add_argument("--num_mels", type=int, default=128, help="Number of mel bins (2.2: 128; up to 2.1: 64)")
     parser.add_argument(
         "--spec_width",
         type=int,
@@ -289,7 +289,9 @@ def get_args() -> argparse.Namespace:
     )
 
     # -- Model architecture ---------------------------------------------------
-    parser.add_argument("--embeddings_size", type=int, default=1024, help="Embeddings layer size")
+    parser.add_argument(
+        "--embeddings_size", type=int, default=1280, help="Embeddings layer size (2.2: 1280, N6-B0's top conv; up to 2.1: 1024)"
+    )
     parser.add_argument("--alpha", type=float, default=1.5, help="Width multiplier")
     parser.add_argument("--depth_multiplier", type=int, default=1, help="Depth multiplier")
     parser.add_argument(
@@ -306,6 +308,17 @@ def get_args() -> argparse.Namespace:
         default=list(STAGE_WIDTHS),
         metavar="W",
         help="Base output channels of the four stages, before --alpha",
+    )
+    parser.add_argument(
+        "--backbone",
+        type=str,
+        default="efficientnet_b0_n6",
+        choices=list(BACKBONES),
+        help=(
+            "Backbone behind the frontend: efficientnet_b0_n6 (2.2: EfficientNet-B0 with ReLU6, no squeeze-and-excite "
+            "and a bounded residual stream), efficientnet_b0_n6w (that with wider bottlenecks, experimental) or dscnn "
+            "(releases up to 2.1; --alpha, --depth_multiplier, --dw_kernel_size and --stage_widths apply to it only)"
+        ),
     )
     parser.add_argument(
         "--raw_exposure_gain",
@@ -362,6 +375,14 @@ def get_args() -> argparse.Namespace:
         help=(
             f"Teacher share of the training target in [0, 1] (default {TEACHER_WEIGHT:g} with "
             "--teacher_cache, otherwise 0 = hard labels only)"
+        ),
+    )
+    parser.add_argument(
+        "--teacher_background",
+        action="store_true",
+        help=(
+            "Background birds: a species the file does not name takes the teacher's own score from 0.3 and 1 from "
+            "0.8, instead of --teacher_weight times it (experimental)"
         ),
     )
     parser.add_argument(
@@ -500,13 +521,6 @@ def get_args() -> argparse.Namespace:
         help="Quantization-aware fine-tuning (requires pretrained --checkpoint_path)",
     )
     parser.add_argument(
-        "--calibration_dir",
-        type=str,
-        default="",
-        help="QAT: calibrate activation ranges on this directory of audio (e.g. field recordings) "
-        "instead of the training files",
-    )
-    parser.add_argument(
         "--qat_calibration_samples",
         type=int,
         default=1024,
@@ -567,6 +581,8 @@ def get_args() -> argparse.Namespace:
         parser.error(f"--teacher_weight must be in [0, 1], got {args.teacher_weight}")
     if args.teacher_weight > 0 and not args.teacher_cache:
         parser.error("--teacher_weight > 0 needs --teacher_cache")
+    if args.teacher_background and not args.teacher_weight > 0:
+        parser.error("--teacher_background needs teacher targets (--teacher_cache, --teacher_weight > 0)")
     has_embeddings = bool(args.teacher_cache) and os.path.isfile(os.path.join(args.teacher_cache, "emb.npy"))
     if args.teacher_embedding_weight is None:
         # On wherever the cache can feed it: float training with teacher embeddings.
@@ -780,6 +796,7 @@ def main():
         crop_policy=args.crop_policy,
         teacher_cache=args.teacher_cache,
         teacher_weight=args.teacher_weight,
+        teacher_background=args.teacher_background,
         teacher_embeddings=embed,
     )
     if args.label_sidecar:
@@ -849,6 +866,7 @@ def main():
         depth_multiplier=args.depth_multiplier,
         dw_kernel_size=args.dw_kernel_size,
         stage_widths=args.stage_widths,
+        backbone=args.backbone,
         embeddings_size=args.embeddings_size,
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
@@ -881,6 +899,7 @@ def main():
         depth_multiplier=args.depth_multiplier,
         dw_kernel_size=args.dw_kernel_size,
         stage_widths=list(args.stage_widths),
+        backbone=args.backbone,
         num_classes=len(classes),
         class_names=classes,
         raw_exposure_gain=args.raw_exposure_gain,

@@ -284,7 +284,7 @@ def _process_file(path: str):
             teacher = _teacher.lookup(sample_id, window_offset_s + start / sr, cd)
             if teacher is not None:
                 mask = _teacher.mask if negatives is None else _teacher.mask & ~negatives
-                target = blend_targets(label, teacher, mask, cfg["teacher_weight"])
+                target = blend_targets(label, teacher, mask, cfg["teacher_weight"], cfg.get("teacher_background", False))
         if embed:
             vector = _teacher.embedding(sample_id, window_offset_s + start / sr, cd)
             valid = np.float32(vector is not None)

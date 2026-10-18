@@ -281,3 +281,49 @@ class TestBackboneOptions:
     def test_rejects_bad_stage_widths(self):
         with pytest.raises(ValueError, match="stage_widths"):
             _raw_model(stage_widths=[32, 64, 128])
+
+
+class TestEfficientNetBackbone:
+    """N6-B0 (2.2): EfficientNet-B0 with ReLU6, no squeeze-and-excite and a bounded residual stream."""
+
+    def test_builds_with_gap_and_pred(self):
+        model = _raw_model(backbone="efficientnet_b0_n6")
+        assert model.output_shape == (None, 5)
+        assert isinstance(model.get_layer("gap"), tf.keras.layers.GlobalAveragePooling2D)
+        assert model.get_layer("gap").output.shape[-1] == 64  # the top conv emits embeddings_size channels
+        names = {layer.name for layer in model.layers}
+        assert {"block7a_project_conv", "top_conv", "block2b_project_relu", "block2b_add_relu"} <= names
+        assert not any(name.startswith("stage") for name in names)
+
+    def test_block_table_strides_and_residuals(self):
+        model = _raw_model(backbone="efficientnet_b0_n6")
+        adds = [layer.name for layer in model.layers if isinstance(layer, tf.keras.layers.Add)]
+        # 16 blocks, of which the first of each stage changes shape: 16 - 7 residual adds.
+        assert len(adds) == 9
+        top = model.get_layer("top_conv").output.shape
+        stem_in = model.get_layer("stem_conv").input.shape
+        assert top[1] == -(-stem_in[1] // 32) and top[2] == -(-stem_in[2] // 32)
+
+    def test_relu6_only(self):
+        model = _raw_model(backbone="efficientnet_b0_n6")
+        relus = [layer for layer in model.layers if isinstance(layer, tf.keras.layers.ReLU)]
+        assert relus and all(float(layer.max_value) == 6.0 for layer in relus)
+        assert not any(isinstance(layer, tf.keras.layers.Activation) and layer.name != "pred" for layer in model.layers)
+
+    def test_rejects_unknown_backbone(self):
+        with pytest.raises(ValueError, match="backbone"):
+            _raw_model(backbone="efficientnet_b0")
+
+
+def test_efficientnet_b0_n6_backbone_is_relu6_without_se():
+    model = _raw_model(backbone="efficientnet_b0_n6")
+    names = {layer.name for layer in model.layers}
+    assert "block2b_add_relu" in names and not any("_se_" in n for n in names)
+    assert model.output_shape == (None, 5)
+
+
+def test_efficientnet_b0_n6w_widens_the_residual_stream():
+    narrow, wide = _raw_model(backbone="efficientnet_b0_n6"), _raw_model(backbone="efficientnet_b0_n6w")
+    assert wide.get_layer("block4a_project_conv").filters == 120  # x1.5 of B0's 80
+    assert wide.get_layer("block2a_expand_conv").filters == 16 * 4  # expansion 4 in stage 2
+    assert narrow.get_layer("block4a_project_conv").filters == 80
