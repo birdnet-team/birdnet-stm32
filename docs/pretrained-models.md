@@ -165,6 +165,14 @@ By region (event recall @0.5 / window AUPRC):
 | Asia | 2,152 | 24 | 0.012 / 0.208 | 0.017 / 0.205 | 0.059 / 0.228 | **0.111 / 0.289** | 0.222 / 0.358 |
 | Africa | 1,865 | 25 | 0.054 / 0.243 | 0.060 / 0.292 | 0.146 / 0.297 | **0.210 / 0.346** | 0.135 / 0.351 |
 
+![WABAD precision-recall curves by region for the 2.x models, the BirdNET+ V3.0 teacher and BirdNET V2.4](assets/wabad_pr_by_region.png)
+
+The same comparison as curves: precision against recall over every
+window-species decision, on the 434 species every plotted model covers, with the
+BirdNET Tiny models in INT8 as flashed and the two BirdNET references in float.
+Central and South America share the Neotropics panel, and Asia shares one with
+Oceania and the Pacific.
+
 The 2.0 models reach about half the teacher's AUPRC at under 1.5% of its
 parameters. They are strongest in Europe and North America and weakest in the
 tropics, Asia and Africa. The 2.0 hybrid finds 11% more calls than 2.0 raw
