@@ -16,6 +16,7 @@ from tqdm import tqdm
 from birdnet_stm32.audio.activity import pick_random_samples
 from birdnet_stm32.conversion.quantize import (
     ACTIVATION_RANGE_PERCENTILE,
+    FRONTEND_RANGE_PERCENTILE,
     calibration_source,
     convert_to_tflite,
     representative_data_gen,
@@ -668,6 +669,7 @@ def main():
         "output_path": args.output_path,
         "quantization": "ptq",
         "activation_range_percentile": ACTIVATION_RANGE_PERCENTILE,
+        "frontend_range_percentile": FRONTEND_RANGE_PERCENTILE,
         "per_tensor": args.per_tensor,
         "quality_gate_passed": False,
         "data_manifests": data_manifests,
