@@ -54,6 +54,11 @@ class ModelConfig:
         stage_widths: Base output channels of the four stages, before alpha. The
             default is what configs saved before the field existed were built
             with; ``train`` defaults to ``models.dscnn.STAGE_WIDTHS``.
+        backbone: 'dscnn' (releases up to 2.1; configs saved before the field
+            existed), 'efficientnet_b0_n6' (N6-B0, 2.2) or 'efficientnet_b0_n6w'
+            (that with wider bottlenecks); alpha, depth_multiplier,
+            dw_kernel_size and stage_widths do not apply to the EfficientNet
+            ones. ``train`` defaults to 'efficientnet_b0_n6'.
         num_classes: Number of output classes.
         class_names: Ordered list of class label strings.
         frontend_trainable: Whether frontend weights are trainable.
@@ -84,6 +89,7 @@ class ModelConfig:
     head_pooling: str = "gap"
     dw_kernel_size: int = 3
     stage_widths: list[int] = field(default_factory=lambda: [32, 64, 128, 256])
+    backbone: str = "dscnn"
     dropout_rate: float = 0.5
     frontend_trainable: bool = False
 
@@ -101,6 +107,7 @@ class ModelConfig:
     _VALID_OUTPUT_ACTIVATIONS = frozenset({"sigmoid", "logit"})
     _VALID_HEAD_POOLINGS = frozenset({"gap"})
     _VALID_DW_KERNEL_SIZES = frozenset({3, 5})
+    _VALID_BACKBONES = frozenset({"dscnn", "efficientnet_b0_n6", "efficientnet_b0_n6w"})
 
     def __post_init__(self) -> None:
         """Validate field values after initialization."""
@@ -156,6 +163,8 @@ class ModelConfig:
             raise ValueError(f"dw_kernel_size {self.dw_kernel_size} not in {sorted(self._VALID_DW_KERNEL_SIZES)}")
         if len(self.stage_widths) != 4 or any(int(w) <= 0 for w in self.stage_widths):
             raise ValueError(f"stage_widths must be four positive widths, got {self.stage_widths}")
+        if self.backbone not in self._VALID_BACKBONES:
+            raise ValueError(f"backbone '{self.backbone}' not in {sorted(self._VALID_BACKBONES)}")
         if not 0 <= self.dropout_rate < 1:
             raise ValueError(f"dropout_rate must be in [0, 1), got {self.dropout_rate}")
         if self.num_classes < 0:

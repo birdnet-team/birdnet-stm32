@@ -17,6 +17,7 @@ import tensorflow as tf
 from tensorflow.keras import layers
 
 from birdnet_stm32.models.blocks import _make_divisible
+from birdnet_stm32.models.efficientnet import B0_WIDE_BLOCKS, efficientnet_b0_backbone
 from birdnet_stm32.models.frontend import (
     RELEASE_RAW_BANK,
     RELEASE_RAW_MAGNITUDE,
@@ -31,6 +32,9 @@ HEAD_POOLINGS = ("gap",)
 # Configs saved before the field existed were built at (32, 64, 128, 256); ModelConfig.load keeps that.
 STAGE_WIDTHS = (32, 86, 342, 683)
 DW_KERNEL_SIZES = (3, 5)
+# 'dscnn': every release up to 2.1. 'efficientnet_b0_n6' (2.2): EfficientNet-B0 with ReLU6, no squeeze-and-excite and
+# a bounded residual stream (models/efficientnet.py); 'efficientnet_b0_n6w' the same with wider bottlenecks.
+BACKBONES = ("dscnn", "efficientnet_b0_n6", "efficientnet_b0_n6w")
 
 
 def ds_conv_block(
@@ -136,6 +140,7 @@ def build_dscnn_model(
     head_pooling: str = "gap",
     dw_kernel_size: int = 3,
     stage_widths: tuple[int, ...] | list[int] | None = None,
+    backbone: str = "dscnn",
 ) -> tf.keras.Model:
     """Build a DS-CNN model with a selectable audio frontend.
 
@@ -173,20 +178,29 @@ def build_dscnn_model(
             alpha multiplier; defaults to ``STAGE_WIDTHS``. When the last
             stage's width equals ``embeddings_size``, there is no separate
             embedding conv.
+        backbone: One of ``BACKBONES``. The EfficientNet ones replace the stem,
+            the four stages and the embedding conv with N6-B0 (EfficientNet-B0
+            with ReLU6, no squeeze-and-excite and a bounded residual stream),
+            whose top conv has ``embeddings_size`` channels; alpha,
+            depth_multiplier, dw_kernel_size and stage_widths then do not apply.
+            'efficientnet_b0_n6w' widens its bottlenecks (expansion 4 in stages
+            2-4, residual stream x1.5 in stages 4-6).
 
     Returns:
         Uncompiled DS-CNN Keras model.
 
     Raises:
         ValueError: If raw frontend exceeds STM32N6 input size limit (65536),
-            or on an unknown head_pooling or dw_kernel_size, or stage_widths
-            that are not four positive widths.
+            or on an unknown head_pooling, dw_kernel_size or backbone, or
+            stage_widths that are not four positive widths.
     """
     audio_frontend = normalize_frontend_name(audio_frontend)
     if head_pooling not in HEAD_POOLINGS:
         raise ValueError(f"head_pooling '{head_pooling}' not in {HEAD_POOLINGS}")
     if dw_kernel_size not in DW_KERNEL_SIZES:
         raise ValueError(f"dw_kernel_size {dw_kernel_size} not in {DW_KERNEL_SIZES}")
+    if backbone not in BACKBONES:
+        raise ValueError(f"backbone '{backbone}' not in {BACKBONES}")
     stage_widths = tuple(STAGE_WIDTHS if stage_widths is None else stage_widths)
     if len(stage_widths) != 4 or any(int(w) <= 0 for w in stage_widths):
         raise ValueError(f"stage_widths must be four positive widths, got {stage_widths}")
@@ -250,46 +264,51 @@ def build_dscnn_model(
     else:
         raise ValueError(f"Invalid audio_frontend: {audio_frontend}")
 
-    # Stem (3x3, stride 1x2) to lift channels
-    stem_ch = _make_divisible(int(16 * alpha), 8)
-    x = layers.Conv2D(stem_ch, (3, 3), strides=(1, 2), padding="same", use_bias=False, name="stem_conv")(x)
-    x = layers.BatchNormalization(name="stem_bn")(x)
-    x = layers.ReLU(max_value=6, name="stem_relu")(x)
+    if backbone == "efficientnet_b0_n6":
+        x = efficientnet_b0_backbone(x, embeddings_size)
+    elif backbone == "efficientnet_b0_n6w":
+        x = efficientnet_b0_backbone(x, embeddings_size, blocks=B0_WIDE_BLOCKS)
+    else:
+        # Stem (3x3, stride 1x2) to lift channels
+        stem_ch = _make_divisible(int(16 * alpha), 8)
+        x = layers.Conv2D(stem_ch, (3, 3), strides=(1, 2), padding="same", use_bias=False, name="stem_conv")(x)
+        x = layers.BatchNormalization(name="stem_bn")(x)
+        x = layers.ReLU(max_value=6, name="stem_relu")(x)
 
-    # Four stages: (base_filters, base_repeats, (stride_f, stride_t))
-    base_filters = [int(w) for w in stage_widths]
-    base_repeats = [2, 3, 4, 2]
-    base_strides = [(2, 2), (2, 2), (2, 2), (2, 2)]
+        # Four stages: (base_filters, base_repeats, (stride_f, stride_t))
+        base_filters = [int(w) for w in stage_widths]
+        base_repeats = [2, 3, 4, 2]
+        base_strides = [(2, 2), (2, 2), (2, 2), (2, 2)]
 
-    for si, (bf, br, (sf, st)) in enumerate(zip(base_filters, base_repeats, base_strides, strict=True), start=1):
-        out_ch = _make_divisible(int(bf * alpha), 8)
-        reps = max(1, int(math.ceil(br * depth_multiplier)))
-        k = 3 if si == 1 else dw_kernel_size
+        for si, (bf, br, (sf, st)) in enumerate(zip(base_filters, base_repeats, base_strides, strict=True), start=1):
+            out_ch = _make_divisible(int(bf * alpha), 8)
+            reps = max(1, int(math.ceil(br * depth_multiplier)))
+            k = 3 if si == 1 else dw_kernel_size
 
-        x = ds_conv_block(
-            x,
-            out_ch,
-            stride_f=sf,
-            stride_t=st,
-            name=f"stage{si}_ds1",
-            dw_kernel_size=k,
-        )
-        for bi in range(2, reps + 1):
             x = ds_conv_block(
                 x,
                 out_ch,
-                stride_f=1,
-                stride_t=1,
-                name=f"stage{si}_ds{bi}",
+                stride_f=sf,
+                stride_t=st,
+                name=f"stage{si}_ds1",
                 dw_kernel_size=k,
             )
+            for bi in range(2, reps + 1):
+                x = ds_conv_block(
+                    x,
+                    out_ch,
+                    stride_f=1,
+                    stride_t=1,
+                    name=f"stage{si}_ds{bi}",
+                    dw_kernel_size=k,
+                )
 
-    # Final 1x1 conv to embeddings
-    emb_ch = _make_divisible(int(embeddings_size), 8)
-    if not (x.shape[-1] is not None and int(x.shape[-1]) == int(emb_ch)):
-        x = layers.Conv2D(emb_ch, (1, 1), strides=(1, 1), padding="same", use_bias=False, name="emb_conv")(x)
-        x = layers.BatchNormalization(name="emb_bn")(x)
-        x = layers.ReLU(max_value=6, name="emb_relu")(x)
+        # Final 1x1 conv to embeddings
+        emb_ch = _make_divisible(int(embeddings_size), 8)
+        if not (x.shape[-1] is not None and int(x.shape[-1]) == int(emb_ch)):
+            x = layers.Conv2D(emb_ch, (1, 1), strides=(1, 1), padding="same", use_bias=False, name="emb_conv")(x)
+            x = layers.BatchNormalization(name="emb_bn")(x)
+            x = layers.ReLU(max_value=6, name="emb_relu")(x)
 
     # Head
     x = pooling_head(x, head_pooling)

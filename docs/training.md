@@ -74,7 +74,17 @@ was removed in 1.3.0: best float of any raw model, worst INT8.
 
 ## Model architecture
 
-The DS-CNN is scaled with two knobs:
+`--backbone` picks the network behind the frontend. The default from 2.2 is
+**N6-B0** (`efficientnet_b0_n6`): EfficientNet-B0's inverted-residual blocks
+with the three changes that let it survive INT8 on the N6 — ReLU6 instead of
+SiLU, no squeeze-and-excite, and a bounded residual stream (ReLU6 after each
+projection and residual add). B0 as published lost 14% of its WABAD AP to
+post-training quantization. N6-B0 runs at 128 bands (`--num_mels`) into a
+1,280-channel top convolution (`--embeddings_size`), 4.9 M parameters and 523 M
+MACs, 34 ms per inference on the STM32N6570-DK. `efficientnet_b0_n6w` widens
+its bottlenecks (experimental).
+
+`dscnn` is the backbone of every release up to 2.1. It is scaled with two knobs:
 
 - **`--alpha`** (width multiplier): scales channel counts across all stages.
   Default 1.5 (2.0 release). Values like 0.75 or 1.0 produce smaller models.
@@ -400,7 +410,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--max_classes` | None | Use only the N most populated classes |
 | `--max_samples` | None | Max files per class |
 | `--sample_rate` | 24000 | Audio sample rate (Hz) |
-| `--num_mels` | 64 | Number of mel frequency bins |
+| `--num_mels` | 128 | Number of mel frequency bins (up to 2.1: 64) |
 | `--spec_width` | per frontend | Frames per chunk: 448 raw, 384 hybrid, 256 librosa |
 | `--fft_length` | 512 | FFT window length |
 | `--chunk_duration` | 2.5 | Chunk duration (seconds) |
@@ -408,11 +418,12 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--audio_frontend` | raw | `raw`, `hybrid`, or `librosa` — raw models trained before the [NPU fixes](dev/audio-frontends.md#raw-waveform) must be retrained |
 | `--mag_scale` | pwl | `pwl` or `none` |
 | `--input_compression` | none | `none`, `sqrt` or `log`: compress a `librosa`/`hybrid` spectrogram before its first INT8 quantization; the firmware applies the same compression |
-| `--embeddings_size` | 1024 | Embedding channels before head |
+| `--embeddings_size` | 1280 | Embedding channels before head (N6-B0's top conv; up to 2.1: 1024) |
 | `--alpha` | 1.5 | Model width scaling |
 | `--depth_multiplier` | 1 | Block repeats per stage |
 | `--dw_kernel_size` | 5 | Depthwise kernel in stages 2–4: `5` or `3` |
 | `--stage_widths` | 32 86 342 683 | Base channels of the four stages, before `--alpha` (2.0: 32 64 128 256) |
+| `--backbone` | efficientnet_b0_n6 | `efficientnet_b0_n6` (2.2, N6-B0: EfficientNet-B0 with ReLU6, no squeeze-and-excite and a bounded residual stream), `efficientnet_b0_n6w` (that with wider bottlenecks: expansion 4 in stages 2–4, residual stream ×1.5 in stages 4–6; experimental) or `dscnn` (releases up to 2.1); `--alpha`, `--depth_multiplier`, `--dw_kernel_size` and `--stage_widths` apply to `dscnn` only |
 | `--raw_exposure_gain` | 16 (raw) | Gain of the raw filterbank's second, clamped exposure, mixed per band into a knee compressor; 1 = one exposure (raw only) |
 | `--mixup_alpha` | 0.2 | Mixup alpha (0 disables) |
 | `--mixup_probability` | 0.25 | Fraction of batch to mix |
