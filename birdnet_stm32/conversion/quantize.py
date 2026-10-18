@@ -19,22 +19,16 @@ from birdnet_stm32.models.frontend import normalize_frontend_name
 from birdnet_stm32.models.runners import allocated_interpreter
 
 
-def calibration_source(data_path_train: str, calibration_dir: str, classes: list[str] | None) -> list[str]:
-    """Audio files that INT8 calibration draws from.
+def calibration_source(data_path_train: str, classes: list[str] | None) -> list[str]:
+    """Audio files that INT8 calibration draws from: the training files of the model's classes.
 
-    By default the training files of the model's classes. ``calibration_dir``
-    replaces them with any directory of audio, grouped by subfolder: field
-    recordings from the deployment domain calibrate the activation ranges on the
-    input density the model will actually see, while training stays on focal
-    audio. The draw is stratified by subfolder and seeded, as always.
+    The draw from them is stratified by class folder and seeded. Calibrating on
+    field recordings instead (``--calibration_dir``, 1.5 to 2.1) was measured
+    twice and never helped: 1.5 Raw catalog -0.022 at flat WABAD; 2.2's N6-B0
+    with a 50/50 focal + field set, WABAD bench 0.4685 -> 0.4619.
     """
     from birdnet_stm32.data.dataset import load_file_paths_from_directory
 
-    if calibration_dir:
-        paths, _ = load_file_paths_from_directory(calibration_dir)
-        if not paths:
-            raise ValueError(f"No audio found under --calibration_dir {calibration_dir}")
-        return paths
     paths, _ = load_file_paths_from_directory(data_path_train, classes=classes)
     return paths
 
