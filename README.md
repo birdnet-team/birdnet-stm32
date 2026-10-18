@@ -187,7 +187,7 @@ for toolchain setup and troubleshooting.
 - **Model**: N6-B0 (default from 2.2): EfficientNet-B0 with ReLU6, no squeeze-and-excite and a bounded residual stream, built for INT8 on the N6 (4.9 M parameters, 523 M MACs, 34 ms on the STM32N6570-DK); or the DS-CNN of the releases up to 2.1, with configurable width (`--alpha`) and depth (`--depth_multiplier`) over plain depthwise separable blocks
 - **Augmentation**: Dirichlet multi-source mixup with multi-label union targets for overlapping vocalizations, SpecAugment (on by default), smart crop for long recordings
 - **Optimization**: linear warmup into cosine LR decay, Adam/SGD/AdamW, gradient clipping (on by default), mixed precision (FP16). Standard training checkpoints track exact validation cMAP; QAT selects matching Keras/TFLite artifacts using actual converted INT8 file cMAP, including the starting checkpoint
-- **QAT** (not in the 2.x recipe: on 2.0 Raw no epoch beat its starting point): native Keras 3 quantization-aware fine-tuning via `--qat` — uses the converter's exact calibration manifest to simulate the INT8 input, per-channel kernels, fused activation boundaries, and otherwise-opaque raw-frontend internals; frozen-teacher KL plus mean and configurable worst-sample cosine consistency protect probability calibration and lower-tail parity while exact converted INT8 validation cMAP selects the deployment checkpoint
+- **QAT** (two epochs after the head fine-tune, part of the recipe again from 2.2): native Keras 3 quantization-aware fine-tuning via `--qat` — uses the converter's exact calibration manifest to simulate the INT8 input, per-channel kernels, fused activation boundaries, and otherwise-opaque raw-frontend internals; frozen-teacher KL plus mean and configurable worst-sample cosine consistency protect probability calibration and lower-tail parity while exact converted INT8 validation cMAP selects the deployment checkpoint
 - **Linear probing**: `--linear_probe` freezes a pretrained backbone and trains only the classifier head
 
 ### Conversion
@@ -222,6 +222,12 @@ a public passive acoustic monitoring benchmark — 59,418 annotated calls across
 | `BirdNET_Tiny_N6_GLOBAL_1K_V2.1_Raw_INT8` | 0.274 | 0.241 | 0.356 | 3.70 M | 32 ms (all NPU) |
 | **`BirdNET_Tiny_N6_GLOBAL_1K_V2.2_Raw_INT8`** | **0.401** | **0.309** | **0.445** | 4.88 M | 35 ms (all NPU) |
 | BirdNET+ V3.0 preview 3.1, the teacher | 0.545 | 0.459 | 0.597 | 135 M | does not run on this hardware |
+
+![WABAD precision-recall curves by region for the 2.x models, the BirdNET+ V3.0 teacher and BirdNET V2.4](docs/assets/wabad_pr_by_region.png)
+
+Precision against recall over every window-species decision, on the 434 species
+every plotted model covers; the BirdNET Tiny models in INT8 as flashed, the
+teacher and BirdNET V2.4 in float.
 
 Timings are measured on an STM32N6570-DK for one chunk, excluding the audio
 read, with CPU, NPU and buses at 400 MHz (the firmware's clock profile, no

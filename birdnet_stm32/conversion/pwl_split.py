@@ -67,7 +67,9 @@ class _Envelope(layers.Layer):
     def call(self, inputs):
         f, g = self.frontend, self.frontend.geom
         y = tf.reshape(inputs[:, : g.crop, :], [-1, 1, g.crop // g.fold, g.fold])
-        parts = [f._exposure_clip(conv(y[:, :, i : i + g.stride * (g.frames - 1) + 1, :])) for i, conv in enumerate(f.fb)]
+        parts = [
+            f._exposure_clip(conv(y[:, :, i : i + g.stride * (g.frames - 1) + 1, :])) for i, conv in enumerate(f.fb)
+        ]
         total = parts[0]
         for part in parts[1:]:
             total = f._exposure_clip(total + part)
@@ -136,8 +138,12 @@ def split_pwl(model: tf.keras.Model, yt: float = SPLIT_YT) -> tf.keras.Model:
     def hinge_sum(x, tag, k0w, shift_params):
         y = dw(f"audio_frontend_split_{tag}_k0", [k0w])(x)
         for i, ((sw, sb), kw) in enumerate(zip(shift_params, ks, strict=True), start=1):
-            hinge = layers.ReLU(name=f"audio_frontend_split_{tag}_relu{i}")(dw(f"audio_frontend_split_{tag}_shift{i}", [sw, sb])(x))
-            y = layers.Add(name=f"audio_frontend_split_{tag}_add{i}")([y, dw(f"audio_frontend_split_{tag}_k{i}", [kw])(hinge)])
+            hinge = layers.ReLU(name=f"audio_frontend_split_{tag}_relu{i}")(
+                dw(f"audio_frontend_split_{tag}_shift{i}", [sw, sb])(x)
+            )
+            y = layers.Add(name=f"audio_frontend_split_{tag}_add{i}")(
+                [y, dw(f"audio_frontend_split_{tag}_k{i}", [kw])(hinge)]
+            )
         return y
 
     mix_low = layers.Conv2D(wm.shape[-1], 1, use_bias=True, name="audio_frontend_split_mix_low")
@@ -156,7 +162,9 @@ def split_pwl(model: tf.keras.Model, yt: float = SPLIT_YT) -> tf.keras.Model:
     # Replay the functional graph layer by layer on clones, the frontend swapped for its split.
     first = model.layers[0]
     source = model.inputs[0]  # a sub-model built from ``model.inputs`` has a list as ``input``
-    new_input = tf.keras.Input(source.shape[1:], dtype=source.dtype, name=first.name if isinstance(first, layers.InputLayer) else None)
+    new_input = tf.keras.Input(
+        source.shape[1:], dtype=source.dtype, name=first.name if isinstance(first, layers.InputLayer) else None
+    )
     tensors = {id(source): new_input}
     for layer in model.layers:
         if isinstance(layer, layers.InputLayer):

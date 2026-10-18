@@ -675,7 +675,9 @@ def main():
         # validation below still compares against the float model itself.
         if can_split(model):
             print(f"Two-exposure PWL: the frontend's band magnitude and compressor split at y = {SPLIT_YT:g}")
-        convert_to_tflite(split_pwl(model) if can_split(model) else model, rep_data_gen, tmp_path, per_tensor=args.per_tensor)
+        convert_to_tflite(
+            split_pwl(model) if can_split(model) else model, rep_data_gen, tmp_path, per_tensor=args.per_tensor
+        )
 
         n_runs = max(1, args.batch_validate) if args.batch_validate > 0 else 1
         all_metrics: list[dict] = []

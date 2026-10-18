@@ -33,12 +33,20 @@ def _perturb(model, seed=0):
     pwl._pwl_k0_dw.set_weights([rng.uniform(0.1, 1.3, k0.shape).astype(np.float32)])
     for s, k in zip(pwl._pwl_shift_dws, pwl._pwl_k_dws, strict=True):
         w, b = s.get_weights()
-        s.set_weights([rng.uniform(0.7, 2.4, w.shape).astype(np.float32), rng.uniform(-5.0, 0.5, b.shape).astype(np.float32)])
+        s.set_weights(
+            [rng.uniform(0.7, 2.4, w.shape).astype(np.float32), rng.uniform(-5.0, 0.5, b.shape).astype(np.float32)]
+        )
         (kw,) = k.get_weights()
         k.set_weights([rng.uniform(-0.5, 2.4, kw.shape).astype(np.float32)])
     g, b, m, v = f.band_bn.get_weights()
-    f.band_bn.set_weights([rng.uniform(0.5, 2.0, g.shape), rng.uniform(-0.5, 0.5, b.shape), rng.uniform(0.0, 1.0, m.shape),
-                           rng.uniform(0.2, 2.0, v.shape)])
+    f.band_bn.set_weights(
+        [
+            rng.uniform(0.5, 2.0, g.shape),
+            rng.uniform(-0.5, 0.5, b.shape),
+            rng.uniform(0.0, 1.0, m.shape),
+            rng.uniform(0.2, 2.0, v.shape),
+        ]
+    )
 
 
 def test_split_is_float_exact():

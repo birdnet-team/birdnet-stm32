@@ -87,7 +87,9 @@ def test_frontend_tensors_take_their_own_percentile():
     )
 
     assert FRONTEND_RANGE_PERCENTILE < ACTIVATION_RANGE_PERCENTILE
-    assert range_percentile("dscnn_audio_1/audio_frontend_1/audio_frontend_mag_1/pwl_add_1") == FRONTEND_RANGE_PERCENTILE
+    assert (
+        range_percentile("dscnn_audio_1/audio_frontend_1/audio_frontend_mag_1/pwl_add_1") == FRONTEND_RANGE_PERCENTILE
+    )
     assert range_percentile("dscnn_audio_1/block2a_expand_act/Relu6") == ACTIVATION_RANGE_PERCENTILE
 
 

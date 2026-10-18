@@ -290,7 +290,10 @@ def get_args() -> argparse.Namespace:
 
     # -- Model architecture ---------------------------------------------------
     parser.add_argument(
-        "--embeddings_size", type=int, default=1280, help="Embeddings layer size (2.2: 1280, N6-B0's top conv; up to 2.1: 1024)"
+        "--embeddings_size",
+        type=int,
+        default=1280,
+        help="Embeddings layer size (2.2: 1280, N6-B0's top conv; up to 2.1: 1024)",
     )
     parser.add_argument("--alpha", type=float, default=1.5, help="Width multiplier")
     parser.add_argument("--depth_multiplier", type=int, default=1, help="Depth multiplier")

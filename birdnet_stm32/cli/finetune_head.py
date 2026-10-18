@@ -108,8 +108,11 @@ def main() -> None:
     )
     train_kwargs = dict(common, crop_policy=args.crop_policy)
     if args.teacher_cache:
-        train_kwargs.update(teacher_cache=args.teacher_cache, teacher_weight=args.teacher_weight,
-                            teacher_background=args.teacher_background)
+        train_kwargs.update(
+            teacher_cache=args.teacher_cache,
+            teacher_weight=args.teacher_weight,
+            teacher_background=args.teacher_background,
+        )
     if args.label_sidecar:
         from birdnet_stm32.data.sidecar import load_label_sidecar
 

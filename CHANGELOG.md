@@ -63,6 +63,8 @@ agree with the host on the top species; scores within 0.053 of the host).
   window AUPRC 0.4366 -> 0.4409 at 34.6 ms (33.7), every op on the NPU.
 - `--teacher_background` (`train`, `finetune-head`, experimental): a species a
   file does not name takes the teacher's own score from 0.3 and 1 from 0.8.
+- WABAD precision-recall curves by region for the 2.x models, the BirdNET+ V3.0
+  teacher and BirdNET V2.4, in the README and in Pre-trained Models.
 
 ### Changed
 
