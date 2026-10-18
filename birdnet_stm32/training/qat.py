@@ -649,10 +649,15 @@ def run_qat(args: argparse.Namespace) -> None:
         if getattr(args, "field_table", None):
             from birdnet_stm32.data.sidecar import load_field_table
 
-            draw_kwargs.update(field_table=load_field_table(args.field_table), field_share=args.field_share,
-                               field_per_recording=args.field_per_recording)
-        print(f"[QAT] Class cap {args.class_cap_per_epoch} per epoch"
-              + (f", field share {args.field_share}" if "field_table" in draw_kwargs else ""))
+            draw_kwargs.update(
+                field_table=load_field_table(args.field_table),
+                field_share=args.field_share,
+                field_per_recording=args.field_per_recording,
+            )
+        print(
+            f"[QAT] Class cap {args.class_cap_per_epoch} per epoch"
+            + (f", field share {args.field_share}" if "field_table" in draw_kwargs else "")
+        )
     train_dataset = load_dataset(
         train_paths,
         classes,

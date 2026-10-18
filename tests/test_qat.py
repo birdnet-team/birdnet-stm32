@@ -412,7 +412,9 @@ def test_percentile_calibration_takes_a_function_of_the_boundary_name():
     from birdnet_stm32.training.qat import calibrate_activation_ranges
 
     inputs = tf.keras.Input((8,))
-    fe = tf.keras.layers.Activation("relu", name="audio_frontend_act")(tf.keras.layers.Dense(16, name="fe_dense")(inputs))
+    fe = tf.keras.layers.Activation("relu", name="audio_frontend_act")(
+        tf.keras.layers.Dense(16, name="fe_dense")(inputs)
+    )
     act = tf.keras.layers.Activation("relu", name="act")(tf.keras.layers.Dense(16, name="hidden")(fe))
     model = tf.keras.Model(inputs, tf.keras.layers.Dense(3, name="pred")(act))
     rng = np.random.default_rng(0)

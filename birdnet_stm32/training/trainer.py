@@ -118,7 +118,6 @@ def _build_optimizer(
     raise ValueError(f"Invalid optimizer: '{name}'. Valid options: {VALID_OPTIMIZERS}")
 
 
-
 def load_for_resume(checkpoint_path: str) -> tf.keras.Model:
     """Load a checkpoint to continue training it, keeping each layer's saved dtype policy.
 
@@ -129,6 +128,7 @@ def load_for_resume(checkpoint_path: str) -> tf.keras.Model:
     from birdnet_stm32.models.runners import _KERAS_CUSTOM_OBJECTS
 
     return tf.keras.models.load_model(checkpoint_path, compile=False, custom_objects=_KERAS_CUSTOM_OBJECTS)
+
 
 def train_model(
     model: tf.keras.Model,

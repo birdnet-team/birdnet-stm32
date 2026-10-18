@@ -178,7 +178,9 @@ class Int8Selection(FileCmap):
                 if sigmoid:
                     head.activation = tf.keras.activations.sigmoid
             int8_cmap = self.score(TFLiteRunner(str(candidate)))
-            shutil.copy(candidate, self.checkpoint_path.with_name(f"{self.checkpoint_path.stem}_ep{epoch:02d}_INT8.tflite"))
+            shutil.copy(
+                candidate, self.checkpoint_path.with_name(f"{self.checkpoint_path.stem}_ep{epoch:02d}_INT8.tflite")
+            )
             float_cmap = self.score(self.keras_runner(self.deployment))
             if not np.isfinite(int8_cmap) or not np.isfinite(float_cmap):
                 raise RuntimeError("Non-finite validation cMAP")
