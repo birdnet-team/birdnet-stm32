@@ -6,8 +6,8 @@ live in different releases:
 
 | Model | Release | Use it for |
 |---|---|---|
-| **`BirdNET_Tiny_N6_GLOBAL_1K_V2.2_Raw`** | [v2.2](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v2.2) (latest) | The recommended model: 1,007 bird species worldwide, all on the NPU |
-| `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid` | [v2.0](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v2.0) | The current hybrid model; 2.1 and 2.2 have no hybrid model |
+| **`BirdNET_Tiny_N6_GLOBAL_1K_V2.3_Raw`** | [v2.3](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v2.3) (latest) | The recommended model: 1,007 bird species worldwide, all on the NPU |
+| `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid` | [v2.0](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v2.0) | The current hybrid model; 2.1 to 2.3 have no hybrid model |
 | `BirdNET_Tiny_N6_USNE_90_V1.9_Raw` | [v1.9](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v1.9) | 90 species of the northeastern United States |
 
 ## What's in a bundle
@@ -150,20 +150,21 @@ and hop, INT8 model, pooled over all sites:
 | `..._1K_V2.0_Raw_INT8` | 0.244 | 0.165 | 0.120 | 0.190 | 0.282 |
 | `..._1K_V2.0_Hybrid_INT8` | 0.269 | 0.183 | 0.134 | 0.209 | 0.303 |
 | `..._1K_V2.1_Raw_INT8` | 0.355 | 0.274 | 0.220 | 0.241 | 0.356 |
-| **`..._1K_V2.2_Raw_INT8`** | **0.499** | **0.401** | **0.329** | **0.309** | **0.445** |
+| `..._1K_V2.2_Raw_INT8` | 0.499 | 0.401 | 0.329 | 0.309 | 0.445 |
+| **`..._1K_V2.3_Raw_INT8`** | **0.616** | **0.547** | **0.424** | **0.362** | **0.510** |
 | BirdNET+ V3.0 preview 3.1 | 0.695 | 0.545 | 0.450 | 0.459 | 0.597 |
 
 By region (event recall @0.5 / window AUPRC):
 
-| Region | Calls | Species | v2.0 Raw | v2.0 Hybrid | v2.1 Raw | v2.2 Raw | BirdNET+ V3.0 preview 3.1 |
-|---|---:|---:|---|---|---|---|---|
-| Europe | 29,344 | 163 | 0.225 / 0.382 | 0.250 / 0.404 | 0.341 / 0.440 | **0.469 / 0.524** | 0.603 / 0.650 |
-| North America | 6,319 | 74 | 0.215 / 0.404 | 0.249 / 0.447 | 0.361 / 0.498 | **0.491 / 0.574** | 0.681 / 0.709 |
-| South America | 7,594 | 96 | 0.142 / 0.216 | 0.172 / 0.242 | 0.259 / 0.291 | **0.387 / 0.364** | 0.578 / 0.569 |
-| Central America & Caribbean | 6,627 | 88 | 0.045 / 0.199 | 0.059 / 0.232 | 0.185 / 0.353 | **0.334 / 0.429** | 0.585 / 0.638 |
-| Oceania & Pacific | 5,517 | 15 | 0.060 / 0.621 | 0.024 / 0.615 | 0.071 / 0.654 | **0.217 / 0.690** | 0.258 / 0.754 |
-| Asia | 2,152 | 24 | 0.012 / 0.208 | 0.017 / 0.205 | 0.059 / 0.228 | **0.111 / 0.289** | 0.222 / 0.358 |
-| Africa | 1,865 | 25 | 0.054 / 0.243 | 0.060 / 0.292 | 0.146 / 0.297 | **0.210 / 0.346** | 0.135 / 0.351 |
+| Region | Calls | Species | v2.0 Raw | v2.0 Hybrid | v2.1 Raw | v2.2 Raw | v2.3 Raw | BirdNET+ V3.0 preview 3.1 |
+|---|---:|---:|---|---|---|---|---|---|
+| Europe | 29,344 | 163 | 0.225 / 0.382 | 0.250 / 0.404 | 0.341 / 0.440 | 0.469 / 0.524 | **0.597 / 0.574** | 0.603 / 0.650 |
+| North America | 6,319 | 74 | 0.215 / 0.404 | 0.249 / 0.447 | 0.361 / 0.498 | 0.491 / 0.574 | **0.624 / 0.621** | 0.681 / 0.709 |
+| South America | 7,594 | 96 | 0.142 / 0.216 | 0.172 / 0.242 | 0.259 / 0.291 | 0.387 / 0.364 | **0.531 / 0.449** | 0.578 / 0.569 |
+| Central America & Caribbean | 6,627 | 88 | 0.045 / 0.199 | 0.059 / 0.232 | 0.185 / 0.353 | 0.334 / 0.429 | **0.488 / 0.513** | 0.585 / 0.638 |
+| Oceania & Pacific | 5,517 | 15 | 0.060 / 0.621 | 0.024 / 0.615 | 0.071 / 0.654 | 0.217 / 0.690 | **0.516 / 0.732** | 0.258 / 0.754 |
+| Asia | 2,152 | 24 | 0.012 / 0.208 | 0.017 / 0.205 | 0.059 / 0.228 | 0.111 / 0.289 | **0.154 / 0.332** | 0.222 / 0.358 |
+| Africa | 1,865 | 25 | 0.054 / 0.243 | 0.060 / 0.292 | 0.146 / 0.297 | 0.210 / 0.346 | **0.318 / 0.382** | 0.135 / 0.351 |
 
 ![WABAD precision-recall curves by region for the 2.x models, the BirdNET+ V3.0 teacher and BirdNET V2.4](assets/wabad_pr_by_region.png)
 
@@ -221,6 +222,28 @@ the teacher (0.210 against 0.135) at nearly its AUPRC. Three changes made it:
 INT8 keeps 95.5% of the float AUPRC (0.445 against 0.465 before QAT; 2.1 Raw:
 0.356 against about 0.37).
 
+v2.3 ships a new Raw model only. v2.3 Raw finds **36% more calls than v2.2 Raw**
+(+0.065 AUPRC) and more in every region, from +27% in Europe and North America
+to 2.4 times 2.2's recall in Oceania and the Pacific, where it now logs twice the
+teacher's calls at 0.5; in Africa it logs 2.4 times the teacher's calls at a
+higher AUPRC. It also scores higher overall: at 2.2's window precision (0.773,
+threshold 0.70) it finds 24% more annotated windows, and at 0.5 its window
+precision is 0.722. Three changes made it:
+
+- **A wider N6-B0** (`efficientnet_b0_n6w`): expansion 4 in stages 2–4 and the
+  residual stream doubled in stages 4–6 (10.85 M backbone parameters against
+  3.58 M), where 2.2's N6-B0 used 92–96% of its channels. See
+  [Training](training.md#model-architecture).
+- **More data where it was short:** dataset v0.5.0 adds recordings for the
+  species with the least data, field negatives and confirmed absences, and a
+  species a recording does not name is scored by the teacher alone (the
+  background-bird rule).
+- **Four epochs of quantization-aware training** instead of two: two of warm-up
+  and two of decay, which gave the best INT8 epoch
+  ([Training](training.md#quantization-aware-training-qat)).
+
+INT8 keeps 98.3% of the float AUPRC (0.510 against 0.519 before QAT).
+
 The INT8 conversion sets each activation's range at the 99.999th percentile of
 its values on the calibration data rather than at its min/max (see
 [Conversion](conversion.md#activation-ranges)). On this benchmark that took
@@ -259,10 +282,11 @@ firmware's STFT (33 ms); the firmware of 1.5 and earlier took 69 ms for it.
 | **`..._1K_V2.0_Raw_INT8`** | 1,939,685 | 152.91 M | **22 ms** | 0 ms | **22 ms** | 49 (2 sw) |
 | **`..._1K_V2.0_Hybrid_INT8`** | 1,882,021 | 105.76 M | 20 ms | 33 ms | 53 ms | 36 (2 sw) |
 | `..._1K_V2.1_Raw_INT8` | 3,701,957 | 392.11 M | 32 ms | 0 ms | 32 ms | 49 (2 sw) |
-| **`..._1K_V2.2_Raw_INT8`** | 4,877,013 | 539.27 M | **35 ms** | 0 ms | **35 ms** | 82 (2 sw) |
+| `..._1K_V2.2_Raw_INT8` | 4,877,013 | 539.27 M | 35 ms | 0 ms | 35 ms | 82 (2 sw) |
+| **`..._1K_V2.3_Raw_INT8`** | 12,149,045 | 1,194.83 M | **62 ms** | 0 ms | **62 ms** | 82 (2 sw) |
 | BirdNET+ V3.0 preview 3.1 | 135,228,889 | — | — | — | — | — |
 
-The teacher is listed for scale only: **28x the parameters** of the largest model
+The teacher is listed for scale only: **11x the parameters** of the largest model
 here (about 135x those of the 1.x models), 520 MB on disk against 1 to 4 MB, and no
 device timings because it does not run on this class of hardware at all.
 
@@ -274,8 +298,8 @@ device timings because it does not run on this class of hardware at all.
 - **Compute per chunk excludes reading the audio.** The board test also reports
   59 ms of SD-card read per chunk, which a deployment does not pay: a recorder's
   audio arrives from the microphone over DMA, already in RAM. Including it, the
-  test harness measures 81 ms (raw), 92 ms (2.1 Raw), 121 ms (2.2 Raw) and
-  112 ms per file (hybrid).
+  test harness measures 81 ms (raw), 92 ms (2.1 Raw), 121 ms (2.2 Raw), 150 ms
+  (2.3 Raw) and 112 ms per file (hybrid).
 - **NPU epochs** are the compiler's scheduling units; the software ones are the
   input quantize and output dequantize, which have run on the M55 in every
   release. A shorter raw frontend in 1.5 took raw from 58 epochs to 53, 1.6's
@@ -294,12 +318,17 @@ device timings because it does not run on this class of hardware at all.
   4.88 M parameters, 3.58 M in the backbone, 5.6 MB as INT8. Its activations take
   1,751 kB of NPU RAM (2.1: 945 kB), still none in CPU RAM; the two-exposure
   frontend adds 0.8 ms and every op stays on the NPU.
+- **2.3's wider N6-B0 is 2.2x 2.2's MACs for 1.8x the NPU time** (62 ms against
+  35 ms): 12.15 M parameters, 10.85 M in the backbone, 13.2 MB as INT8, its
+  13.8 MB of weights read from external flash. The wider layers sit after the
+  activation peak, so the activations take the same 1,751 kB of NPU RAM as 2.2's,
+  none in CPU RAM.
 - **The 2.0 hybrid build nearly fills the application SRAM:** code, labels and
   every buffer share 1 MB, and its 384 KB spectrogram buffer leaves 14 KB free
   (see [Hardware](firmware/hardware.md)).
 - At 22 ms per 2.5 s chunk, raw is **114x faster than real time** (2.1 Raw at
-  32 ms: 78x; 2.2 Raw at 35 ms: 71x), so duty cycle rather than throughput sets a recorder's power
-  budget.
+  32 ms: 78x; 2.2 Raw at 35 ms: 71x; 2.3 Raw at 62 ms: 40x), so duty cycle rather
+  than throughput sets a recorder's power budget.
 
 ## Running a bundle on the board
 

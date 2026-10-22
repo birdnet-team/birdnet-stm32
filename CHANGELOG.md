@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-10-22
+
+One model ships: `BirdNET_Tiny_N6_GLOBAL_1K_V2.3_Raw`, the same 1,007 bird
+species and six non-bird outputs as 2.0 to 2.2, trained on dataset v0.5.0. It
+finds 36% more annotated calls on WABAD than 2.2 Raw, more in every region
+(+27% in Europe and North America to +138% in Oceania and the Pacific), and runs
+entirely on the NPU at 62 ms per 2.5 s chunk. 2.3 ships no hybrid model:
+`BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid` (release v2.0) stays the hybrid model.
+
+### Model performance
+
+Scored on all 61 [WABAD](https://zenodo.org/records/14191524) sites on six
+continents (59,418 annotated calls, 434 species inside the output list), on the
+INT8 model that gets flashed:
+
+| Model | Event recall @0.5 | Macro recall @0.5 | Window cMAP | Window AUPRC |
+|---|---:|---:|---:|---:|
+| v2.0 Raw | 0.165 | 0.120 | 0.190 | 0.282 |
+| v2.0 Hybrid | 0.183 | 0.134 | 0.209 | 0.303 |
+| v2.1 Raw | 0.274 | 0.220 | 0.241 | 0.356 |
+| v2.2 Raw | 0.401 | 0.329 | 0.309 | 0.445 |
+| **v2.3 Raw** | **0.547** | **0.424** | **0.362** | **0.510** |
+| BirdNET+ V3.0 preview 3.1 (the teacher, 11x the parameters) | 0.545 | 0.450 | 0.459 | 0.597 |
+
+2.3 also scores higher overall: at 2.2's window precision (0.773, threshold
+0.70) it finds 24% more of the annotated windows; at threshold 0.5 its window
+precision is 0.722 against 2.2's 0.773. Per region and per site:
+[Pre-trained Models](docs/pretrained-models.md#the-global-benchmark-20).
+
+**The model:** the 2.0 Raw frontend (two-exposure learned filterbank, 448
+frames per 2.5 s) at 128 bands, into a wider N6-B0 (`efficientnet_b0_n6w`):
+expansion 4 in stages 2–4 and the residual stream doubled in stages 4–6, where
+2.2's N6-B0 used 92–96% of its channels. Trained 50 epochs on dataset v0.5.0,
+which adds recordings for the species with the least data, field negatives and
+confirmed absences, with the background-bird rule for species a recording does
+not name. Then the classifier refit with `finetune-head` and four epochs of
+quantization-aware training (INT8 validation cMAP 0.8081 -> 0.8109). The INT8
+model keeps 98.3% of the float WABAD AUPRC (0.510 against 0.519). 12.1 M
+parameters, 13.2 MB as INT8, 1.18 G MACs. It passed the release gates:
+Keras/TFLite parity (cosine 0.9998), ONNX validation, INT8 catalog cMAP 0.760
+against 0.765 float before QAT (gate: at most 0.05 below; 2.2 Raw: 0.726),
+STM32N6 compilation (82 epochs, 2 in software; 1,751 kB of NPU activation
+memory), on-target validation (cos 0.99995, 62.1 ms per inference) and a 25-file
+board test (25/25 agree with the host on the top species; one near-threshold
+score 0.37 apart, from the NPU's integer arithmetic: over 101,300 outputs of 100
+WABAD windows, 0.14% differ from the host by more than 0.5 logit and 0.006% by
+more than 1, and the AP is unchanged).
+
 ### Changed
 
 - `train` defaults to the 2.3 backbone, `efficientnet_b0_n6w`: N6-B0 with
