@@ -74,15 +74,17 @@ was removed in 1.3.0: best float of any raw model, worst INT8.
 
 ## Model architecture
 
-`--backbone` picks the network behind the frontend. The default from 2.2 is
-**N6-B0** (`efficientnet_b0_n6`): EfficientNet-B0's inverted-residual blocks
+`--backbone` picks the network behind the frontend. The default from 2.3 is
+`efficientnet_b0_n6w`, N6-B0 with wider bottlenecks: expansion 4 in stages 2–4
+and the residual stream doubled in stages 4–6 (12.1 M parameters, 1.18 G MACs,
+62 ms per inference on the STM32N6570-DK). **N6-B0** (`efficientnet_b0_n6`,
+2.2) is EfficientNet-B0's inverted-residual blocks
 with the three changes that let it survive INT8 on the N6 — ReLU6 instead of
 SiLU, no squeeze-and-excite, and a bounded residual stream (ReLU6 after each
 projection and residual add). B0 as published lost 14% of its WABAD AP to
 post-training quantization. N6-B0 runs at 128 bands (`--num_mels`) into a
 1,280-channel top convolution (`--embeddings_size`), 4.9 M parameters and 523 M
-MACs, 34 ms per inference on the STM32N6570-DK. `efficientnet_b0_n6w` widens
-its bottlenecks (experimental).
+MACs, 34 ms per inference on the STM32N6570-DK.
 
 `dscnn` is the backbone of every release up to 2.1. It is scaled with two knobs:
 
@@ -232,7 +234,8 @@ noise, teaching the weights to survive quantization.
     probability output on the INT8 grid, while the releases ship logits. With
     both fixed, two epochs at learning rate 1e-5 took 2.2's N6-B0 from INT8
     validation cMAP 0.7665 to 0.7745 (float 0.781) and from 5.2% to 4.5% INT8
-    loss on WABAD.
+    loss on WABAD. 2.3 runs four (two of warm-up, then two of decay, which
+    gave the best epochs): INT8 validation cMAP 0.8081 to 0.8109.
 
 !!! warning "QAT requires a pretrained model"
     Always train normally first, then fine-tune with `--qat`. Do **not** use
@@ -257,9 +260,9 @@ the tail loss to the worst 10% of each batch with 0.75 weight; both values are
 configurable. This constrains background and low-confidence probabilities
 while directly optimizing the lower tail that the release parity gate measures.
 
-With `--qat`, the defaults switch to the fine-tuning schedule: 8 epochs at
-learning rate 2e-5 (2.2: `--epochs 2 --steps_per_epoch 2850 --learning_rate
-1e-5`), with activation ranges recalibrated on the current weights after every
+With `--qat`, the defaults switch to the fine-tuning schedule of 2.3: 4 epochs
+at learning rate 1e-5, two of warm-up and two of cosine decay (with
+`--steps_per_epoch 2850`), with activation ranges recalibrated on the current weights after every
 epoch (`--qat_range_refresh`, on by default). QAT draws its training audio as
 the float run does (`--class_cap_per_epoch`, `--field_table`), uses the
 converter's activation-range percentiles and simulates the logit output the
@@ -286,11 +289,11 @@ python -m birdnet_stm32 finetune-head --checkpoint_path checkpoints/model.keras 
 python -m birdnet_stm32 equalize --checkpoint_path checkpoints/model_ft.keras \
   --data_path_train data/train --output_path checkpoints/model_eq.keras
 
-# Step 4: Two epochs of quantization-aware training on the equalized checkpoint
+# Step 4: Four epochs of quantization-aware training on the equalized checkpoint
 python -m birdnet_stm32 train --qat --checkpoint_path checkpoints/qat/model.keras \
   --data_path_train data/train --data_path_val data/validation --classes_file data/labels.txt \
   --teacher_cache data/teacher_cache --field_table data/field_table.csv \
-  --epochs 2 --steps_per_epoch 2850 --learning_rate 1e-5
+  --steps_per_epoch 2850
 # (checkpoints/qat/model.keras is a copy of model_eq.keras; QAT writes model_qat.keras)
 
 # Step 5: Convert
@@ -436,7 +439,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--depth_multiplier` | 1 | Block repeats per stage |
 | `--dw_kernel_size` | 5 | Depthwise kernel in stages 2–4: `5` or `3` |
 | `--stage_widths` | 32 86 342 683 | Base channels of the four stages, before `--alpha` (2.0: 32 64 128 256) |
-| `--backbone` | efficientnet_b0_n6 | `efficientnet_b0_n6` (2.2, N6-B0: EfficientNet-B0 with ReLU6, no squeeze-and-excite and a bounded residual stream), `efficientnet_b0_n6w` (that with wider bottlenecks: expansion 4 in stages 2–4, residual stream ×1.5 in stages 4–6; experimental) or `dscnn` (releases up to 2.1); `--alpha`, `--depth_multiplier`, `--dw_kernel_size` and `--stage_widths` apply to `dscnn` only |
+| `--backbone` | efficientnet_b0_n6w | `efficientnet_b0_n6w` (2.3: N6-B0 with wider bottlenecks, expansion 4 in stages 2–4 and the residual stream ×2 in stages 4–6), `efficientnet_b0_n6` (2.2, N6-B0: EfficientNet-B0 with ReLU6, no squeeze-and-excite and a bounded residual stream) or `dscnn` (releases up to 2.1); `--alpha`, `--depth_multiplier`, `--dw_kernel_size` and `--stage_widths` apply to `dscnn` only |
 | `--raw_exposure_gain` | 16 (raw) | Gain of the raw filterbank's second, clamped exposure, mixed per band into a knee compressor; 1 = one exposure (raw only) |
 | `--mixup_alpha` | 0.2 | Mixup alpha (0 disables) |
 | `--mixup_probability` | 0.25 | Fraction of batch to mix |
@@ -444,8 +447,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--freq_mask_max` | 8 | Max frequency mask width (bins) |
 | `--time_mask_max` | 25 | Max time mask width (frames) |
 | `--teacher_cache` | None | Directory of cached per-window teacher scores, and optionally embeddings |
-| `--teacher_weight` | 0.5 with `--teacher_cache`, else 0 | Teacher share of the training target in [0, 1] (0 = hard labels only) |
-| `--teacher_background` | off | Background birds: a species the file does not name takes the teacher's own score from 0.3 and 1 from 0.8 instead of the blend (experimental; also on `finetune-head`) |
+| `--teacher_weight` | 0.5 with `--teacher_cache`, else 0 | Teacher share of the training target in [0, 1] (0 = hard labels only). Background birds: a species the file does not name takes the teacher's own score from 0.3 and 1 from 0.8 instead of the blend (always on with teacher targets from 2.3, as in `finetune-head`) |
 | `--label_sidecar` | None | CSV of per-file label additions (`sample_id`, `positives`, `negatives`; classes separated by `;`): positives join the folder's class in the hard label (recordings with several species), negatives are confirmed absent, held at 0 and never raised by the teacher's soft target |
 | `--teacher_embedding_weight` | 0.2 with embeddings | Weight of a cosine loss to the teacher's embedding of each chunk; on when `--teacher_cache` holds `emb.npy`, 0 disables |
 | `--crop_policy` | teacher with `--teacher_cache`, else energy | How training chunks are chosen: `energy` or `teacher` (needs `--teacher_cache`) |
@@ -463,11 +465,11 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--num_workers` | 8 | Parallel data loading workers (0 = sequential) |
 | `--max_chunks_per_file` | 1 | Max salient chunks per file open (reduces redundant I/O) |
 | `--prefetch_batches` | 2 | Loader prefetch depth in batches |
-| `--epochs` | 50 (8 with `--qat`) | Number of epochs |
+| `--epochs` | 50 (4 with `--qat`) | Number of epochs |
 | `--steps_per_epoch` | 0 | Training steps per epoch; 0 = one pass over the training files. Fix it to keep a schedule unchanged when the dataset grows |
 | `--warmup_epochs` | 0.5 | Linear learning-rate warm-up before the cosine decay, in epochs; may be fractional |
 | `--class_cap_per_epoch` | 3000 | At most this many files per class in each epoch (0 = off): a larger class contributes a different subset each epoch, rotating through all its files, so the draw is more balanced without repeating or discarding files. Noise folders are not capped |
-| `--learning_rate` | 2e-4 (2e-5 with `--qat`, 1e-3 with `--linear_probe`) | Initial learning rate |
+| `--learning_rate` | 2e-4 (1e-5 with `--qat`, 1e-3 with `--linear_probe`) | Initial learning rate |
 | `--val_split` | 0.2 | Validation split fraction when `--data_path_val` is not supplied |
 | `--checkpoint_path` | checkpoints/best_model.keras | Output path (.keras) |
 | `--qat` | False | Quantization-aware fine-tuning |

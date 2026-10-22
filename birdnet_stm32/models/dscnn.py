@@ -184,7 +184,7 @@ def build_dscnn_model(
             whose top conv has ``embeddings_size`` channels; alpha,
             depth_multiplier, dw_kernel_size and stage_widths then do not apply.
             'efficientnet_b0_n6w' widens its bottlenecks (expansion 4 in stages
-            2-4, residual stream x1.5 in stages 4-6).
+            2-4, residual stream x2 in stages 4-6).
 
     Returns:
         Uncompiled DS-CNN Keras model.

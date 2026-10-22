@@ -324,6 +324,6 @@ def test_efficientnet_b0_n6_backbone_is_relu6_without_se():
 
 def test_efficientnet_b0_n6w_widens_the_residual_stream():
     narrow, wide = _raw_model(backbone="efficientnet_b0_n6"), _raw_model(backbone="efficientnet_b0_n6w")
-    assert wide.get_layer("block4a_project_conv").filters == 120  # x1.5 of B0's 80
+    assert wide.get_layer("block4a_project_conv").filters == 160  # x2 of B0's 80
     assert wide.get_layer("block2a_expand_conv").filters == 16 * 4  # expansion 4 in stage 2
     assert narrow.get_layer("block4a_project_conv").filters == 80

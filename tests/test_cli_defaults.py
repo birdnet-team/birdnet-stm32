@@ -88,7 +88,7 @@ class TestBestPathDefaults:
         assert args.input_compression == "none"
         assert args.sample_rate == 24000
         assert args.chunk_duration == pytest.approx(2.5)
-        assert args.backbone == "efficientnet_b0_n6"
+        assert args.backbone == "efficientnet_b0_n6w"
         assert args.num_mels == 128
         assert args.embeddings_size == 1280
         assert args.alpha == pytest.approx(1.5)
@@ -123,8 +123,8 @@ class TestBestPathDefaults:
 
     def test_qat_gets_its_own_schedule_and_range_refresh(self):
         args = _train("--qat")
-        assert args.epochs == 8
-        assert args.learning_rate == pytest.approx(2e-5)
+        assert args.epochs == 4
+        assert args.learning_rate == pytest.approx(1e-5)
         assert args.qat_range_refresh is True
         assert _train("--qat", "--no-qat_range_refresh").qat_range_refresh is False
 

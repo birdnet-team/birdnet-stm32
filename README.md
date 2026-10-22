@@ -22,11 +22,12 @@ A compact DS-CNN trained on raw waveforms or spectral features, quantized to
 INT8 with post-training quantization or quantization-aware fine-tuning, and
 deployed using ST Edge AI Core. The standalone firmware supports raw
 waveform, hybrid STFT, and precomputed-mel deployment paths. A released raw
-model scores a 2.5-second window at 24 kHz in **22–35 ms on the NPU**, with CPU
+model scores a 2.5-second window at 24 kHz in **22–62 ms on the NPU**, with CPU
 and NPU at 400 MHz. Release 2.0 was the first global model, 1,007 bird species
-from around the world. Release 2.2 ships a raw model on a new backbone, N6-B0,
-which finds 46% more of WABAD's annotated calls than 2.1 Raw and 2.4 times as
-many as 2.0 Raw; the hybrid model stays 2.0 Hybrid.
+from around the world. Release 2.3 ships a raw model on a wider backbone,
+trained on more data for the species that had the least, which finds 36% more
+of WABAD's annotated calls than 2.2 Raw and 3.3 times as many as 2.0 Raw; the
+hybrid model stays 2.0 Hybrid.
 
 ## Running the models anywhere: the reference implementation
 
@@ -110,16 +111,16 @@ ships every frontend, so the current models live in different releases:
 
 | Model | Release | Use it for |
 |---|---|---|
-| **`BirdNET_Tiny_N6_GLOBAL_1K_V2.2_Raw`** | [v2.2](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v2.2) (latest) | The recommended model: 1,007 bird species worldwide, all on the NPU |
-| `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid` | [v2.0](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v2.0) | The current hybrid model; 2.1 and 2.2 have no hybrid model |
+| **`BirdNET_Tiny_N6_GLOBAL_1K_V2.3_Raw`** | [v2.3](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v2.3) (latest) | The recommended model: 1,007 bird species worldwide, all on the NPU |
+| `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid` | [v2.0](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v2.0) | The current hybrid model; 2.1 to 2.3 have no hybrid model |
 
 ### What's in a bundle
 
 Every file shares one basename, `BirdNET_Tiny_N6_<REGION>_<SPECIES>_V<VERSION>`,
 with a `_Raw` or `_Hybrid` frontend suffix:
 
-- **`_Raw`** takes 2.5 s of audio; the whole pipeline runs on the NPU (121 ms per
-  file on the board for 2.2 Raw, 92 ms for 2.1 Raw, 82 ms for 2.0 Raw, including
+- **`_Raw`** takes 2.5 s of audio; the whole pipeline runs on the NPU (150 ms per
+  file on the board for 2.3 Raw, 121 ms for 2.2 Raw, 82 ms for 2.0 Raw, including
   the SD-card read). This is the reference release model, and from 2.1 the most
   accurate one.
 - **`_Hybrid`** takes a spectrogram the firmware computes on the Cortex-M55
@@ -134,7 +135,7 @@ with a `_Raw` or `_Hybrid` frontend suffix:
 | `<basename>_model_config.json` | Input, frontend, and class contract; drives firmware config |
 | `<basename>_labels.txt` | Ordered output labels |
 | `<basename>_FP32.keras` | Host inference, fine-tuning, re-conversion |
-| `<basename>_original_FP32.keras` | The checkpoint before the last post-training step (before equalization in 2.0, before the head fine-tune and equalization in 2.1, before quantization-aware training in 2.2), for retraining from it |
+| `<basename>_original_FP32.keras` | The checkpoint before the last post-training step (before equalization in 2.0, before the head fine-tune and equalization in 2.1, before quantization-aware training from 2.2), for retraining from it |
 | `<basename>_FP32.onnx` | Host and interchange inference |
 | `<basename>_model_card.md` | Contract, provenance, measured accuracy, and on-board timing |
 
@@ -184,10 +185,10 @@ for toolchain setup and troubleshooting.
 
 - **Audio frontends**: `raw` (waveform → learned Gabor quadrature filterbank, default), `hybrid` (linear STFT + learned mel mixer), and `librosa` (precomputed mel). All three are supported by the standalone firmware. `hybrid` and `librosa` take an optional `--input_compression` (`sqrt`, `log`) applied before the first INT8 tensor. The `mfcc` and `log_mel` modes were removed in 1.2.0.
 - **Magnitude scaling**: `pwl` (learned piecewise-linear, quantization-friendly) and `none` (pass-through ablation baseline). `pcen` and `db` were removed in 1.2.0 — dB's log op creates exactly the wide dynamic range INT8 cannot hold, and PCEN was never used by a release.
-- **Model**: N6-B0 (default from 2.2): EfficientNet-B0 with ReLU6, no squeeze-and-excite and a bounded residual stream, built for INT8 on the N6 (4.9 M parameters, 523 M MACs, 34 ms on the STM32N6570-DK); or the DS-CNN of the releases up to 2.1, with configurable width (`--alpha`) and depth (`--depth_multiplier`) over plain depthwise separable blocks
+- **Model**: the wider N6-B0 of 2.3 (default): EfficientNet-B0 with ReLU6, no squeeze-and-excite and a bounded residual stream, built for INT8 on the N6, with expansion 4 in stages 2–4 and the residual stream doubled in stages 4–6 (12.1 M parameters, 1.18 G MACs, 62 ms on the STM32N6570-DK); 2.2's N6-B0 (`--backbone efficientnet_b0_n6`, 4.9 M parameters, 34 ms); or the DS-CNN of the releases up to 2.1, with configurable width (`--alpha`) and depth (`--depth_multiplier`) over plain depthwise separable blocks
 - **Augmentation**: Dirichlet multi-source mixup with multi-label union targets for overlapping vocalizations, SpecAugment (on by default), smart crop for long recordings
 - **Optimization**: linear warmup into cosine LR decay, Adam/SGD/AdamW, gradient clipping (on by default), mixed precision (FP16). Standard training checkpoints track exact validation cMAP; QAT selects matching Keras/TFLite artifacts using actual converted INT8 file cMAP, including the starting checkpoint
-- **QAT** (two epochs after the head fine-tune, part of the recipe again from 2.2): native Keras 3 quantization-aware fine-tuning via `--qat` — uses the converter's exact calibration manifest to simulate the INT8 input, per-channel kernels, fused activation boundaries, and otherwise-opaque raw-frontend internals; frozen-teacher KL plus mean and configurable worst-sample cosine consistency protect probability calibration and lower-tail parity while exact converted INT8 validation cMAP selects the deployment checkpoint
+- **QAT** (four epochs after the head fine-tune, part of the recipe again from 2.2): native Keras 3 quantization-aware fine-tuning via `--qat` — uses the converter's exact calibration manifest to simulate the INT8 input, per-channel kernels, fused activation boundaries, and otherwise-opaque raw-frontend internals; frozen-teacher KL plus mean and configurable worst-sample cosine consistency protect probability calibration and lower-tail parity while exact converted INT8 validation cMAP selects the deployment checkpoint
 - **Linear probing**: `--linear_probe` freezes a pretrained backbone and trains only the classifier head
 
 ### Conversion
@@ -220,7 +221,8 @@ a public passive acoustic monitoring benchmark — 59,418 annotated calls across
 | `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Raw_INT8` | 0.165 | 0.190 | 0.282 | 1.94 M | **22 ms** (all NPU) |
 | `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid_INT8` | 0.183 | 0.209 | 0.303 | 1.88 M | 53 ms (33 ms STFT on the M55) |
 | `BirdNET_Tiny_N6_GLOBAL_1K_V2.1_Raw_INT8` | 0.274 | 0.241 | 0.356 | 3.70 M | 32 ms (all NPU) |
-| **`BirdNET_Tiny_N6_GLOBAL_1K_V2.2_Raw_INT8`** | **0.401** | **0.309** | **0.445** | 4.88 M | 35 ms (all NPU) |
+| `BirdNET_Tiny_N6_GLOBAL_1K_V2.2_Raw_INT8` | 0.401 | 0.309 | 0.445 | 4.88 M | 35 ms (all NPU) |
+| **`BirdNET_Tiny_N6_GLOBAL_1K_V2.3_Raw_INT8`** | **0.547** | **0.362** | **0.510** | 12.15 M | 62 ms (all NPU) |
 | BirdNET+ V3.0 preview 3.1, the teacher | 0.545 | 0.459 | 0.597 | 135 M | does not run on this hardware |
 
 ![WABAD precision-recall curves by region for the 2.x models, the BirdNET+ V3.0 teacher and BirdNET V2.4](docs/assets/wabad_pr_by_region.png)
@@ -241,7 +243,13 @@ replaces the backbone with N6-B0, an EfficientNet-B0 built for INT8 on the N6
 (ReLU6, no squeeze-and-excite, a bounded residual stream), adds two epochs of
 quantization-aware training and converts the frontend's compressor as two
 exposures: 46% more calls than 2.1 Raw, more in every region, keeping 95.5% of
-its float AUPRC in INT8, at 35 ms per chunk. 2.0 Hybrid stays the hybrid model.
+its float AUPRC in INT8, at 35 ms per chunk. 2.3 widens N6-B0 where 2.2 used its
+width (the residual stream of stages 4–6 doubled) and trains on dataset v0.5.0,
+with more recordings for the species that had the least, field negatives and
+confirmed absences, then four epochs of quantization-aware training: 36% more
+calls than 2.2 Raw, more in every region, keeping 98.3% of its float AUPRC in
+INT8, at 62 ms per chunk. It also scores higher overall: at 2.2's window
+precision it finds 24% more annotated windows. 2.0 Hybrid stays the hybrid model.
 
 Per-version history and what each metric means:
 [Pre-trained Models](https://birdnet-team.github.io/birdnet-stm32/pretrained-models/#benchmark-results).
