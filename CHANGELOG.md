@@ -9,10 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `efficientnet_b0_n6w` (experimental) doubles the residual stream in stages
-  4–6 (160 / 224 / 384 channels; 2.2.0 widened it by 1.5): 12.1 M parameters,
-  1.18 G MACs, 62 ms on the STM32N6570-DK with the same 1,751 KiB of NPU
-  activations.
+- `train` defaults to the 2.3 backbone, `efficientnet_b0_n6w`: N6-B0 with
+  expansion 4 in stages 2–4 and the residual stream doubled in stages 4–6
+  (160 / 224 / 384 channels; 2.2.0's experimental version widened it by 1.5).
+  12.1 M parameters, 1.18 G MACs, 62 ms on the STM32N6570-DK with the same
+  1,751 KiB of NPU activations. `--backbone efficientnet_b0_n6` trains 2.2's
+  N6-B0.
+- The background-bird rule is always on with teacher targets, in `train` (base
+  training and QAT) and `finetune-head`: a species the file does not name takes
+  the teacher's own score from 0.3 and 1 from 0.8 instead of the blend. The
+  `--teacher_background` flag is gone.
+- QAT defaults to the 2.3 schedule: 4 epochs at learning rate 1e-5, two of
+  warm-up and two of cosine decay (was 8 epochs at 2e-5).
 
 ## [2.2.0] - 2026-10-18
 

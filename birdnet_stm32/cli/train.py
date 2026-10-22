@@ -196,8 +196,8 @@ TEACHER_WEIGHT = 0.5
 # terms are about equal. From scratch it raised the float field window AUPRC by
 # 0.033 and the INT8 catalog cMAP by 0.016 (448 frames, 50 epochs).
 TEACHER_EMBEDDING_WEIGHT = 0.2
-QAT_EPOCHS = 8
-QAT_LEARNING_RATE = 2e-5
+QAT_EPOCHS = 4  # 2.3: two warm-up epochs, then two of cosine decay; the INT8 selection keeps the best
+QAT_LEARNING_RATE = 1e-5
 PROBE_LEARNING_RATE = 1e-3
 
 
@@ -315,11 +315,11 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         "--backbone",
         type=str,
-        default="efficientnet_b0_n6",
+        default="efficientnet_b0_n6w",
         choices=list(BACKBONES),
         help=(
-            "Backbone behind the frontend: efficientnet_b0_n6 (2.2: EfficientNet-B0 with ReLU6, no squeeze-and-excite "
-            "and a bounded residual stream), efficientnet_b0_n6w (that with wider bottlenecks, experimental) or dscnn "
+            "Backbone behind the frontend: efficientnet_b0_n6w (2.3: N6-B0 with wider bottlenecks), efficientnet_b0_n6 "
+            "(2.2: EfficientNet-B0 with ReLU6, no squeeze-and-excite and a bounded residual stream) or dscnn "
             "(releases up to 2.1; --alpha, --depth_multiplier, --dw_kernel_size and --stage_widths apply to it only)"
         ),
     )
@@ -378,14 +378,6 @@ def get_args() -> argparse.Namespace:
         help=(
             f"Teacher share of the training target in [0, 1] (default {TEACHER_WEIGHT:g} with "
             "--teacher_cache, otherwise 0 = hard labels only)"
-        ),
-    )
-    parser.add_argument(
-        "--teacher_background",
-        action="store_true",
-        help=(
-            "Background birds: a species the file does not name takes the teacher's own score from 0.3 and 1 from "
-            "0.8, instead of --teacher_weight times it (experimental)"
         ),
     )
     parser.add_argument(
@@ -584,8 +576,6 @@ def get_args() -> argparse.Namespace:
         parser.error(f"--teacher_weight must be in [0, 1], got {args.teacher_weight}")
     if args.teacher_weight > 0 and not args.teacher_cache:
         parser.error("--teacher_weight > 0 needs --teacher_cache")
-    if args.teacher_background and not args.teacher_weight > 0:
-        parser.error("--teacher_background needs teacher targets (--teacher_cache, --teacher_weight > 0)")
     has_embeddings = bool(args.teacher_cache) and os.path.isfile(os.path.join(args.teacher_cache, "emb.npy"))
     if args.teacher_embedding_weight is None:
         # On wherever the cache can feed it: float training with teacher embeddings.
@@ -799,7 +789,7 @@ def main():
         crop_policy=args.crop_policy,
         teacher_cache=args.teacher_cache,
         teacher_weight=args.teacher_weight,
-        teacher_background=args.teacher_background,
+        teacher_background=args.teacher_weight > 0,  # the background-bird rule (2.3) wherever teacher targets are used
         teacher_embeddings=embed,
     )
     if args.label_sidecar:

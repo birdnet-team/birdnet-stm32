@@ -42,11 +42,6 @@ def get_args() -> argparse.Namespace:
         help=f"Teacher share of the targets (default {TEACHER_WEIGHT:g} with --teacher_cache, else 0)",
     )
     p.add_argument(
-        "--teacher_background",
-        action="store_true",
-        help="Background birds as in train: the teacher's own score from 0.3, 1 from 0.8 (experimental)",
-    )
-    p.add_argument(
         "--crop_policy",
         choices=["energy", "teacher"],
         default=None,
@@ -111,7 +106,7 @@ def main() -> None:
         train_kwargs.update(
             teacher_cache=args.teacher_cache,
             teacher_weight=args.teacher_weight,
-            teacher_background=args.teacher_background,
+            teacher_background=True,  # the background-bird rule, as in train
         )
     if args.label_sidecar:
         from birdnet_stm32.data.sidecar import load_label_sidecar
