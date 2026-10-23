@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a Bernoulli KL divergence to its class probabilities joins the loss; it
   combines with the teacher-embedding loss and never reaches the checkpoint.
   For training smaller, faster models from a released one.
+- `train --b0_blocks` replaces the EfficientNet backbone's stage table
+  (`expand,kernel,repeats,channels,stride` per stage), and
+  `train --attention_stages` puts a channel-attention block (EdgeNeXt's
+  transposed attention) after chosen stages. Both are recorded in the model
+  config. They carry the 2.5 size study; on the STM32N6570-DK, untrained,
+  N6-B0 runs 20 ms at half width and 24 ms at half depth, and attention after
+  stages 3, 5 and 7 adds 11 ms.
 
 ## [2.3.0] - 2026-10-22
 

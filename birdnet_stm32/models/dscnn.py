@@ -17,7 +17,7 @@ import tensorflow as tf
 from tensorflow.keras import layers
 
 from birdnet_stm32.models.blocks import _make_divisible
-from birdnet_stm32.models.efficientnet import B0_WIDE_BLOCKS, efficientnet_b0_backbone
+from birdnet_stm32.models.efficientnet import B0_BLOCKS, B0_WIDE_BLOCKS, efficientnet_b0_backbone
 from birdnet_stm32.models.frontend import (
     RELEASE_RAW_BANK,
     RELEASE_RAW_MAGNITUDE,
@@ -141,6 +141,8 @@ def build_dscnn_model(
     dw_kernel_size: int = 3,
     stage_widths: tuple[int, ...] | list[int] | None = None,
     backbone: str = "dscnn",
+    b0_blocks: tuple | list | None = None,
+    attention_stages: tuple[int, ...] | list[int] = (),
 ) -> tf.keras.Model:
     """Build a DS-CNN model with a selectable audio frontend.
 
@@ -185,6 +187,11 @@ def build_dscnn_model(
             depth_multiplier, dw_kernel_size and stage_widths then do not apply.
             'efficientnet_b0_n6w' widens its bottlenecks (expansion 4 in stages
             2-4, residual stream x2 in stages 4-6).
+        b0_blocks: Stage table replacing the EfficientNet backbone's own,
+            (expand, kernel, repeats, channels, first stride) per stage
+            (``efficientnet.parse_blocks``); EfficientNet backbones only.
+        attention_stages: 1-based stages of the EfficientNet backbone followed
+            by a channel-attention block (``efficientnet.channel_attention_block``).
 
     Returns:
         Uncompiled DS-CNN Keras model.
@@ -264,10 +271,14 @@ def build_dscnn_model(
     else:
         raise ValueError(f"Invalid audio_frontend: {audio_frontend}")
 
+    if backbone == "dscnn" and (b0_blocks or attention_stages):
+        raise ValueError("b0_blocks and attention_stages apply to the EfficientNet backbones only")
     if backbone == "efficientnet_b0_n6":
-        x = efficientnet_b0_backbone(x, embeddings_size)
+        blocks = tuple(tuple(int(v) for v in b) for b in b0_blocks) if b0_blocks else B0_BLOCKS
+        x = efficientnet_b0_backbone(x, embeddings_size, blocks=blocks, attention_stages=attention_stages)
     elif backbone == "efficientnet_b0_n6w":
-        x = efficientnet_b0_backbone(x, embeddings_size, blocks=B0_WIDE_BLOCKS)
+        blocks = tuple(tuple(int(v) for v in b) for b in b0_blocks) if b0_blocks else B0_WIDE_BLOCKS
+        x = efficientnet_b0_backbone(x, embeddings_size, blocks=blocks, attention_stages=attention_stages)
     else:
         # Stem (3x3, stride 1x2) to lift channels
         stem_ch = _make_divisible(int(16 * alpha), 8)

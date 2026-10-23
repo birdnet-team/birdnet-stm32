@@ -86,6 +86,24 @@ post-training quantization. N6-B0 runs at 128 bands (`--num_mels`) into a
 1,280-channel top convolution (`--embeddings_size`), 4.9 M parameters and 523 M
 MACs, 34 ms per inference on the STM32N6570-DK.
 
+Two options reshape the EfficientNet backbones:
+
+- **`--b0_blocks`**: a stage table in place of the backbone's own, one
+  `expand,kernel,repeats,channels,stride` group per stage separated by `/`.
+  N6-B0 at half depth is
+  `1,3,1,16,1/6,3,1,24,2/6,5,1,40,2/6,3,2,80,2/6,5,2,112,1/6,5,2,192,2/6,3,1,320,1`.
+  Strides other than 1 and 2 are refused: they fall back to the Cortex-M55 on the
+  N6. On the board, untrained, N6-B0 runs 20 ms at half width, 24 ms at half
+  depth and 33 ms as it is; at an equal parameter count, fewer blocks are faster
+  than narrower ones.
+- **`--attention_stages`**: stages followed by a channel-attention block, the
+  transposed (cross-covariance) attention of EdgeNeXt and XCiT: per head of 32
+  channels, a softmax over the channel affinities of L2-normalized queries and
+  keys, in a bounded residual block like the MBConv ones. It costs channels
+  squared, not positions squared. On the N6 it maps, but the heads are split
+  into separate epochs and the L2 norm runs in float on the Cortex-M55: after
+  stages 3, 5 and 7 of N6-B0 it adds 11 ms (43.7 vs 32.9 ms).
+
 `dscnn` is the backbone of every release up to 2.1. It is scaled with two knobs:
 
 - **`--alpha`** (width multiplier): scales channel counts across all stages.
@@ -451,6 +469,8 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--dw_kernel_size` | 5 | Depthwise kernel in stages 2–4: `5` or `3` |
 | `--stage_widths` | 32 86 342 683 | Base channels of the four stages, before `--alpha` (2.0: 32 64 128 256) |
 | `--backbone` | efficientnet_b0_n6w | `efficientnet_b0_n6w` (2.3: N6-B0 with wider bottlenecks, expansion 4 in stages 2–4 and the residual stream ×2 in stages 4–6), `efficientnet_b0_n6` (2.2, N6-B0: EfficientNet-B0 with ReLU6, no squeeze-and-excite and a bounded residual stream) or `dscnn` (releases up to 2.1); `--alpha`, `--depth_multiplier`, `--dw_kernel_size` and `--stage_widths` apply to `dscnn` only |
+| `--b0_blocks` | the backbone's own | Stage table for the EfficientNet backbones: `expand,kernel,repeats,channels,stride` per stage, separated by `/` |
+| `--attention_stages` | none | EfficientNet stages (1-based) followed by a channel-attention block |
 | `--raw_exposure_gain` | 16 (raw) | Gain of the raw filterbank's second, clamped exposure, mixed per band into a knee compressor; 1 = one exposure (raw only) |
 | `--mixup_alpha` | 0.2 | Mixup alpha (0 disables) |
 | `--mixup_probability` | 0.25 | Fraction of batch to mix |

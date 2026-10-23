@@ -10,12 +10,14 @@ import warnings
 import numpy as np
 import tensorflow as tf
 
+from birdnet_stm32.models.efficientnet import ChannelAttention
 from birdnet_stm32.models.frontend import AudioFrontendLayer
 from birdnet_stm32.models.magnitude import MagnitudeScalingLayer
 
 _KERAS_CUSTOM_OBJECTS = {
     "AudioFrontendLayer": AudioFrontendLayer,
     "MagnitudeScalingLayer": MagnitudeScalingLayer,
+    "ChannelAttention": ChannelAttention,
 }
 
 

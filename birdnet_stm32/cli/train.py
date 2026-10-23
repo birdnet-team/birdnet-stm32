@@ -324,6 +324,23 @@ def get_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--b0_blocks",
+        default=None,
+        help=(
+            "Stage table for the EfficientNet backbones instead of their own: 'e,k,r,c,s/e,k,r,c,s/...' (expand ratio, "
+            "depthwise kernel, repeats, output channels, first stride per stage), e.g. N6-B0 at half width or depth "
+            "for the 2.5 size study"
+        ),
+    )
+    parser.add_argument(
+        "--attention_stages",
+        type=int,
+        nargs="*",
+        default=[],
+        help="Stages of the EfficientNet backbone (1-based) followed by a channel-attention block (EdgeNeXt's "
+        "transposed attention); none by default",
+    )
+    parser.add_argument(
         "--raw_exposure_gain",
         type=float,
         default=None,
@@ -604,6 +621,17 @@ def get_args() -> argparse.Namespace:
         parser.error("--field_table shapes the per-epoch class cap: it needs --class_cap_per_epoch > 0")
     if args.teacher_embedding_weight > 0 and (args.qat or args.linear_probe):
         parser.error("--teacher_embedding_weight applies to float training only (not --qat or --linear_probe)")
+    if (args.b0_blocks or args.attention_stages) and args.backbone == "dscnn":
+        parser.error("--b0_blocks and --attention_stages apply to the EfficientNet backbones only")
+    if args.b0_blocks:
+        from birdnet_stm32.models.efficientnet import parse_blocks
+
+        try:
+            args.b0_blocks = [list(b) for b in parse_blocks(args.b0_blocks)]
+        except ValueError as exc:
+            parser.error(f"--b0_blocks: {exc}")
+    else:
+        args.b0_blocks = []
     if args.distill_weight is not None and not args.distill_from:
         parser.error("--distill_weight needs --distill_from")
     if args.distill_from:
@@ -888,6 +916,8 @@ def main():
         dw_kernel_size=args.dw_kernel_size,
         stage_widths=args.stage_widths,
         backbone=args.backbone,
+        b0_blocks=args.b0_blocks,
+        attention_stages=args.attention_stages,
         embeddings_size=args.embeddings_size,
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
@@ -921,6 +951,8 @@ def main():
         dw_kernel_size=args.dw_kernel_size,
         stage_widths=list(args.stage_widths),
         backbone=args.backbone,
+        b0_blocks=args.b0_blocks,
+        attention_stages=list(args.attention_stages),
         num_classes=len(classes),
         class_names=classes,
         raw_exposure_gain=args.raw_exposure_gain,

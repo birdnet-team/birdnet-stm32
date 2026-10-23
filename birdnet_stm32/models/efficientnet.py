@@ -12,6 +12,13 @@ The block table and stochastic depth follow B0 at width and depth 1.0. The top
 1x1 conv emits ``embeddings_size`` channels (1280), pooled by the same ``gap``
 layer as the DS-CNN so the embedding loss and the head fine-tune find their
 layers.
+
+For the 2.5 size study the stage table can be any table (``parse_blocks``), and
+a channel-attention block (``ChannelAttention``, EdgeNeXt's transposed
+attention) can follow the last block of chosen stages. On the STM32N6 one such
+block after stage 7 of N6-B0 adds 4 ms (36.9 vs 32.9 ms on target), three after
+stages 3, 5 and 7 add 11 ms: the per-head matmuls are split per head and the L2
+norm runs in float on the Cortex-M55, but everything maps.
 """
 
 import tensorflow as tf
@@ -40,6 +47,99 @@ B0_WIDE_BLOCKS = (
     (6, 3, 1, 320, 1),
 )
 DROP_CONNECT_RATE = 0.2
+ATTENTION_HEAD_WIDTH = 32  # channels per attention head, as in EdgeNeXt
+
+
+def parse_blocks(spec: str) -> tuple[tuple[int, int, int, int, int], ...]:
+    """A stage table from ``"e,k,r,c,s/e,k,r,c,s/..."`` (expand, kernel, repeats, channels, first stride per stage).
+
+    Raises:
+        ValueError: On a stage that is not five positive integers, an even kernel, or a stride other than 1 or 2
+            (larger strides fall back to the Cortex-M55 on the STM32N6).
+    """
+    blocks = []
+    for stage in spec.replace(" ", "").split("/"):
+        try:
+            values = tuple(int(v) for v in stage.split(","))
+        except ValueError as exc:
+            raise ValueError(f"stage '{stage}' is not five integers") from exc
+        if len(values) != 5 or min(values) < 1:
+            raise ValueError(
+                f"stage '{stage}' must be five positive integers (expand, kernel, repeats, channels, stride)"
+            )
+        if values[1] % 2 == 0 or values[4] not in (1, 2):
+            raise ValueError(f"stage '{stage}': the kernel must be odd and the stride 1 or 2")
+        blocks.append(values)
+    if not blocks:
+        raise ValueError("empty stage table")
+    return tuple(blocks)
+
+
+@tf.keras.utils.register_keras_serializable(package="birdnet_stm32")
+class ChannelAttention(layers.Layer):
+    """Transposed (cross-covariance) attention of XCiT and EdgeNeXt (arXiv 2206.10589) on ``[q, k, v]``.
+
+    Each input is ``[B, F, T, C]``. Per head of ``C / heads`` channels, q and k
+    are L2-normalized over the ``F * T`` positions, their ``C x C`` channel
+    affinities, scaled by a learned temperature per head, go through a softmax,
+    and the result mixes the channels of v. Cost grows with positions times
+    channels squared, not positions squared. Shaped for TFLite: the
+    normalization and the softmax run over the last axis, transposes stay 4-D.
+
+    Args:
+        heads: Number of heads; must divide the channel count.
+    """
+
+    def __init__(self, heads: int, **kwargs):
+        super().__init__(**kwargs)
+        self.heads = int(heads)
+
+    def build(self, input_shape):
+        self.temperature = self.add_weight(name="temperature", shape=(1, self.heads, 1, 1), initializer="ones")
+        super().build(input_shape)
+
+    def call(self, inputs):
+        q, k, v = inputs
+        f, t, c = int(q.shape[1]), int(q.shape[2]), int(q.shape[3])
+        h, d = self.heads, c // self.heads
+
+        def heads_first(z):  # [B, F, T, C] -> [B, h, d, F*T]
+            return tf.transpose(tf.reshape(z, [-1, f * t, h, d]), [0, 2, 3, 1])
+
+        q, k, v = heads_first(q), heads_first(k), heads_first(v)
+        q, k = tf.math.l2_normalize(q, axis=-1), tf.math.l2_normalize(k, axis=-1)
+        scores = tf.matmul(q, k, transpose_b=True) * tf.cast(self.temperature, q.dtype)  # [B, h, d, d]
+        out = tf.matmul(tf.nn.softmax(scores, axis=-1), v)  # [B, h, d, F*T]
+        return tf.reshape(tf.transpose(out, [0, 3, 1, 2]), [-1, f, t, c])
+
+    def compute_output_shape(self, input_shape):
+        return input_shape[0]
+
+    def get_config(self):
+        return {**super().get_config(), "heads": self.heads}
+
+
+def channel_attention_block(x: tf.Tensor, name: str) -> tf.Tensor:
+    """A bounded residual ChannelAttention block: BN, 1x1 q / k / v, attention, 1x1 projection, BN, add, ReLU6.
+
+    Args:
+        x: Input tensor [B, F, T, C].
+        name: Base name for layers.
+
+    Returns:
+        Output tensor of the same shape.
+    """
+    c = int(x.shape[-1])
+    heads = max(1, c // ATTENTION_HEAD_WIDTH)
+    while c % heads:
+        heads -= 1
+    y = layers.BatchNormalization(name=f"{name}_bn")(x)
+    q, k, v = (layers.Conv2D(c, 1, use_bias=False, name=f"{name}_{part}")(y) for part in "qkv")
+    y = ChannelAttention(heads, name=f"{name}_attn")([q, k, v])
+    y = layers.Conv2D(c, 1, use_bias=False, name=f"{name}_proj")(y)
+    y = layers.BatchNormalization(name=f"{name}_proj_bn")(y)
+    y = layers.Add(name=f"{name}_add")([x, y])
+    return _relu6(f"{name}_add_relu")(y)
 
 
 def _relu6(name: str) -> layers.Layer:
@@ -90,17 +190,25 @@ def mbconv_block(
     return y
 
 
-def efficientnet_b0_backbone(x: tf.Tensor, embeddings_size: int, blocks: tuple = B0_BLOCKS) -> tf.Tensor:
-    """N6-B0 stem, seven MBConv stages and the top conv on a frontend's [B, F, T, C] output.
+def efficientnet_b0_backbone(
+    x: tf.Tensor, embeddings_size: int, blocks: tuple = B0_BLOCKS, attention_stages: tuple | list = ()
+) -> tf.Tensor:
+    """N6-B0 stem, the MBConv stages and the top conv on a frontend's [B, F, T, C] output.
 
     Args:
         x: Frontend output.
         embeddings_size: Channels of the top 1x1 conv (the pooled embedding).
         blocks: The stage table, (expand, kernel, repeats, output channels, first stride) per stage; B0's by default.
+        attention_stages: 1-based stages whose last block is followed by a ``channel_attention_block``.
 
     Returns:
-        Feature map [B, F/32, T/32, embeddings_size].
+        Feature map [B, F/32, T/32, embeddings_size] (for B0's four stride-2 stages after the stem).
+
+    Raises:
+        ValueError: On an attention stage outside the table.
     """
+    if any(not 1 <= int(si) <= len(blocks) for si in attention_stages):
+        raise ValueError(f"attention_stages {list(attention_stages)} outside stages 1..{len(blocks)}")
     x = layers.Conv2D(32, 3, strides=2, padding="same", use_bias=False, name="stem_conv")(x)
     x = layers.BatchNormalization(name="stem_bn")(x)
     x = _relu6("stem_act")(x)
@@ -119,6 +227,8 @@ def efficientnet_b0_backbone(x: tf.Tensor, embeddings_size: int, blocks: tuple =
                 name=f"block{si}{chr(ord('a') + bi)}",
             )
             done += 1
+        if si in {int(a) for a in attention_stages}:
+            x = channel_attention_block(x, f"attn{si}")
 
     x = layers.Conv2D(int(embeddings_size), 1, padding="same", use_bias=False, name="top_conv")(x)
     x = layers.BatchNormalization(name="top_bn")(x)
