@@ -150,6 +150,17 @@ none died, and the widened model learned several times faster.
   by ridge regression first. Trained from scratch at 448 frames, it raised the
   float window AUPRC on WABAD from 0.442 to 0.475 and the INT8 catalog cMAP
   from 0.712 to 0.728.
+- **Distillation from a larger model** (`--distill_from`): a trained `.keras`
+  model runs frozen on every training batch, the very chunks the student sees
+  after augmentation, and a Bernoulli KL divergence between its class
+  probabilities and the student's joins the loss at `--distill_weight` (default
+  1.0). It is how a smaller model learns from a larger one without an offline
+  pass over the training set. The teacher must take the student's input and
+  score the same classes in the same order (checked against its
+  `_labels.txt`); it costs one forward pass of the teacher per batch. It
+  combines with the teacher-embedding loss above, applies to float training
+  only (QAT distils from its own float model), and never reaches the
+  checkpoint.
 - **Smart crop**: long recordings (> 2 chunks) are automatically cropped to
   salient regions using short-time energy (STE) analysis, reducing label
   noise from silent or irrelevant segments. Energy ranking selects the loudest
@@ -450,6 +461,8 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--teacher_weight` | 0.5 with `--teacher_cache`, else 0 | Teacher share of the training target in [0, 1] (0 = hard labels only). Background birds: a species the file does not name takes the teacher's own score from 0.3 and 1 from 0.8 instead of the blend (always on with teacher targets from 2.3, as in `finetune-head`) |
 | `--label_sidecar` | None | CSV of per-file label additions (`sample_id`, `positives`, `negatives`; classes separated by `;`): positives join the folder's class in the hard label (recordings with several species), negatives are confirmed absent, held at 0 and never raised by the teacher's soft target |
 | `--teacher_embedding_weight` | 0.2 with embeddings | Weight of a cosine loss to the teacher's embedding of each chunk; on when `--teacher_cache` holds `emb.npy`, 0 disables |
+| `--distill_from` | None | A trained `.keras` model to distil from online: frozen, run on every training batch; float training only |
+| `--distill_weight` | 1.0 with `--distill_from` | Weight of the Bernoulli KL to the `--distill_from` model's class probabilities |
 | `--crop_policy` | teacher with `--teacher_cache`, else energy | How training chunks are chosen: `energy` or `teacher` (needs `--teacher_cache`) |
 | `--dropout` | 0.5 | Dropout rate before classifier head |
 | `--optimizer` | adam | `adam`, `sgd`, or `adamw` |

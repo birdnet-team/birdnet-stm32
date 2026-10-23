@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `train --distill_from MODEL.keras [--distill_weight 1.0]`: online distillation
+  from a larger trained model. The model runs frozen on every training batch
+  and a Bernoulli KL divergence to its class probabilities joins the loss; it
+  combines with the teacher-embedding loss and never reaches the checkpoint.
+  For training smaller, faster models from a released one.
+
 ## [2.3.0] - 2026-10-22
 
 One model ships: `BirdNET_Tiny_N6_GLOBAL_1K_V2.3_Raw`, the same 1,007 bird

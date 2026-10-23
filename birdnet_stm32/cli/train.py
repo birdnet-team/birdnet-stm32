@@ -391,6 +391,21 @@ def get_args() -> argparse.Namespace:
             "0 disables it. The deployed model is unchanged."
         ),
     )
+    parser.add_argument(
+        "--distill_from",
+        default=None,
+        help=(
+            "A trained .keras model to distil from online (2.5): run frozen on every training batch, its class "
+            "probabilities add a Bernoulli KL term to the student's loss. It must take the student's input and "
+            "score the same classes in the same order. Float training only."
+        ),
+    )
+    parser.add_argument(
+        "--distill_weight",
+        type=float,
+        default=None,
+        help="Weight of the --distill_from KL term against the supervised loss (default 1.0)",
+    )
     parser.add_argument("--mixup_alpha", type=float, default=0.2, help="Mixup alpha")
     parser.add_argument("--mixup_probability", type=float, default=0.25, help="Mixup batch fraction")
 
@@ -589,6 +604,19 @@ def get_args() -> argparse.Namespace:
         parser.error("--field_table shapes the per-epoch class cap: it needs --class_cap_per_epoch > 0")
     if args.teacher_embedding_weight > 0 and (args.qat or args.linear_probe):
         parser.error("--teacher_embedding_weight applies to float training only (not --qat or --linear_probe)")
+    if args.distill_weight is not None and not args.distill_from:
+        parser.error("--distill_weight needs --distill_from")
+    if args.distill_from:
+        if args.qat or args.linear_probe:
+            parser.error("--distill_from applies to float training only (QAT distils from its own float model)")
+        if not os.path.isfile(args.distill_from):
+            parser.error(f"--distill_from: no such file {args.distill_from}")
+        if args.distill_weight is None:
+            from birdnet_stm32.training.distillation import DEFAULT_ONLINE_DISTILLATION_WEIGHT
+
+            args.distill_weight = DEFAULT_ONLINE_DISTILLATION_WEIGHT
+        if args.distill_weight <= 0:
+            parser.error(f"--distill_weight must be > 0, got {args.distill_weight}")
     if args.crop_policy == "teacher" and not args.teacher_cache:
         parser.error("--crop_policy teacher needs --teacher_cache")
     args.deterministic = True  # always deterministic
@@ -951,6 +979,27 @@ def main():
     )
 
     training_wrapper = None
+    distill_teacher = None
+    if args.distill_from:
+        from birdnet_stm32.training.trainer import load_for_resume
+
+        # Its saved dtype policy, so the teacher runs in mixed precision beside the student.
+        distill_teacher = load_for_resume(args.distill_from)
+        teacher_labels = os.path.splitext(args.distill_from)[0] + "_labels.txt"
+        if os.path.isfile(teacher_labels):
+            with open(teacher_labels) as f:
+                if [line.strip() for line in f if line.strip()] != list(classes):
+                    raise SystemExit(f"--distill_from scores other classes than this run ({teacher_labels})")
+        print(
+            f"Distilling online from {args.distill_from} ({distill_teacher.count_params():,} parameters), "
+            f"KL weight {args.distill_weight}"
+        )
+
+        def training_wrapper(student):
+            from birdnet_stm32.training.distillation import OnlineDistilledModel
+
+            return OnlineDistilledModel(student, distill_teacher, args.distill_weight)
+
     if embed:
         from birdnet_stm32.training.embedding_distillation import EmbeddingDistilledModel, fit_projector
 
@@ -960,7 +1009,13 @@ def main():
         from_trained = bool(args.init_checkpoint) or (args.resume and os.path.isfile(args.checkpoint_path))
 
         def training_wrapper(student):
-            wrapped = EmbeddingDistilledModel(student, teacher.embedding_dim, args.teacher_embedding_weight)
+            wrapped = EmbeddingDistilledModel(
+                student,
+                teacher.embedding_dim,
+                args.teacher_embedding_weight,
+                output_teacher=distill_teacher,
+                output_weight=args.distill_weight or 0.0,
+            )
             if from_trained:
                 rng = random.Random(args.seed)
                 files = rng.sample(train_paths, min(_PROJECTOR_FIT_FILES, len(train_paths)))

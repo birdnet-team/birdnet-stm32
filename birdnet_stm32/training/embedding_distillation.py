@@ -60,12 +60,33 @@ class EmbeddingDistilledModel(tf.keras.Model):
         student: The model being trained. Its variables are shared.
         teacher_dim: Width of the teacher embedding.
         weight: Weight of the cosine distance against the supervised loss.
+        output_teacher: Optional frozen larger model to distil from online, on the
+            same batch (``distillation.OnlineDistilledModel``'s Bernoulli KL term).
+        output_weight: Weight of that KL term.
     """
 
-    def __init__(self, student: tf.keras.Model, teacher_dim: int, weight: float):
+    def __init__(
+        self,
+        student: tf.keras.Model,
+        teacher_dim: int,
+        weight: float,
+        output_teacher: tf.keras.Model | None = None,
+        output_weight: float = 0.0,
+    ):
         super().__init__(inputs=student.inputs, outputs=student.outputs, name=student.name)
         if weight <= 0:
             raise ValueError(f"embedding distillation weight must be positive, got {weight}")
+        self.output_teacher = None
+        if output_teacher is not None:
+            from birdnet_stm32.training.distillation import check_distillation_teacher
+
+            check_distillation_teacher(student, output_teacher)
+            if output_weight <= 0:
+                raise ValueError(f"online distillation weight must be positive, got {output_weight}")
+            output_teacher.trainable = False
+            self.output_teacher = output_teacher
+            self.distill_weight = float(output_weight)
+            self.distill_metric = tf.keras.metrics.Mean(name="distill_kl")
         features = student.get_layer(EMBEDDING_LAYER).output
         self.embedder = tf.keras.Model(student.inputs, [student.outputs[0], features], name="student_with_embedding")
         self.projector = tf.keras.layers.Dense(int(teacher_dim), name="teacher_projector", dtype="float32")
@@ -81,6 +102,12 @@ class EmbeddingDistilledModel(tf.keras.Model):
             supervised = self.compute_loss(x=x, y=y, y_pred=y_pred, training=True)
             distance, cosine = masked_cosine_distance(self.projector(features), teacher, valid)
             loss = supervised + self.embedding_weight * distance
+            if self.output_teacher is not None:
+                from birdnet_stm32.training.distillation import bernoulli_kl
+
+                divergence = bernoulli_kl(tf.stop_gradient(self.output_teacher(x, training=False)), y_pred)
+                self.distill_metric.update_state(divergence)
+                loss = loss + self.distill_weight * divergence
             self._loss_tracker.update_state(loss, sample_weight=tf.shape(y)[0])
             scaled = self.optimizer.scale_loss(loss)
         variables = self.trainable_weights
@@ -89,9 +116,11 @@ class EmbeddingDistilledModel(tf.keras.Model):
         return self.compute_metrics(x, y, y_pred)
 
     def test_step(self, data):
-        """The default step; validation carries no teacher embeddings, so no cosine."""
+        """The default step; validation carries no teacher embeddings, so no cosine (and no distillation)."""
         logs = super().test_step(data)
         logs.pop(self.cosine_metric.name, None)
+        if self.output_teacher is not None:
+            logs.pop(self.distill_metric.name, None)
         return logs
 
 
