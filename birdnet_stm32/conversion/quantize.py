@@ -271,6 +271,51 @@ def clip_activation_ranges(
     return bytes(flatbuffer_utils.convert_object_to_bytearray(flat))
 
 
+# XNNPACK, TFLite's default CPU delegate, ignores the zero point of an INT8
+# BATCH_MATMUL's right-hand operand (TF 2.21; the built-in kernel does not): an
+# activation quantized with zero point z and scale s comes out shifted by z * s per
+# unit of left-hand row sum. In channel attention (softmax rows sum to 1, times v)
+# that put every output of the 2.5 attention arm's three blocks 4-8 INT8 steps off,
+# and its logit MSE against float at 2.5 where N6-B0 without attention has 0.3.
+# Ops that only move values share their input's range, so the chain behind the
+# operand is centred with it; fixed-range ops (L2 norm, softmax) are left alone.
+_RANGE_PRESERVING_OPS = frozenset({"RESHAPE", "TRANSPOSE"})
+
+
+def center_matmul_operands(calibrated: bytes) -> bytes:
+    """Give each BATCH_MATMUL's right-hand activation a range that quantizes with zero point 0.
+
+    The range becomes ``[-m * 128 / 127, m]``, ``m`` its largest magnitude, which
+    INT8 maps to scale ``m / 127`` and zero point 0 exactly. Applied to the same
+    calibrate-only model as ``clip_activation_ranges``; ranges only grow.
+    """
+    from tensorflow.lite.tools import flatbuffer_utils
+
+    ranges = _calibrated_ranges(calibrated)
+    interpreter = tf.lite.Interpreter(model_content=calibrated)
+    ops = interpreter._get_ops_details()  # noqa: SLF001
+    producer = {out: op for op in ops for out in op["outputs"]}
+    flat = flatbuffer_utils.read_model_from_bytearray(bytearray(calibrated))
+    tensors = flat.subgraphs[0].tensors
+    for op in ops:
+        if op["op_name"] != "BATCH_MATMUL":
+            continue
+        chain, index = [], op["inputs"][1]
+        while index in ranges:
+            chain.append(index)
+            source = producer.get(index)
+            if source is None or source["op_name"] not in _RANGE_PRESERVING_OPS:
+                break
+            index = source["inputs"][0]
+        if not chain or (source is not None and source["op_name"] in ("L2_NORMALIZATION", "SOFTMAX")):
+            continue
+        m = max(max(abs(lo), abs(hi)) for lo, hi in (ranges[i] for i in chain))
+        for i in chain:
+            tensors[i].quantization.min = np.array([-m * 128.0 / 127.0], np.float32)
+            tensors[i].quantization.max = np.array([m], np.float32)
+    return bytes(flatbuffer_utils.convert_object_to_bytearray(flat))
+
+
 def convert_to_tflite(
     model: tf.keras.Model,
     rep_data_gen: Callable[[], Iterable[list[np.ndarray]]],
@@ -282,7 +327,8 @@ def convert_to_tflite(
     Full INT8 post-training quantization: the converter calibrates every
     activation range on ``rep_data_gen``, the ranges are clipped to
     ``range_percentile`` of the same data (``clip_activation_ranges``),
-    and the model is quantized with those ranges.
+    BATCH_MATMUL right-hand operands are centred on zero
+    (``center_matmul_operands``), and the model is quantized with those ranges.
 
     Args:
         model: Loaded Keras model.
@@ -309,7 +355,8 @@ def convert_to_tflite(
 
     # The debugger exposes the calibrate-only model and quantizes from an edited one.
     debugger = tf.lite.experimental.QuantizationDebugger(converter=converter, debug_dataset=lambda: iter(samples[:1]))
-    debugger.calibrated_model = clip_activation_ranges(bytes(debugger.calibrated_model), samples)
+    calibrated = clip_activation_ranges(bytes(debugger.calibrated_model), samples)
+    debugger.calibrated_model = center_matmul_operands(calibrated)
     tflite_model = bytes(debugger.get_nondebug_quantized_model())
 
     # Verify the public float32 I/O contract; audio is still quantized internally.

@@ -20,7 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transposed attention) after chosen stages. Both are recorded in the model
   config. They carry the 2.5 size study; on the STM32N6570-DK, untrained,
   N6-B0 runs 20 ms at half width and 24 ms at half depth, and attention after
-  stages 3, 5 and 7 adds 11 ms.
+  stages 3, 5 and 7 adds 11 ms. INT8 conversion gives the right-hand operand
+  of every batched matmul a zero point of 0: XNNPACK, TFLite's default CPU
+  delegate, ignores that zero point and shifted every attention output by
+  several INT8 steps (the STM32N6 and TFLite's built-in kernel are unaffected).
 
 ## [2.3.0] - 2026-10-22
 

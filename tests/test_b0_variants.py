@@ -108,6 +108,8 @@ class TestChannelAttention:
         from birdnet_stm32.conversion.quantize import convert_to_tflite
 
         model = small_model(attention=[5])
+        v = model.get_layer("attn5_v")  # non-negative weights on a ReLU6 input: v is >= 0, a zero point of -128
+        v.set_weights([np.abs(w) for w in v.get_weights()])
         rng = np.random.default_rng(0)
 
         def rep():
@@ -121,12 +123,16 @@ class TestChannelAttention:
             convert_to_tflite(model, rep, path)
             interp = tf.lite.Interpreter(path)
             interp.allocate_tensors()
-            ops = {op["op_name"] for op in interp._get_ops_details()}  # noqa: SLF001
+            details = interp._get_ops_details()  # noqa: SLF001
             interp.set_tensor(interp.get_input_details()[0]["index"], rng.random((1, 64, 256, 1)).astype(np.float32))
             interp.invoke()
             out = interp.get_tensor(interp.get_output_details()[0]["index"])
+            zero_points = {t["index"]: t["quantization"][1] for t in interp.get_tensor_details()}
         assert np.isfinite(out).all() and out.shape == (1, 3)
-        assert {"BATCH_MATMUL", "SOFTMAX"} <= ops
+        assert {"BATCH_MATMUL", "SOFTMAX"} <= {op["op_name"] for op in details}
+        # XNNPACK's INT8 BATCH_MATMUL ignores its right-hand zero point; the converter centres those operands on 0.
+        matmuls = [op for op in details if op["op_name"] == "BATCH_MATMUL"]
+        assert len(matmuls) == 2 and all(zero_points[op["inputs"][1]] == 0 for op in matmuls)
 
 
 class TestConfigAndFlags:
