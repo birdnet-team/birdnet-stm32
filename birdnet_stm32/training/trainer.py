@@ -1,7 +1,9 @@
 """Training loop with cosine LR schedule, early stopping, and checkpointing."""
 
+import csv
 import json
 import os
+import shutil
 from collections.abc import Callable
 
 import tensorflow as tf
@@ -130,6 +132,22 @@ def load_for_resume(checkpoint_path: str) -> tf.keras.Model:
     return tf.keras.models.load_model(checkpoint_path, compile=False, custom_objects=_KERAS_CUSTOM_OBJECTS)
 
 
+def _truncate_history(csv_path: str, epoch: int) -> None:
+    """Drop history rows after ``epoch`` (a resume that rewinds to the best checkpoint), keeping a backup."""
+    if not os.path.isfile(csv_path):
+        return
+    with open(csv_path, newline="") as f:
+        rows = list(csv.reader(f))
+    if len(rows) <= 1:
+        return
+    kept = [rows[0]] + [r for r in rows[1:] if r and int(float(r[0])) <= epoch]
+    if len(kept) == len(rows):
+        return
+    shutil.copy2(csv_path, f"{csv_path}.ep{int(float(rows[-1][0]))}_rewound")
+    with open(csv_path, "w", newline="") as f:
+        csv.writer(f).writerows(kept)
+
+
 def train_model(
     model: tf.keras.Model,
     train_dataset: tf.data.Dataset,
@@ -225,17 +243,36 @@ def train_model(
 
     os.makedirs(os.path.dirname(checkpoint_path) or ".", exist_ok=True)
 
-    # Resume: reload model from checkpoint if it exists
+    # Resume. Every epoch writes the last weights (``*_last.keras``) and then the train state, so a stopped run continues
+    # from its last completed epoch. Without a matching last checkpoint (older runs) it falls back to the best-only
+    # checkpoint and rewinds the epoch and the history CSV to that checkpoint's epoch, so the schedule and the history
+    # never run ahead of the weights. The best monitor value is carried over, so the first resumed epoch does not
+    # replace the best checkpoint unless it beats it.
     initial_epoch = 0
     state_path = checkpoint_path.replace(".keras", "_train_state.json")
-    if resume and os.path.isfile(checkpoint_path):
+    last_path = checkpoint_path.replace(".keras", "_last.keras")
+    csv_path = checkpoint_path.replace(".keras", "_history.csv")
+    resume_best: float | None = None
+    state: dict = {}
+    if resume and os.path.isfile(state_path):
+        with open(state_path) as f:
+            state = json.load(f)
+    if resume and os.path.isfile(last_path) and state.get("last_epoch") == state.get("epoch"):
+        print(f"[resume] Loading the last checkpoint {last_path}")
+        model = load_for_resume(last_path)
+        initial_epoch = int(state["epoch"])
+        resume_best = state.get("best")
+        print(f"[resume] Resuming from epoch {initial_epoch}")
+    elif resume and os.path.isfile(checkpoint_path):
         print(f"[resume] Loading model from {checkpoint_path}")
         model = load_for_resume(checkpoint_path)
-        if os.path.isfile(state_path):
-            with open(state_path) as f:
-                state = json.load(f)
-            initial_epoch = state.get("epoch", 0)
-            print(f"[resume] Resuming from epoch {initial_epoch}")
+        initial_epoch = int(state.get("best_epoch", state.get("epoch", 0)))
+        resume_best = state.get("best")
+        if "best_epoch" in state and state["best_epoch"] < state.get("epoch", 0):
+            print(f"[resume] No last checkpoint for epoch {state['epoch']}: rewinding to the best checkpoint's epoch "
+                  f"{initial_epoch}")
+            _truncate_history(csv_path, initial_epoch)
+        print(f"[resume] Resuming from epoch {initial_epoch}")
 
     if training_wrapper is not None:
         if checkpoint_model is not None:
@@ -298,11 +335,31 @@ def train_model(
     )
 
     class _SaveTrainState(tf.keras.callbacks.Callback):
-        """Save epoch counter alongside checkpoint for resume support."""
+        """Save the last weights, then the epoch counter and the best checkpoint's epoch and value, for resume.
+
+        The last checkpoint goes first, so the state never names an epoch whose weights are not on disk. A run whose
+        checkpoints an external callback owns (QAT's INT8 selection) keeps only the state.
+        """
+
+        def __init__(self):
+            super().__init__()
+            self.best = resume_best
+            self.best_epoch = state.get("best_epoch") if resume_best is not None else None
 
         def on_epoch_end(self, epoch, logs=None):
+            value = (logs or {}).get(checkpoint_monitor)
+            if value is not None and epoch >= checkpoint_start_epoch and (
+                self.best is None or (value > self.best if checkpoint_mode == "max" else value < self.best)
+            ):
+                self.best, self.best_epoch = float(value), epoch + 1
+            new_state = {"epoch": epoch + 1}
+            if self.best is not None:
+                new_state.update(best=self.best, best_epoch=self.best_epoch)
+            if not checkpoint_managed:
+                (checkpoint_model if checkpoint_model is not None else self.model).save(last_path)
+                new_state["last_epoch"] = epoch + 1
             with open(state_path, "w") as f:
-                json.dump({"epoch": epoch + 1}, f)
+                json.dump(new_state, f)
 
     class _CSVHistoryLogger(tf.keras.callbacks.Callback):
         """Append per-epoch metrics to a CSV file alongside the checkpoint."""
@@ -345,8 +402,6 @@ def train_model(
                     checkpoint_sync()
                 self.target.save(checkpoint_path)
 
-    csv_path = checkpoint_path.replace(".keras", "_history.csv")
-
     class _DelayedModelCheckpoint(tf.keras.callbacks.ModelCheckpoint):
         """Ignore epochs before ``checkpoint_start_epoch`` when selecting."""
 
@@ -366,6 +421,8 @@ def train_model(
         )
     else:
         checkpoint_callback = _SharedWeightsCheckpoint(checkpoint_model)
+    if resume_best is not None:  # a resumed run keeps the best value it had reached
+        checkpoint_callback.best = resume_best
 
     from birdnet_stm32.training.validation import ExactCmap, FileCmap
 
