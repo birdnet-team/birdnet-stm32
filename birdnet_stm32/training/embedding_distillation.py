@@ -14,6 +14,13 @@ windows; an MSE would spend most of its effort on the norm.
 
 Chunks with no usable teacher window, and chunks mixup mixed, carry
 ``valid = 0`` from the loader and add nothing to this loss.
+
+Optionally a second training-only head, linear on the same embedding, predicts
+where and when the recording was made (``birdnet_stm32.data.aux_targets``): the
+location as a unit vector and the day of year as (sin, cos), each scored by a
+cosine distance over the rows where it is known. It asks the embedding to carry
+the species composition of a place and season. Like the projector, it never
+reaches the checkpoint.
 """
 
 import numpy as np
@@ -63,6 +70,9 @@ class EmbeddingDistilledModel(tf.keras.Model):
         output_teacher: Optional frozen larger model to distil from online, on the
             same batch (``distillation.OnlineDistilledModel``'s Bernoulli KL term).
         output_weight: Weight of that KL term.
+        aux_weight: Weight of the location/date head's loss (the sum of its two
+            cosine distances); 0 for none. With it, ``train_step`` expects labels
+            ``(y, teacher_embedding, valid, aux, aux_valid)``.
     """
 
     def __init__(
@@ -72,6 +82,7 @@ class EmbeddingDistilledModel(tf.keras.Model):
         weight: float,
         output_teacher: tf.keras.Model | None = None,
         output_weight: float = 0.0,
+        aux_weight: float = 0.0,
     ):
         super().__init__(inputs=student.inputs, outputs=student.outputs, name=student.name)
         if weight <= 0:
@@ -93,15 +104,33 @@ class EmbeddingDistilledModel(tf.keras.Model):
         self.projector.build((None, int(features.shape[-1])))
         self.embedding_weight = float(weight)
         self.cosine_metric = tf.keras.metrics.Mean(name="teacher_cosine")
+        if aux_weight < 0:
+            raise ValueError(f"aux weight must be >= 0, got {aux_weight}")
+        self.aux_weight = float(aux_weight)
+        self.aux_head = None
+        if self.aux_weight > 0:
+            from birdnet_stm32.data.aux_targets import AUX_DIM
+
+            self.aux_head = tf.keras.layers.Dense(AUX_DIM, name="aux_geo_date_head", dtype="float32")
+            self.aux_head.build((None, int(features.shape[-1])))
+            self.geo_metric = tf.keras.metrics.Mean(name="aux_geo_cosine")
+            self.date_metric = tf.keras.metrics.Mean(name="aux_date_cosine")
 
     def train_step(self, data):
-        """The default Keras step, plus the embedding term."""
-        x, (y, teacher, valid) = data
+        """The default Keras step, plus the embedding term (and the location/date term)."""
+        x, labels = data
+        y, teacher, valid = labels[:3]
         with tf.GradientTape() as tape:
             y_pred, features = self.embedder(x, training=True)
             supervised = self.compute_loss(x=x, y=y, y_pred=y_pred, training=True)
             distance, cosine = masked_cosine_distance(self.projector(features), teacher, valid)
             loss = supervised + self.embedding_weight * distance
+            if self.aux_head is not None:
+                aux_t, aux_v = labels[3], labels[4]
+                pred = self.aux_head(tf.cast(features, tf.float32))
+                geo_d, geo_cos = masked_cosine_distance(pred[:, :3], aux_t[:, :3], aux_v[:, 0])
+                date_d, date_cos = masked_cosine_distance(pred[:, 3:], aux_t[:, 3:], aux_v[:, 1])
+                loss = loss + self.aux_weight * (geo_d + date_d)
             if self.output_teacher is not None:
                 from birdnet_stm32.training.distillation import bernoulli_kl
 
@@ -113,6 +142,9 @@ class EmbeddingDistilledModel(tf.keras.Model):
         variables = self.trainable_weights
         self.optimizer.apply_gradients(zip(tape.gradient(scaled, variables), variables, strict=True))
         self.cosine_metric.update_state(cosine, sample_weight=valid)
+        if self.aux_head is not None:
+            self.geo_metric.update_state(geo_cos, sample_weight=aux_v[:, 0])
+            self.date_metric.update_state(date_cos, sample_weight=aux_v[:, 1])
         return self.compute_metrics(x, y, y_pred)
 
     def test_step(self, data):
@@ -121,6 +153,9 @@ class EmbeddingDistilledModel(tf.keras.Model):
         logs.pop(self.cosine_metric.name, None)
         if self.output_teacher is not None:
             logs.pop(self.distill_metric.name, None)
+        if self.aux_head is not None:
+            logs.pop(self.geo_metric.name, None)
+            logs.pop(self.date_metric.name, None)
         return logs
 
 
@@ -188,3 +223,59 @@ def fit_projector(
         "cosine_holdout": scores[best],
         "cosine_holdout_by_ridge": {float(k): round(v, 4) for k, v in scores.items()},
     }
+
+
+def fit_aux_head(model: EmbeddingDistilledModel, batches, ridges: tuple[float, ...] = (1e-3, 1e-2, 1e-1, 1.0)) -> dict:
+    """Initialize the location/date head by ridge regression on the student's current embeddings.
+
+    As with the projector: from a trained student, a random head would open at the largest loss and push
+    its gradients into a converged backbone. The location columns are fitted on rows with a known location,
+    the date columns on rows with a known date, each with the ridge strength that gives the best held-out
+    mean cosine (20% of rows held out, then refitted on all).
+
+    Args:
+        model: The wrapper whose ``aux_head`` is set.
+        batches: Iterable of ``(x, aux, aux_valid)`` arrays.
+
+    Returns:
+        Row counts, chosen ridge strengths and held-out mean cosines.
+    """
+    feats, targets, valids = [], [], []
+    for x, aux_t, aux_v in batches:
+        _, features = model.embedder(x, training=False)
+        feats.append(np.asarray(features, np.float64))
+        targets.append(np.asarray(aux_t, np.float64))
+        valids.append(np.asarray(aux_v) > 0.5)
+    f, t, v = np.concatenate(feats), np.concatenate(targets), np.concatenate(valids)
+    kernel = np.zeros((f.shape[1], t.shape[1]))
+    bias = np.zeros(t.shape[1])
+    report = {}
+    for name, cols, flag in (("geo", slice(0, 3), 0), ("date", slice(3, 5), 1)):
+        rows = np.flatnonzero(v[:, flag])
+        if len(rows) < 8:
+            report[name] = {"rows": int(len(rows)), "skipped": True}
+            continue
+        order = np.random.default_rng(0).permutation(rows)
+        n_fit = int(len(order) * 0.8)
+        fit_rows, held = order[:n_fit], order[n_fit:]
+
+        def solve(r, ridge, cols=cols):
+            mean = f[r].mean(axis=0)
+            c = f[r] - mean
+            gram = c.T @ c
+            gram[np.diag_indices_from(gram)] += ridge * np.trace(gram) / gram.shape[0]
+            k = np.linalg.solve(gram, c.T @ t[r, cols])
+            return k, t[r, cols].mean(axis=0) - mean @ k
+
+        def cos(r, k, b, cols=cols):
+            p = f[r] @ k + b
+            p /= np.maximum(np.linalg.norm(p, axis=1, keepdims=True), _EPS)
+            q = t[r, cols] / np.maximum(np.linalg.norm(t[r, cols], axis=1, keepdims=True), _EPS)
+            return float(np.mean(np.sum(p * q, axis=1)))
+
+        scores = {r: cos(held, *solve(fit_rows, r)) for r in ridges}
+        best = max(scores, key=scores.get)
+        kernel[:, cols], bias[cols] = solve(rows, best)
+        report[name] = {"rows": int(len(rows)), "ridge": float(best), "cosine_holdout": round(scores[best], 4)}
+    model.aux_head.set_weights([kernel.astype(np.float32), bias.astype(np.float32)])
+    return report
