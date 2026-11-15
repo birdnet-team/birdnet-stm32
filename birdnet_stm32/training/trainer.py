@@ -164,6 +164,7 @@ def train_model(
     loss_fn: str | tf.keras.losses.Loss | None = None,
     gradient_clip_norm: float = 1.0,
     resume: bool = False,
+    prepare_model: Callable[[tf.keras.Model], None] | None = None,
     extra_callbacks: list[tf.keras.callbacks.Callback] | None = None,
     jit_compile: bool = False,
     checkpoint_model: tf.keras.Model | None = None,
@@ -203,6 +204,8 @@ def train_model(
         weight_decay: Weight decay factor (only used by 'adamw').
         loss_fn: Optional custom loss function. Defaults to ``binary_crossentropy``.
         gradient_clip_norm: Max gradient norm for clipping (0 = disabled).
+        prepare_model: Called on the model before training, also on one a resume reloaded (training-only
+            settings that the checkpoint does not carry).
         resume: If True, reload the model from the checkpoint and continue from
             the recorded epoch (the learning-rate schedule is advanced to match).
         extra_callbacks: Additional Keras callbacks (e.g. QAT callback).
@@ -269,10 +272,15 @@ def train_model(
         initial_epoch = int(state.get("best_epoch", state.get("epoch", 0)))
         resume_best = state.get("best")
         if "best_epoch" in state and state["best_epoch"] < state.get("epoch", 0):
-            print(f"[resume] No last checkpoint for epoch {state['epoch']}: rewinding to the best checkpoint's epoch "
-                  f"{initial_epoch}")
+            print(
+                f"[resume] No last checkpoint for epoch {state['epoch']}: rewinding to the best checkpoint's epoch "
+                f"{initial_epoch}"
+            )
             _truncate_history(csv_path, initial_epoch)
         print(f"[resume] Resuming from epoch {initial_epoch}")
+
+    if prepare_model is not None:  # training-only settings outside the saved config, e.g. the raw SpecAugment
+        prepare_model(model)
 
     if training_wrapper is not None:
         if checkpoint_model is not None:
@@ -348,8 +356,10 @@ def train_model(
 
         def on_epoch_end(self, epoch, logs=None):
             value = (logs or {}).get(checkpoint_monitor)
-            if value is not None and epoch >= checkpoint_start_epoch and (
-                self.best is None or (value > self.best if checkpoint_mode == "max" else value < self.best)
+            if (
+                value is not None
+                and epoch >= checkpoint_start_epoch
+                and (self.best is None or (value > self.best if checkpoint_mode == "max" else value < self.best))
             ):
                 self.best, self.best_epoch = float(value), epoch + 1
             new_state = {"epoch": epoch + 1}

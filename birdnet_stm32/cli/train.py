@@ -425,6 +425,12 @@ def get_args() -> argparse.Namespace:
     )
     parser.add_argument("--mixup_alpha", type=float, default=0.2, help="Mixup alpha")
     parser.add_argument("--mixup_probability", type=float, default=0.25, help="Mixup batch fraction")
+    parser.add_argument(
+        "--mixup_cooccurrence",
+        default="",
+        help="Optional [C, C] .npy (1 = the two classes can occur together, in labels-file order): mixup partners "
+        "only among batch samples whose primary classes can co-occur",
+    )
 
     # -- Training -------------------------------------------------------------
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
@@ -861,6 +867,7 @@ def main():
         batch_size=args.batch_size,
         mixup_alpha=args.mixup_alpha,
         mixup_probability=args.mixup_probability,
+        mixup_cooccurrence=np.load(args.mixup_cooccurrence) if args.mixup_cooccurrence else None,
         **chunk_kwargs,
         **train_kwargs,
     )
@@ -1067,6 +1074,18 @@ def main():
                 print(f"[teacher embeddings] projector fitted by ridge regression on {len(files)} files: {fit}")
             return wrapped
 
+    def _arm_raw_spec_augment(m: tf.keras.Model) -> None:
+        # The raw frontend computes the spectrogram in the model, out of the loader's reach (which
+        # applies SpecAugment for librosa/hybrid only), so float training masks the frontend output in
+        # the graph instead. Not in the saved config: finetune-head, QAT and conversion run without it.
+        if args.audio_frontend == "raw" and args.spec_augment and not (args.qat or args.linear_probe):
+            m.get_layer("audio_frontend").train_spec_augment = (args.freq_mask_max, args.time_mask_max)
+            print(
+                f"SpecAugment on the raw frontend output (freq <= {args.freq_mask_max}, time <= {args.time_mask_max})"
+            )
+
+    _arm_raw_spec_augment(model)
+
     # Train
     print("Starting training...")
     try:
@@ -1084,6 +1103,7 @@ def main():
             weight_decay=args.weight_decay,
             gradient_clip_norm=args.grad_clip,
             resume=args.resume,
+            prepare_model=_arm_raw_spec_augment,
             extra_callbacks=extra_callbacks,
             # A run from --init_checkpoint starts near a trained model: its first
             # epoch, still at warm-up learning rates, validates high, and the

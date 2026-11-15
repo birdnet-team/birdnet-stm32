@@ -140,11 +140,20 @@ none died, and the widened model learned several times faster.
 - **Mixup**: controlled by `--mixup_alpha` (default 0.2, 0 disables) and
   `--mixup_probability` (default 0.25). Uses Dirichlet multi-source mixing
   (2–3 sources per sample) to realistically emulate overlapping bird
-  vocalizations. Labels are combined via element-wise max.
+  vocalizations. Labels are combined via element-wise max. With
+  `--mixup_cooccurrence` (a `[classes, classes]` `.npy`, 1 where two classes
+  can occur together, such as species sharing a geomodel region) partners are
+  drawn only among samples whose primary classes can co-occur.
 - **SpecAugment**: enabled by default. Applies random frequency and time
   masking to spectrograms during training. Disable with `--no_spec_augment`.
   Control mask widths with `--freq_mask_max` (default 8 bins) and
-  `--time_mask_max` (default 25 frames).
+  `--time_mask_max` (default 25 frames). The `librosa` and `hybrid` frontends
+  mask in the data loader. The `raw` frontend computes its spectrogram inside
+  the model, so its output is masked in the graph during float training only
+  (not in QAT or `finetune-head`, and not in the exported model); masked cells
+  take the band's median over time rather than zero, because the raw frontend
+  maps silence to a band-dependent floor. Raw models before 2026-11 trained
+  without SpecAugment.
 - **Teacher targets**: `--teacher_cache` points at per-window scores from a
   larger model, computed once offline over every training recording, and
   `--teacher_weight` (default 0.5 with a cache, otherwise off) blends them into each chunk's label as
@@ -474,6 +483,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--raw_exposure_gain` | 16 (raw) | Gain of the raw filterbank's second, clamped exposure, mixed per band into a knee compressor; 1 = one exposure (raw only) |
 | `--mixup_alpha` | 0.2 | Mixup alpha (0 disables) |
 | `--mixup_probability` | 0.25 | Fraction of batch to mix |
+| `--mixup_cooccurrence` | none | `.npy` of which classes can occur together: mixup partners only among those |
 | `--no_spec_augment` | False | Disable SpecAugment masking (on by default) |
 | `--freq_mask_max` | 8 | Max frequency mask width (bins) |
 | `--time_mask_max` | 25 | Max time mask width (frames) |
