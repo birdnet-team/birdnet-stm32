@@ -23,8 +23,17 @@ def _rows(path):
 def _train(path, epochs, resume=False):
     x, y = batch()
     data = tf.data.Dataset.from_tensors((x, y)).repeat()
-    return train_model(tiny_student(), data, data, epochs=epochs, steps_per_epoch=2, val_steps=1,
-                       checkpoint_path=path, resume=resume, warmup_epochs=0)
+    return train_model(
+        tiny_student(),
+        data,
+        data,
+        epochs=epochs,
+        steps_per_epoch=2,
+        val_steps=1,
+        checkpoint_path=path,
+        resume=resume,
+        warmup_epochs=0,
+    )
 
 
 def test_every_epoch_writes_the_last_checkpoint_and_the_state(tmp_path):
