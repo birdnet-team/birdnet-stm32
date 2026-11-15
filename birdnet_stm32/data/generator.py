@@ -28,7 +28,13 @@ from birdnet_stm32.data.worker import _init_worker, _process_file, set_arena
 from birdnet_stm32.models.frontend import hybrid_fft_bins, normalize_frontend_name
 
 
-def mixup_batch(samples: tf.Tensor, labels: tf.Tensor, alpha: float = 0.2, probability: float = 0.25):
+def mixup_batch(
+    samples: tf.Tensor,
+    labels: tf.Tensor,
+    alpha: float = 0.2,
+    probability: float = 0.25,
+    cooccurrence: tf.Tensor | None = None,
+):
     """Multi-source mixup on a batch, in TensorFlow ops (runs inside tf.data, off the Python lock).
 
     Emulates several birds calling at once: ``floor(B * probability)`` random samples of the batch
@@ -36,6 +42,12 @@ def mixup_batch(samples: tf.Tensor, labels: tf.Tensor, alpha: float = 0.2, proba
     from a Dirichlet(``alpha``) distribution (normalized Gamma draws), and their labels become the
     element-wise max over the sources so every contributing species stays a target. Every blend
     reads the original batch.
+
+    With ``cooccurrence`` (float ``[C, C]``, 1 where two classes can occur together, e.g. share a
+    geomodel region; non-bird classes with everything) the partners are drawn only among the batch
+    samples whose primary class (the label argmax) can co-occur with the sample's own; samples
+    without a positive label pair with anything. A sample always qualifies as its own partner, so
+    one with no plausible partner in the batch stays (nearly) unmixed.
 
     Returns:
         ``(samples, labels, mixed)``: ``mixed`` is a float32 ``[B]`` mask of the replaced samples
@@ -47,7 +59,15 @@ def mixup_batch(samples: tf.Tensor, labels: tf.Tensor, alpha: float = 0.2, proba
     num_mix = tf.cast(tf.floor(tf.cast(b, tf.float32) * probability), tf.int32)
     chosen = tf.random.shuffle(tf.range(b))[:num_mix]
     mixed = tf.scatter_nd(chosen[:, None], tf.ones([num_mix], tf.float32), [b])
-    sources = tf.concat([tf.range(b)[:, None], tf.random.uniform([b, 2], maxval=b, dtype=tf.int32)], axis=1)
+    if cooccurrence is None:
+        partners = tf.random.uniform([b, 2], maxval=b, dtype=tf.int32)
+    else:
+        primary = tf.argmax(labels, axis=1, output_type=tf.int32)
+        labelled = tf.reduce_max(labels, axis=1) > 0
+        ok = tf.gather(tf.gather(cooccurrence, primary), primary, axis=1) > 0  # [B, B]
+        ok = ok | ~(labelled[:, None] & labelled[None, :])
+        partners = tf.random.categorical(tf.where(ok, 0.0, -1e9), 2, dtype=tf.int32)
+    sources = tf.concat([tf.range(b)[:, None], partners], axis=1)
     third = tf.cast(tf.random.uniform([b]) < 0.5, tf.float32)
     active = tf.stack([tf.ones([b]), tf.ones([b]), third], axis=1)
     gains = tf.random.gamma([b, 3], alpha) * active + 1e-12 * active
@@ -276,6 +296,12 @@ def load_dataset(
         embedding_dim = int(np.load(f"{worker_cfg['teacher_cache']}/emb.npy", mmap_mode="r").shape[1])
     mixup_alpha = kwargs.get("mixup_alpha", 0.2)
     mixup_probability = kwargs.get("mixup_probability", 0.25)
+    mixup_cooccurrence = kwargs.get("mixup_cooccurrence")
+    if mixup_cooccurrence is not None:
+        cooc = np.asarray(mixup_cooccurrence, np.float32)
+        if cooc.shape != (num_classes, num_classes):
+            raise ValueError(f"mixup co-occurrence matrix {cooc.shape} does not match {num_classes} classes")
+        mixup_cooccurrence = tf.constant(cooc)
     # Keep prefetch bounded to avoid RAM spikes with large raw batches.
     prefetch_batches = int(kwargs.get("prefetch_batches", 2))
     loader_buffer_mb = float(kwargs.get("loader_buffer_mb", _DEFAULT_BUFFER_MB))
@@ -367,7 +393,9 @@ def load_dataset(
         def _apply_batch_mixup(samples, labels):
             if teacher_embeddings:
                 labels, emb, valid = labels
-            mixed_s, mixed_l, mixed = mixup_batch(samples, labels, alpha=mixup_alpha, probability=mixup_probability)
+            mixed_s, mixed_l, mixed = mixup_batch(
+                samples, labels, alpha=mixup_alpha, probability=mixup_probability, cooccurrence=mixup_cooccurrence
+            )
             if not teacher_embeddings:
                 return mixed_s, mixed_l
             # A mixed chunk no longer sounds like the window its embedding came from.

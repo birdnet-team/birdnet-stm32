@@ -324,6 +324,23 @@ def get_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--b0_blocks",
+        default=None,
+        help=(
+            "Stage table for the EfficientNet backbones instead of their own: 'e,k,r,c,s/e,k,r,c,s/...' (expand ratio, "
+            "depthwise kernel, repeats, output channels, first stride per stage), e.g. N6-B0 at half width or depth "
+            "for the 2.5 size study"
+        ),
+    )
+    parser.add_argument(
+        "--attention_stages",
+        type=int,
+        nargs="*",
+        default=[],
+        help="Stages of the EfficientNet backbone (1-based) followed by a channel-attention block (EdgeNeXt's "
+        "transposed attention); none by default",
+    )
+    parser.add_argument(
         "--raw_exposure_gain",
         type=float,
         default=None,
@@ -391,8 +408,29 @@ def get_args() -> argparse.Namespace:
             "0 disables it. The deployed model is unchanged."
         ),
     )
+    parser.add_argument(
+        "--distill_from",
+        default=None,
+        help=(
+            "A trained .keras model to distil from online (2.5): run frozen on every training batch, its class "
+            "probabilities add a Bernoulli KL term to the student's loss. It must take the student's input and "
+            "score the same classes in the same order. Float training only."
+        ),
+    )
+    parser.add_argument(
+        "--distill_weight",
+        type=float,
+        default=None,
+        help="Weight of the --distill_from KL term against the supervised loss (default 1.0)",
+    )
     parser.add_argument("--mixup_alpha", type=float, default=0.2, help="Mixup alpha")
     parser.add_argument("--mixup_probability", type=float, default=0.25, help="Mixup batch fraction")
+    parser.add_argument(
+        "--mixup_cooccurrence",
+        default="",
+        help="Optional [C, C] .npy (1 = the two classes can occur together, in labels-file order): mixup partners "
+        "only among batch samples whose primary classes can co-occur",
+    )
 
     # -- Training -------------------------------------------------------------
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
@@ -589,6 +627,30 @@ def get_args() -> argparse.Namespace:
         parser.error("--field_table shapes the per-epoch class cap: it needs --class_cap_per_epoch > 0")
     if args.teacher_embedding_weight > 0 and (args.qat or args.linear_probe):
         parser.error("--teacher_embedding_weight applies to float training only (not --qat or --linear_probe)")
+    if (args.b0_blocks or args.attention_stages) and args.backbone == "dscnn":
+        parser.error("--b0_blocks and --attention_stages apply to the EfficientNet backbones only")
+    if args.b0_blocks:
+        from birdnet_stm32.models.efficientnet import parse_blocks
+
+        try:
+            args.b0_blocks = [list(b) for b in parse_blocks(args.b0_blocks)]
+        except ValueError as exc:
+            parser.error(f"--b0_blocks: {exc}")
+    else:
+        args.b0_blocks = []
+    if args.distill_weight is not None and not args.distill_from:
+        parser.error("--distill_weight needs --distill_from")
+    if args.distill_from:
+        if args.qat or args.linear_probe:
+            parser.error("--distill_from applies to float training only (QAT distils from its own float model)")
+        if not os.path.isfile(args.distill_from):
+            parser.error(f"--distill_from: no such file {args.distill_from}")
+        if args.distill_weight is None:
+            from birdnet_stm32.training.distillation import DEFAULT_ONLINE_DISTILLATION_WEIGHT
+
+            args.distill_weight = DEFAULT_ONLINE_DISTILLATION_WEIGHT
+        if args.distill_weight <= 0:
+            parser.error(f"--distill_weight must be > 0, got {args.distill_weight}")
     if args.crop_policy == "teacher" and not args.teacher_cache:
         parser.error("--crop_policy teacher needs --teacher_cache")
     args.deterministic = True  # always deterministic
@@ -805,6 +867,7 @@ def main():
         batch_size=args.batch_size,
         mixup_alpha=args.mixup_alpha,
         mixup_probability=args.mixup_probability,
+        mixup_cooccurrence=np.load(args.mixup_cooccurrence) if args.mixup_cooccurrence else None,
         **chunk_kwargs,
         **train_kwargs,
     )
@@ -860,6 +923,8 @@ def main():
         dw_kernel_size=args.dw_kernel_size,
         stage_widths=args.stage_widths,
         backbone=args.backbone,
+        b0_blocks=args.b0_blocks,
+        attention_stages=args.attention_stages,
         embeddings_size=args.embeddings_size,
         fft_length=args.fft_length,
         mag_scale=args.mag_scale,
@@ -893,6 +958,8 @@ def main():
         dw_kernel_size=args.dw_kernel_size,
         stage_widths=list(args.stage_widths),
         backbone=args.backbone,
+        b0_blocks=args.b0_blocks,
+        attention_stages=list(args.attention_stages),
         num_classes=len(classes),
         class_names=classes,
         raw_exposure_gain=args.raw_exposure_gain,
@@ -951,6 +1018,27 @@ def main():
     )
 
     training_wrapper = None
+    distill_teacher = None
+    if args.distill_from:
+        from birdnet_stm32.training.trainer import load_for_resume
+
+        # Its saved dtype policy, so the teacher runs in mixed precision beside the student.
+        distill_teacher = load_for_resume(args.distill_from)
+        teacher_labels = os.path.splitext(args.distill_from)[0] + "_labels.txt"
+        if os.path.isfile(teacher_labels):
+            with open(teacher_labels) as f:
+                if [line.strip() for line in f if line.strip()] != list(classes):
+                    raise SystemExit(f"--distill_from scores other classes than this run ({teacher_labels})")
+        print(
+            f"Distilling online from {args.distill_from} ({distill_teacher.count_params():,} parameters), "
+            f"KL weight {args.distill_weight}"
+        )
+
+        def training_wrapper(student):
+            from birdnet_stm32.training.distillation import OnlineDistilledModel
+
+            return OnlineDistilledModel(student, distill_teacher, args.distill_weight)
+
     if embed:
         from birdnet_stm32.training.embedding_distillation import EmbeddingDistilledModel, fit_projector
 
@@ -960,7 +1048,13 @@ def main():
         from_trained = bool(args.init_checkpoint) or (args.resume and os.path.isfile(args.checkpoint_path))
 
         def training_wrapper(student):
-            wrapped = EmbeddingDistilledModel(student, teacher.embedding_dim, args.teacher_embedding_weight)
+            wrapped = EmbeddingDistilledModel(
+                student,
+                teacher.embedding_dim,
+                args.teacher_embedding_weight,
+                output_teacher=distill_teacher,
+                output_weight=args.distill_weight or 0.0,
+            )
             if from_trained:
                 rng = random.Random(args.seed)
                 files = rng.sample(train_paths, min(_PROJECTOR_FIT_FILES, len(train_paths)))
@@ -980,6 +1074,18 @@ def main():
                 print(f"[teacher embeddings] projector fitted by ridge regression on {len(files)} files: {fit}")
             return wrapped
 
+    def _arm_raw_spec_augment(m: tf.keras.Model) -> None:
+        # The raw frontend computes the spectrogram in the model, out of the loader's reach (which
+        # applies SpecAugment for librosa/hybrid only), so float training masks the frontend output in
+        # the graph instead. Not in the saved config: finetune-head, QAT and conversion run without it.
+        if args.audio_frontend == "raw" and args.spec_augment and not (args.qat or args.linear_probe):
+            m.get_layer("audio_frontend").train_spec_augment = (args.freq_mask_max, args.time_mask_max)
+            print(
+                f"SpecAugment on the raw frontend output (freq <= {args.freq_mask_max}, time <= {args.time_mask_max})"
+            )
+
+    _arm_raw_spec_augment(model)
+
     # Train
     print("Starting training...")
     try:
@@ -997,6 +1103,7 @@ def main():
             weight_decay=args.weight_decay,
             gradient_clip_norm=args.grad_clip,
             resume=args.resume,
+            prepare_model=_arm_raw_spec_augment,
             extra_callbacks=extra_callbacks,
             # A run from --init_checkpoint starts near a trained model: its first
             # epoch, still at warm-up learning rates, validates high, and the

@@ -59,6 +59,11 @@ class ModelConfig:
             (that with wider bottlenecks, 2.3); alpha, depth_multiplier,
             dw_kernel_size and stage_widths do not apply to the EfficientNet
             ones. ``train`` defaults to 'efficientnet_b0_n6'.
+        b0_blocks: The EfficientNet backbone's stage table when it is not the
+            backbone's own (expand, kernel, repeats, channels, first stride per
+            stage); empty for the default table.
+        attention_stages: Stages of the EfficientNet backbone followed by a
+            channel-attention block; empty for none.
         num_classes: Number of output classes.
         class_names: Ordered list of class label strings.
         frontend_trainable: Whether frontend weights are trainable.
@@ -90,6 +95,8 @@ class ModelConfig:
     dw_kernel_size: int = 3
     stage_widths: list[int] = field(default_factory=lambda: [32, 64, 128, 256])
     backbone: str = "dscnn"
+    b0_blocks: list[list[int]] = field(default_factory=list)
+    attention_stages: list[int] = field(default_factory=list)
     dropout_rate: float = 0.5
     frontend_trainable: bool = False
 
@@ -165,6 +172,12 @@ class ModelConfig:
             raise ValueError(f"stage_widths must be four positive widths, got {self.stage_widths}")
         if self.backbone not in self._VALID_BACKBONES:
             raise ValueError(f"backbone '{self.backbone}' not in {sorted(self._VALID_BACKBONES)}")
+        if (self.b0_blocks or self.attention_stages) and self.backbone == "dscnn":
+            raise ValueError("b0_blocks and attention_stages apply to the EfficientNet backbones only")
+        if any(len(b) != 5 for b in self.b0_blocks):
+            raise ValueError(
+                f"b0_blocks stages must be (expand, kernel, repeats, channels, stride), got {self.b0_blocks}"
+            )
         if not 0 <= self.dropout_rate < 1:
             raise ValueError(f"dropout_rate must be in [0, 1), got {self.dropout_rate}")
         if self.num_classes < 0:

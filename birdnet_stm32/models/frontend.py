@@ -410,6 +410,10 @@ class AudioFrontendLayer(layers.Layer):
         self.raw_bank = raw_bank
         self.raw_split_axis = raw_split_axis
         self.raw_exposure_gain = float(raw_exposure_gain)
+        # Training-only SpecAugment on the raw output: (freq_mask_max, time_mask_max) or None. Set by
+        # ``train`` on the model it trains (cli/train.py), never saved in the config, so every
+        # later load (finetune-head, QAT, convert, evaluation) runs without it.
+        self.train_spec_augment = None
         self.exposures = 2 if self.raw_exposure_gain > 1.0 else 1
         self.raw_exposure_mode = raw_exposure_mode
         compress = self.exposures == 2 and raw_exposure_mode == "compress"
@@ -805,11 +809,17 @@ class AudioFrontendLayer(layers.Layer):
         mag = self._calibrate(mag, training, smooth=True)
         mag = mag[:, :, : self.spec_width, :]
         if self.out_channels == 1:
-            return tf.transpose(mag, [0, 3, 2, 1])  # [B,mel,W,1]
-        # [B,1,W,(exposure, band)] -> [B,mel,W,exposure]: the reshape only
-        # regroups contiguous channels; the one transpose is the one above.
-        mag = tf.reshape(mag, [-1, int(self.spec_width), self.exposures, int(self.mel_bins)])
-        return tf.transpose(mag, [0, 3, 1, 2])
+            out = tf.transpose(mag, [0, 3, 2, 1])  # [B,mel,W,1]
+        else:
+            # [B,1,W,(exposure, band)] -> [B,mel,W,exposure]: the reshape only
+            # regroups contiguous channels; the one transpose is the one above.
+            mag = tf.reshape(mag, [-1, int(self.spec_width), self.exposures, int(self.mel_bins)])
+            out = tf.transpose(mag, [0, 3, 1, 2])
+        if training and self.train_spec_augment:
+            from birdnet_stm32.audio.augmentation import spec_augment_tf
+
+            out = spec_augment_tf(out, *self.train_spec_augment)
+        return out
 
     def _exposure_clip(self, x):
         """Clamp a filterbank tensor to the shared [-1, 1] grid of a two-exposure bank.
