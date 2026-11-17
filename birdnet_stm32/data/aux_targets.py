@@ -53,8 +53,8 @@ def build(manifest_csv: str | Path, out_dir: str | Path, site_coords: dict | Non
         manifest_csv, usecols=["sample_id", "latitude", "longitude", "event_date", "source"], low_memory=False
     )
     m = m.drop_duplicates("sample_id")
-    lat = pd.to_numeric(m.latitude, errors="coerce").to_numpy(np.float64)
-    lon = pd.to_numeric(m.longitude, errors="coerce").to_numpy(np.float64)
+    lat = pd.to_numeric(m.latitude, errors="coerce").to_numpy(np.float64, copy=True)
+    lon = pd.to_numeric(m.longitude, errors="coerce").to_numpy(np.float64, copy=True)
     for source, (s_lat, s_lon) in (site_coords or {}).items():
         rows = (m.source == source).to_numpy() & ~np.isfinite(lat)
         lat[rows], lon[rows] = s_lat, s_lon
