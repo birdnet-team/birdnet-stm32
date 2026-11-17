@@ -22,6 +22,7 @@ from birdnet_stm32.audio.io import (
     split_audio_into_chunks,
 )
 from birdnet_stm32.audio.spectrogram import get_spectrogram_from_audio
+from birdnet_stm32.data.aux_targets import AuxTargets
 from birdnet_stm32.data.teacher import TeacherTargets, blend_targets
 
 # ---------------------------------------------------------------------------
@@ -30,6 +31,7 @@ from birdnet_stm32.data.teacher import TeacherTargets, blend_targets
 
 _worker_cfg: dict = {}
 _teacher: TeacherTargets | None = None
+_aux: AuxTargets | None = None
 _arena: list[np.ndarray] = []  # where _process_into writes chunks (see arena_columns)
 _arena_shm: shared_memory.SharedMemory | None = None
 
@@ -38,7 +40,8 @@ def arena_columns(buf, n_cells: int, layout) -> list[np.ndarray]:
     """``[n_cells, *shape]`` arrays over ``buf``, one per chunk column, each 64-byte aligned.
 
     ``layout`` is a list of ``(shape, dtype)``, one per element of the tuples ``_process_file``
-    returns: sample, label and, with teacher embeddings, the embedding and its valid flag.
+    returns: sample, label and, with teacher embeddings, the embedding and its valid flag, and with an
+    auxiliary table, the location/date targets and their valid flags.
     """
     columns, offset = [], 0
     for shape, dtype in layout:
@@ -96,7 +99,7 @@ def _init_worker(cfg: dict) -> None:
         from threadpoolctl import threadpool_limits
 
         threadpool_limits(1)
-    global _worker_cfg, _teacher, _arena, _arena_shm  # noqa: PLW0603
+    global _worker_cfg, _teacher, _aux, _arena, _arena_shm  # noqa: PLW0603
     _worker_cfg = cfg
     arena = cfg.get("arena")  # (shared-memory name, cells, layout) from the feeder
     if arena is not None:
@@ -108,6 +111,7 @@ def _init_worker(cfg: dict) -> None:
     embeddings = bool(cfg.get("teacher_embeddings", False))
     needed = cfg.get("teacher_weight", 0.0) > 0 or cfg.get("crop_policy") == "teacher" or embeddings
     _teacher = TeacherTargets(cache, cfg["classes"], embeddings=embeddings) if cache and needed else None
+    _aux = AuxTargets(cfg["aux_table"]) if cfg.get("aux_table") else None
 
 
 def _process_file(path: str):
@@ -120,7 +124,9 @@ def _process_file(path: str):
     With ``teacher_embeddings`` set, each tuple is ``(sample, label, embedding,
     valid)``: the teacher's float16 embedding of the chunk's nearest window, and
     ``valid`` 1.0 when there is one (zeros and 0.0 when the recording is not
-    cached or the window is non-finite).
+    cached or the window is non-finite). With ``aux_table`` set, two more
+    elements follow: the recording's location/date targets (float32 [5]) and
+    their valid flags (float32 [2]; see ``birdnet_stm32.data.aux_targets``).
     """
     cfg = _worker_cfg
     label_str = path.split("/")[-2]
@@ -275,6 +281,7 @@ def _process_file(path: str):
     # Take up to max_chunks salient items
     selected = [(model_input[id(ranked)], start_of[id(ranked)]) for ranked in pool[:max_chunks]]
 
+    aux = _aux.lookup(sample_id) if _aux is not None else None
     blend = _teacher is not None and cfg.get("teacher_weight", 0.0) > 0
     embed = _teacher is not None and bool(cfg.get("teacher_embeddings", False))
     results = []
@@ -303,6 +310,7 @@ def _process_file(path: str):
             sample = apply_spec_augment(sample, freq_mask_max=freq_mask_max, time_mask_max=time_mask_max)
 
         sample = np.expand_dims(sample, axis=-1).astype(np.float32)
-        results.append((sample, target, vector, valid) if embed else (sample, target))
+        item = (sample, target, vector, valid) if embed else (sample, target)
+        results.append(item + aux if aux is not None else item)
 
     return results if results else None

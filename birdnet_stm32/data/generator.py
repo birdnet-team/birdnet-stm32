@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 import tensorflow as tf
 
+from birdnet_stm32.data.aux_targets import AUX_DIM
 from birdnet_stm32.data.feeder import (  # noqa: F401  (ClassCappedPasses is re-exported)
     BatchFeeder,
     CellPool,
@@ -205,6 +206,7 @@ def _worker_config(
         "teacher_background": bool(kwargs.get("teacher_background", False)),
         "teacher_embeddings": teacher_embeddings,
         "label_sidecar": kwargs.get("label_sidecar") or {},
+        "aux_table": str(kwargs["aux_table"]) if kwargs.get("aux_table") else None,
     }
 
     return worker_cfg, sample_shape
@@ -283,7 +285,11 @@ def load_dataset(
         ``emb.npy``) the labels are ``(labels, teacher_embedding, valid)``:
         float32 ``[B, D]`` embeddings and a float32 ``[B]`` flag that is 0 for
         chunks with no usable teacher window and for chunks mixup mixed, whose
-        audio the cached embedding no longer describes.
+        audio the cached embedding no longer describes. With ``aux_table`` (a
+        folder built by ``birdnet_stm32.data.aux_targets``; needs
+        ``teacher_embeddings``) the labels are ``(labels, teacher_embedding,
+        valid, aux, aux_valid)``: float32 ``[B, 5]`` location/date targets and
+        ``[B, 2]`` flags (location known, date known), zeroed for mixed chunks.
     """
     worker_cfg, sample_shape = _worker_config(
         classes, audio_frontend, spec_width, mel_bins, max_chunks_per_file, **kwargs
@@ -291,6 +297,10 @@ def load_dataset(
     cd = worker_cfg["cd"]
     num_classes = worker_cfg["num_classes"]
     teacher_embeddings = worker_cfg["teacher_embeddings"]
+    aux = bool(worker_cfg["aux_table"])
+    if aux and not teacher_embeddings:
+        raise ValueError("aux_table needs teacher_embeddings (the auxiliary head trains in the embedding wrapper)")
+    aux_dim = AUX_DIM if aux else 0
     embedding_dim = 0
     if teacher_embeddings:
         embedding_dim = int(np.load(f"{worker_cfg['teacher_cache']}/emb.npy", mmap_mode="r").shape[1])
@@ -333,7 +343,7 @@ def load_dataset(
         field_share=float(kwargs.get("field_share", 0.5)),
         per_recording=int(kwargs.get("field_per_recording", 2)),
     )
-    layout = chunk_layout(sample_shape, num_classes, embedding_dim)
+    layout = chunk_layout(sample_shape, num_classes, embedding_dim, aux_dim)
 
     def _report(key, value):
         if isinstance(loader_control, dict):
@@ -371,6 +381,9 @@ def load_dataset(
                 stream.close()
 
     def _structure(columns):
+        if aux:
+            x, y, emb, valid, aux_t, aux_v = columns
+            return x, (y, emb.astype(np.float32), valid, aux_t, aux_v)
         if teacher_embeddings:
             x, y, emb, valid = columns
             return x, (y, emb.astype(np.float32), valid)
@@ -383,6 +396,11 @@ def load_dataset(
             tf.TensorSpec(shape=(batch_size, embedding_dim), dtype=tf.float32),
             tf.TensorSpec(shape=(batch_size,), dtype=tf.float32),
         )
+    if aux:
+        label_sig = label_sig + (
+            tf.TensorSpec(shape=(batch_size, aux_dim), dtype=tf.float32),
+            tf.TensorSpec(shape=(batch_size, 2), dtype=tf.float32),
+        )
     output_sig = (tf.TensorSpec(shape=(batch_size, *sample_shape), dtype=tf.float32), label_sig)
 
     dataset = tf.data.Dataset.from_generator(_batched, output_signature=output_sig)
@@ -391,15 +409,21 @@ def load_dataset(
     if mixup_alpha > 0 and mixup_probability > 0:
 
         def _apply_batch_mixup(samples, labels):
-            if teacher_embeddings:
+            if aux:
+                labels, emb, valid, aux_t, aux_v = labels
+            elif teacher_embeddings:
                 labels, emb, valid = labels
             mixed_s, mixed_l, mixed = mixup_batch(
                 samples, labels, alpha=mixup_alpha, probability=mixup_probability, cooccurrence=mixup_cooccurrence
             )
             if not teacher_embeddings:
                 return mixed_s, mixed_l
-            # A mixed chunk no longer sounds like the window its embedding came from.
-            return mixed_s, (mixed_l, emb, valid * (1.0 - mixed))
+            # A mixed chunk no longer sounds like the window its embedding came from,
+            # nor was it recorded at one place and date.
+            out = (mixed_l, emb, valid * (1.0 - mixed))
+            if aux:
+                out = out + (aux_t, aux_v * (1.0 - mixed)[:, None])
+            return mixed_s, out
 
         dataset = dataset.map(_apply_batch_mixup, num_parallel_calls=tf.data.AUTOTUNE)
 

@@ -196,6 +196,7 @@ TEACHER_WEIGHT = 0.5
 # terms are about equal. From scratch it raised the float field window AUPRC by
 # 0.033 and the INT8 catalog cMAP by 0.016 (448 frames, 50 epochs).
 TEACHER_EMBEDDING_WEIGHT = 0.2
+AUX_WEIGHT = 0.05  # location/date head: about the teacher-embedding term's share of the loss
 QAT_EPOCHS = 4  # 2.3: two warm-up epochs, then two of cosine decay; the INT8 selection keeps the best
 QAT_LEARNING_RATE = 1e-5
 PROBE_LEARNING_RATE = 1e-3
@@ -407,6 +408,21 @@ def get_args() -> argparse.Namespace:
             f"{TEACHER_EMBEDDING_WEIGHT} when --teacher_cache holds emb.npy, otherwise off. "
             "0 disables it. The deployed model is unchanged."
         ),
+    )
+    parser.add_argument(
+        "--aux_table",
+        default="",
+        help=(
+            "Folder of location/date targets per recording (python -m birdnet_stm32.data.aux_targets): a "
+            "training-only linear head on the embedding predicts where and when each recording was made "
+            "(needs teacher embeddings; the deployed model is unchanged)"
+        ),
+    )
+    parser.add_argument(
+        "--aux_weight",
+        type=float,
+        default=AUX_WEIGHT,
+        help=f"Weight of the location/date head's loss with --aux_table (default {AUX_WEIGHT})",
     )
     parser.add_argument(
         "--distill_from",
@@ -627,6 +643,15 @@ def get_args() -> argparse.Namespace:
         parser.error("--field_table shapes the per-epoch class cap: it needs --class_cap_per_epoch > 0")
     if args.teacher_embedding_weight > 0 and (args.qat or args.linear_probe):
         parser.error("--teacher_embedding_weight applies to float training only (not --qat or --linear_probe)")
+    if args.aux_table:
+        if args.teacher_embedding_weight <= 0:
+            parser.error("--aux_table trains in the teacher-embedding wrapper: it needs teacher embeddings")
+        if not os.path.isfile(os.path.join(args.aux_table, "keys.npy")):
+            parser.error(
+                f"--aux_table {args.aux_table} holds no keys.npy (build it with birdnet_stm32.data.aux_targets)"
+            )
+        if args.aux_weight <= 0:
+            parser.error(f"--aux_weight must be > 0 with --aux_table, got {args.aux_weight}")
     if (args.b0_blocks or args.attention_stages) and args.backbone == "dscnn":
         parser.error("--b0_blocks and --attention_stages apply to the EfficientNet backbones only")
     if args.b0_blocks:
@@ -853,7 +878,18 @@ def main():
         teacher_weight=args.teacher_weight,
         teacher_background=args.teacher_weight > 0,  # the background-bird rule (2.3) wherever teacher targets are used
         teacher_embeddings=embed,
+        aux_table=args.aux_table or None,
     )
+    if args.aux_table:
+        from pathlib import Path
+
+        from birdnet_stm32.data.aux_targets import AuxTargets
+
+        aux_targets = AuxTargets(args.aux_table)
+        covered = sum(Path(p).stem in aux_targets for p in train_paths)
+        print(
+            f"Location/date head: {covered}/{len(train_paths)} training files in {args.aux_table}, weight {args.aux_weight}"
+        )
     if args.label_sidecar:
         from birdnet_stm32.data.sidecar import load_label_sidecar
 
@@ -1040,7 +1076,11 @@ def main():
             return OnlineDistilledModel(student, distill_teacher, args.distill_weight)
 
     if embed:
-        from birdnet_stm32.training.embedding_distillation import EmbeddingDistilledModel, fit_projector
+        from birdnet_stm32.training.embedding_distillation import (
+            EmbeddingDistilledModel,
+            fit_aux_head,
+            fit_projector,
+        )
 
         # From trained weights, a random projector would open with the largest
         # possible loss and push its gradients into a converged backbone; fit it
@@ -1054,6 +1094,7 @@ def main():
                 args.teacher_embedding_weight,
                 output_teacher=distill_teacher,
                 output_weight=args.distill_weight or 0.0,
+                aux_weight=args.aux_weight if args.aux_table else 0.0,
             )
             if from_trained:
                 rng = random.Random(args.seed)
@@ -1072,6 +1113,16 @@ def main():
                 ]
                 fit = fit_projector(wrapped, batches)
                 print(f"[teacher embeddings] projector fitted by ridge regression on {len(files)} files: {fit}")
+                if args.aux_table:
+                    aux_batches = [
+                        (
+                            np.stack([c[0] for c in chunks[i : i + 64]]),
+                            np.stack([c[4] for c in chunks[i : i + 64]]),
+                            np.stack([c[5] for c in chunks[i : i + 64]]),
+                        )
+                        for i in range(0, len(chunks), 64)
+                    ]
+                    print(f"[location/date head] fitted by ridge regression: {fit_aux_head(wrapped, aux_batches)}")
             return wrapped
 
     def _arm_raw_spec_augment(m: tf.keras.Model) -> None:

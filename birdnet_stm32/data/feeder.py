@@ -211,12 +211,15 @@ class ClassCappedPasses:
         return out
 
 
-def chunk_layout(sample_shape: tuple[int, ...], num_classes: int, embedding_dim: int = 0):
+def chunk_layout(sample_shape: tuple[int, ...], num_classes: int, embedding_dim: int = 0, aux_dim: int = 0):
     """Shape and dtype of each element of a chunk: sample, label and, with teacher embeddings,
-    the float16 embedding and its valid flag (the worker's tuple)."""
+    the float16 embedding and its valid flag, and with auxiliary targets, those and their two
+    valid flags (the worker's tuple)."""
     layout = [(tuple(sample_shape), "float32"), ((num_classes,), "float32")]
     if embedding_dim:
         layout += [((embedding_dim,), "float16"), ((), "float32")]
+    if aux_dim:
+        layout += [((aux_dim,), "float32"), ((2,), "float32")]
     return layout
 
 

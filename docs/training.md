@@ -177,6 +177,17 @@ none died, and the widened model learned several times faster.
   by ridge regression first. Trained from scratch at 448 frames, it raised the
   float window AUPRC on WABAD from 0.442 to 0.475 and the INT8 catalog cMAP
   from 0.712 to 0.728.
+- **Location and date head** (`--aux_table`): a second training-only linear
+  head on the same embedding predicts where and when each recording was made:
+  the location as a unit vector on the sphere and the day of year as (sin,
+  cos), each scored by a cosine distance over the chunks where it is known
+  (`--aux_weight`, default 0.05, for their sum). It asks the embedding to carry
+  the species composition of a place and season. The table is built from a
+  dataset manifest with `python -m birdnet_stm32.data.aux_targets <manifest.csv>
+  <out_dir> [--site_coords sites.json]` (the JSON gives one `[lat, lon]` per
+  `source` for single-site collections without coordinates). It needs teacher
+  embeddings, leaves mixed chunks out, is fitted by ridge regression when the
+  run starts from trained weights, and never reaches the checkpoint.
 - **Distillation from a larger model** (`--distill_from`): a trained `.keras`
   model runs frozen on every training batch, the very chunks the student sees
   after augmentation, and a Bernoulli KL divergence between its class
@@ -491,6 +502,8 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--teacher_weight` | 0.5 with `--teacher_cache`, else 0 | Teacher share of the training target in [0, 1] (0 = hard labels only). Background birds: a species the file does not name takes the teacher's own score from 0.3 and 1 from 0.8 instead of the blend (always on with teacher targets from 2.3, as in `finetune-head`) |
 | `--label_sidecar` | None | CSV of per-file label additions (`sample_id`, `positives`, `negatives`; classes separated by `;`): positives join the folder's class in the hard label (recordings with several species), negatives are confirmed absent, held at 0 and never raised by the teacher's soft target |
 | `--teacher_embedding_weight` | 0.2 with embeddings | Weight of a cosine loss to the teacher's embedding of each chunk; on when `--teacher_cache` holds `emb.npy`, 0 disables |
+| `--aux_table` | none | Folder of per-recording location/date targets: a training-only head predicts them from the embedding |
+| `--aux_weight` | 0.05 | Weight of the location/date head's loss with `--aux_table` |
 | `--distill_from` | None | A trained `.keras` model to distil from online: frozen, run on every training batch; float training only |
 | `--distill_weight` | 1.0 with `--distill_from` | Weight of the Bernoulli KL to the `--distill_from` model's class probabilities |
 | `--crop_policy` | teacher with `--teacher_cache`, else energy | How training chunks are chosen: `energy` or `teacher` (needs `--teacher_cache`) |

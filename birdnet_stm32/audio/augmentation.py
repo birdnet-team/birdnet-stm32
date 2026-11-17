@@ -6,8 +6,14 @@ which computes its spectrogram inside the model. Mixup works on whole batches in
 TensorFlow ops: ``birdnet_stm32.data.generator.mixup_batch``.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import numpy as np
-import tensorflow as tf
+
+if TYPE_CHECKING:
+    import tensorflow as tf
 
 
 def apply_spec_augment(
@@ -72,11 +78,16 @@ def spec_augment_tf(
     ``apply_spec_augment`` never sees it (every raw model up to 2026-11 trained without
     SpecAugment). This runs on the frontend output during training only.
 
+    TensorFlow is imported here, not at module level: the loader workers import this
+    module for ``apply_spec_augment`` and must stay free of TensorFlow.
+
     Masked cells take their band's median over time in the same sample (per channel), not
     zero: the raw frontend maps silence to a band-dependent floor (median ~0.23 on
     N6-B0), so zeros would be a pattern no real input produces. Mask widths are drawn
     uniformly from ``[0, max)``, as in ``apply_spec_augment``.
     """
+    import tensorflow as tf
+
     shape = tf.shape(spec)
     b, f, t = shape[0], shape[1], shape[2]
     fill = tf.sort(spec, axis=2)[:, :, t // 2 : t // 2 + 1, :]  # [B, F, 1, C]: the band's median over time
