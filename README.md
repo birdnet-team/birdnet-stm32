@@ -16,7 +16,7 @@ Bird sound classification for edge deployment on the [STM32N6570-DK](https://www
 
 **[Read the full BirdNET-STM32 documentation](https://birdnet-team.github.io/birdnet-stm32)** for setup, training, conversion, evaluation, and deployment guides.
 
-<img src="https://my.avnet.com/wcm/connect/c651fc2f-a5b2-489c-9d63-d3f064753690/STMicroelectronics+STM32N6570-DK.jpg?MOD=AJPERES&CACHEID=ROOTWORKSPACE-c651fc2f-a5b2-489c-9d63-d3f064753690-phBdXih" alt="STM32N6570-DK board" style="width: 100%;" />
+<img src="docs/assets/stm32n6570-dk.jpg" alt="STM32N6570-DK board" style="width: 100%;" />
 
 A compact DS-CNN trained on raw waveforms or spectral features, quantized to
 INT8 with post-training quantization or quantization-aware fine-tuning, and
