@@ -1,6 +1,7 @@
 """Tests for the feeder process that assembles training batches in shared memory."""
 
 import os
+import time
 
 import numpy as np
 import pytest
@@ -84,6 +85,29 @@ class TestBatchFeeder:
             with pytest.raises(RuntimeError, match="exited"):
                 for _ in range(10):  # slots already filled are still delivered
                     feeder.next()
+        finally:
+            feeder.close()
+
+    def test_batches_queued_before_a_kill_are_delivered(self, tmp_path):
+        # Deterministic version of the race above: wait until the feeder has queued batches,
+        # then kill it. Returning a slot to the dead feeder must not raise BrokenPipeError.
+        paths, classes = _one_file_per_class(tmp_path)
+        feeder = _feeder(paths, classes, batch_size=4)
+        try:
+            feeder.next()
+            deadline = time.monotonic() + 30
+            while not feeder.ready.poll() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            time.sleep(1.0)  # let the feeder fill its remaining slots
+            assert feeder.ready.poll(), "the feeder queued no batch to test with"
+            feeder.proc.kill()
+            feeder.proc.join(5)
+            delivered = 0
+            with pytest.raises(RuntimeError, match="exited"):
+                for _ in range(50):
+                    feeder.next()
+                    delivered += 1
+            assert delivered >= 1
         finally:
             feeder.close()
 

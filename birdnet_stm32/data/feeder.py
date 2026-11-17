@@ -544,7 +544,10 @@ class BatchFeeder:
                 cells = message[1]
                 index = np.asarray(cells)
                 batch = [column[index] for column in self.columns]
-                self.free.send(cells)
+                # A dead feeder no longer reads its free list. The batch is already copied, so
+                # deliver it; the next call reaches EOF and raises the "exited" error.
+                with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                    self.free.send(cells)
                 return batch
             if kind == "control":
                 if isinstance(control, dict):
