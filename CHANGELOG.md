@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `train` defaults to the 2.4 backbone, `efficientnet_b0_n6` (N6-B0: 4.9 M
+  parameters, 35 ms per chunk). 2.3's wider `efficientnet_b0_n6w` stays
+  available with `--backbone efficientnet_b0_n6w`.
+
 ## [2.4.0] - 2026-11-25
 
 One model ships: `BirdNET_Tiny_N6_GLOBAL_1K_V2.4_Raw`, the same 1,007 bird
