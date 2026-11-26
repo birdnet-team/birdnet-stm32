@@ -75,10 +75,10 @@ was removed in 1.3.0: best float of any raw model, worst INT8.
 ## Model architecture
 
 `--backbone` picks the network behind the frontend. The default from 2.4 is
-`efficientnet_b0_n6` (4.9 M parameters, 539 M MACs, 35 ms per inference on the
+`efficientnet_b0_n6` (4.9 M parameters, 539 M MACs, 62 ms per inference on the
 STM32N6570-DK), the backbone of 2.2 and 2.4. 2.3's `efficientnet_b0_n6w` is
 the same with wider bottlenecks: expansion 4 in stages 2–4 and the residual
-stream doubled in stages 4–6 (12.1 M parameters, 1.18 G MACs, 62 ms), the more
+stream doubled in stages 4–6 (12.1 M parameters, 1.18 G MACs, 91 ms), the more
 accurate and slower choice. **N6-B0** (`efficientnet_b0_n6`) is
 EfficientNet-B0's inverted-residual blocks
 with the three changes that let it survive INT8 on the N6 — ReLU6 instead of
@@ -86,7 +86,7 @@ SiLU, no squeeze-and-excite, and a bounded residual stream (ReLU6 after each
 projection and residual add). B0 as published lost 14% of its WABAD AP to
 post-training quantization. N6-B0 runs at 128 bands (`--num_mels`) into a
 1,280-channel top convolution (`--embeddings_size`), 4.9 M parameters and 523 M
-MACs, 34 ms per inference on the STM32N6570-DK.
+MACs, 62 ms per inference on the STM32N6570-DK.
 
 Two options reshape the EfficientNet backbones:
 

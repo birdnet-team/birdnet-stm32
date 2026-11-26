@@ -6,8 +6,8 @@ live in different releases:
 
 | Model | Release | Use it for |
 |---|---|---|
-| **`BirdNET_Tiny_N6_GLOBAL_1K_V2.4_Raw`** | [v2.4](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v2.4) (latest) | The recommended model: 1,007 bird species worldwide, all on the NPU, 35 ms per chunk, 5.6 MB |
-| `BirdNET_Tiny_N6_GLOBAL_1K_V2.3_Raw` | [v2.3](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v2.3) | The most accurate model: 5% more of WABAD's calls than 2.4 Raw, at 62 ms per chunk and 13.2 MB |
+| **`BirdNET_Tiny_N6_GLOBAL_1K_V2.4_Raw`** | [v2.4](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v2.4) (latest) | The recommended model: 1,007 bird species worldwide, all on the NPU, 62 ms per chunk, 5.6 MB |
+| `BirdNET_Tiny_N6_GLOBAL_1K_V2.3_Raw` | [v2.3](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v2.3) | The most accurate model: 5% more of WABAD's calls than 2.4 Raw, at 91 ms per chunk and 13.2 MB |
 | `BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid` | [v2.0](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v2.0) | The current hybrid model; 2.1 to 2.4 have no hybrid model |
 | `BirdNET_Tiny_N6_USNE_90_V1.9_Raw` | [v1.9](https://github.com/birdnet-team/birdnet-stm32/releases/tag/v1.9) | 90 species of the northeastern United States |
 
@@ -247,10 +247,10 @@ precision is 0.722. Three changes made it:
 INT8 keeps 98.3% of the float AUPRC (0.510 against 0.519 before QAT).
 
 v2.4 ships a new Raw model only, and it is the small one: 2.2's N6-B0 (4.88 M
-parameters, 35 ms per chunk, 5.6 MB) with what 2.3 and the weeks after it
+parameters, 62 ms per chunk, 5.6 MB) with what 2.3 and the weeks after it
 added around the backbone. v2.4 Raw finds **29% more calls than v2.2 Raw** at
 the same cost (+0.047 AUPRC) and 95% of the calls of v2.3 Raw (-0.018 AUPRC) at
-56% of its NPU time and 42% of its size. Against 2.3 it finds more calls in
+68% of its NPU time and 42% of its size. Against 2.3 it finds more calls in
 Oceania and the Pacific and in Asia and fewer elsewhere (-2% in Central America
 and the Caribbean to -11% in Africa, where its AUPRC is the higher one). What
 changed from 2.2:
@@ -288,6 +288,11 @@ voltage — for **one 2.5-second chunk**: the firmware reads exactly one chunk p
 file, computes one frontend and runs one inference. Hybrid rows use the 1.6+
 firmware's STFT (33 ms); the firmware of 1.5 and earlier took 69 ms for it.
 
+ST's on-target validation firmware, which the release pipeline uses to compare the board with the host, runs the
+CPU at 800 MHz and the NPU at 1 GHz, so its inference times are shorter: 34.6 ms for 2.2 and 2.4 Raw and 62.1 ms
+for 2.3 Raw. Until 2.4 the 2.2 and 2.3 rows of this table showed those numbers by mistake; the table now has the
+firmware's 400 MHz times for every model.
+
 | Model | Parameters | MACs | NPU | Frontend (M55) | Compute per chunk | NPU epochs |
 |---|---:|---:|---:|---:|---:|---:|
 | `..._90_V1.4_Raw_INT8` | 987,156 | 81.34 M | 15 ms | 0 ms | 15 ms | 58 (3 sw) |
@@ -304,9 +309,9 @@ firmware's STFT (33 ms); the firmware of 1.5 and earlier took 69 ms for it.
 | **`..._1K_V2.0_Raw_INT8`** | 1,939,685 | 152.91 M | **22 ms** | 0 ms | **22 ms** | 49 (2 sw) |
 | **`..._1K_V2.0_Hybrid_INT8`** | 1,882,021 | 105.76 M | 20 ms | 33 ms | 53 ms | 36 (2 sw) |
 | `..._1K_V2.1_Raw_INT8` | 3,701,957 | 392.11 M | 32 ms | 0 ms | 32 ms | 49 (2 sw) |
-| `..._1K_V2.2_Raw_INT8` | 4,877,013 | 539.27 M | 35 ms | 0 ms | 35 ms | 82 (2 sw) |
-| `..._1K_V2.3_Raw_INT8` | 12,149,045 | 1,194.83 M | 62 ms | 0 ms | 62 ms | 82 (2 sw) |
-| **`..._1K_V2.4_Raw_INT8`** | 4,877,013 | 539.27 M | **35 ms** | 0 ms | **35 ms** | 82 (2 sw) |
+| `..._1K_V2.2_Raw_INT8` | 4,877,013 | 539.27 M | 62 ms | 0 ms | 62 ms | 82 (2 sw) |
+| `..._1K_V2.3_Raw_INT8` | 12,149,045 | 1,194.83 M | 91 ms | 0 ms | 91 ms | 82 (2 sw) |
+| **`..._1K_V2.4_Raw_INT8`** | 4,877,013 | 539.27 M | **62 ms** | 0 ms | **62 ms** | 82 (2 sw) |
 | BirdNET+ V3.0 preview 3.1 | 135,228,889 | — | — | — | — | — |
 
 The teacher is listed for scale only: **11x the parameters** of the largest model
@@ -337,23 +342,23 @@ device timings because it does not run on this class of hardware at all.
   2.6x the MACs of 2.0 Raw for 45% more NPU time (32 ms against 22 ms). The INT8
   model is 4.0 MB, its weights read from external flash; its activations take
   the same 945 kB of NPU RAM as 2.0 Raw's, none of it in CPU RAM.
-- **2.2's N6-B0 is 1.4x 2.1's MACs for 8% more NPU time** (35 ms against 32 ms):
+- **2.2's N6-B0 is 1.4x 2.1's MACs for 1.9x the NPU time** (62 ms against 32 ms):
   4.88 M parameters, 3.58 M in the backbone, 5.6 MB as INT8. Its activations take
   1,751 kB of NPU RAM (2.1: 945 kB), still none in CPU RAM; the two-exposure
   frontend adds 0.8 ms and every op stays on the NPU.
-- **2.3's wider N6-B0 is 2.2x 2.2's MACs for 1.8x the NPU time** (62 ms against
-  35 ms): 12.15 M parameters, 10.85 M in the backbone, 13.2 MB as INT8, its
+- **2.3's wider N6-B0 is 2.2x 2.2's MACs for 1.5x the NPU time** (91 ms against
+  62 ms): 12.15 M parameters, 10.85 M in the backbone, 13.2 MB as INT8, its
   13.8 MB of weights read from external flash. The wider layers sit after the
   activation peak, so the activations take the same 1,751 kB of NPU RAM as 2.2's,
   none in CPU RAM.
-- **2.4 is 2.2's N6-B0 again:** the same 4.88 M parameters, 539 M MACs, 35 ms,
+- **2.4 is 2.2's N6-B0 again:** the same 4.88 M parameters, 539 M MACs, 62 ms,
   5.6 MB as INT8 and 1,751 kB of NPU RAM, none in CPU RAM. Everything it gains
   over 2.2 comes from the data and the teacher.
 - **The 2.0 hybrid build nearly fills the application SRAM:** code, labels and
   every buffer share 1 MB, and its 384 KB spectrogram buffer leaves 14 KB free
   (see [Hardware](firmware/hardware.md)).
 - At 22 ms per 2.5 s chunk, raw is **114x faster than real time** (2.1 Raw at
-  32 ms: 78x; 2.2 and 2.4 Raw at 35 ms: 71x; 2.3 Raw at 62 ms: 40x), so duty cycle rather
+  32 ms: 78x; 2.2 and 2.4 Raw at 62 ms: 40x; 2.3 Raw at 91 ms: 27x), so duty cycle rather
   than throughput sets a recorder's power budget.
 
 ## Running a bundle on the board
