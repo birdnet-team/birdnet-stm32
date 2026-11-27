@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Compute times of 2.2, 2.3 and 2.4 Raw in the README and the docs: 62 ms, 91 ms and 62 ms per 2.5 s chunk in
+  the firmware's 400 MHz clock profile, as the board test measures them. The 35 ms and 62 ms published for 2.2 and
+  2.3 were inference times on ST's validation firmware, which runs the CPU at 800 MHz and the NPU at 1 GHz. The
+  2.2.0 and 2.3.0 entries below are left as they were written. Accuracy figures are not affected.
+
+### Changed
+
+- `train` defaults to the 2.4 backbone, `efficientnet_b0_n6` (N6-B0: 4.9 M
+  parameters, 62 ms per chunk). 2.3's wider `efficientnet_b0_n6w` stays
+  available with `--backbone efficientnet_b0_n6w`.
+
+## [2.4.0] - 2026-11-25
+
+One model ships: `BirdNET_Tiny_N6_GLOBAL_1K_V2.4_Raw`, the same 1,007 bird
+species and six non-bird outputs as 2.0 to 2.3, on the N6-B0 backbone of 2.2,
+trained on dataset v0.6.0 with the BirdNET+ V3.0 Global 12K release as its
+teacher. It is the small and fast model: 62 ms on the NPU per 2.5 s chunk and
+5.6 MB, against 91 ms and 13.2 MB for 2.3 Raw. It finds 29% more annotated calls
+on WABAD than 2.2 Raw at the same cost and 5% fewer than 2.3 Raw, which stays
+available as the most accurate model. 2.4 ships no hybrid model:
+`BirdNET_Tiny_N6_GLOBAL_1K_V2.0_Hybrid` (release v2.0) stays the hybrid model.
+
+### Model performance
+
+Scored on all 61 [WABAD](https://zenodo.org/records/14191524) sites on six
+continents, on the INT8 model that gets flashed (2.4 Raw on the current
+annotation mapping: 59,652 annotated calls, 437 species inside the output list;
+the earlier rows on 59,418 calls and 434 species):
+
+| Model | Event recall @0.5 | Macro recall @0.5 | Window cMAP | Window AUPRC | NPU time |
+|---|---:|---:|---:|---:|---:|
+| v2.2 Raw | 0.401 | 0.329 | 0.309 | 0.445 | 62 ms |
+| v2.3 Raw | **0.547** | **0.424** | **0.362** | **0.510** | 91 ms |
+| **v2.4 Raw** | 0.519 | 0.394 | 0.341 | 0.492 | **62 ms** |
+
+On the 434 species both cover, the window AUPRC is 0.493 against 0.510 for 2.3
+Raw. Against 2.3, 2.4 finds more calls in Oceania and the Pacific and in Asia
+and fewer elsewhere (-2% in Central America and the Caribbean to -11% in
+Africa). Per region and per site:
+[Pre-trained Models](docs/pretrained-models.md#the-global-benchmark-20).
+
+**The model:** the 2.0 Raw frontend (two-exposure learned filterbank, 448
+frames per 2.5 s) at 128 bands, into N6-B0 (`--backbone efficientnet_b0_n6`),
+trained on dataset v0.6.0, which adds recordings for the species with the least
+data, with soft labels from the BirdNET+ V3.0 Global 12K release. Then the
+classifier refit with `finetune-head` and four epochs of quantization-aware
+training (INT8 validation cMAP 0.785 -> 0.794). The INT8 model keeps 98.0% of
+the float WABAD AUPRC (0.492 against 0.502). 4.88 M parameters, 5.6 MB as INT8,
+539 M MACs. It passed the release gates: Keras/TFLite parity, ONNX validation,
+INT8 catalog cMAP 0.741 against 0.747 float before QAT (gate: at most 0.05
+below), STM32N6 compilation (82 epochs, 2 in software; 1,751 kB of NPU
+activation memory, none in CPU RAM), on-target validation (cos 0.9999; 34.6 ms
+per inference on ST's validation firmware at 800 MHz CPU and 1 GHz NPU) and a
+25-file board test (25/25 agree with the host on the top species; the largest
+difference of a near-threshold score is 0.34).
+
 ### Added
 
 - `train --distill_from MODEL.keras [--distill_weight 1.0]`: online distillation
@@ -18,8 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`expand,kernel,repeats,channels,stride` per stage), and
   `train --attention_stages` puts a channel-attention block (EdgeNeXt's
   transposed attention) after chosen stages. Both are recorded in the model
-  config. They carry the 2.5 size study; on the STM32N6570-DK, untrained,
-  N6-B0 runs 20 ms at half width and 24 ms at half depth, and attention after
+  config. They carry the 2.5 size study; on the STM32N6570-DK (ST's validation
+  firmware, 800 MHz CPU and 1 GHz NPU), untrained, N6-B0 runs 20 ms at half width and 24 ms at half depth, and attention after
   stages 3, 5 and 7 adds 11 ms. INT8 conversion gives the right-hand operand
   of every batched matmul a zero point of 0: XNNPACK, TFLite's default CPU
   delegate, ignores that zero point and shifted every attention output by

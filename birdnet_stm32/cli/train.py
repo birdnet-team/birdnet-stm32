@@ -316,11 +316,11 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         "--backbone",
         type=str,
-        default="efficientnet_b0_n6w",
+        default="efficientnet_b0_n6",
         choices=list(BACKBONES),
         help=(
-            "Backbone behind the frontend: efficientnet_b0_n6w (2.3: N6-B0 with wider bottlenecks), efficientnet_b0_n6 "
-            "(2.2: EfficientNet-B0 with ReLU6, no squeeze-and-excite and a bounded residual stream) or dscnn "
+            "Backbone behind the frontend: efficientnet_b0_n6 (2.2 and 2.4: EfficientNet-B0 with ReLU6, no "
+            "squeeze-and-excite and a bounded residual stream), efficientnet_b0_n6w (2.3: that with wider bottlenecks) or dscnn "
             "(releases up to 2.1; --alpha, --depth_multiplier, --dw_kernel_size and --stage_widths apply to it only)"
         ),
     )

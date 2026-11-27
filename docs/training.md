@@ -74,17 +74,18 @@ was removed in 1.3.0: best float of any raw model, worst INT8.
 
 ## Model architecture
 
-`--backbone` picks the network behind the frontend. The default from 2.3 is
-`efficientnet_b0_n6w`, N6-B0 with wider bottlenecks: expansion 4 in stages 2–4
-and the residual stream doubled in stages 4–6 (12.1 M parameters, 1.18 G MACs,
-62 ms per inference on the STM32N6570-DK). **N6-B0** (`efficientnet_b0_n6`,
-2.2) is EfficientNet-B0's inverted-residual blocks
+`--backbone` picks the network behind the frontend. The default from 2.4 is
+`efficientnet_b0_n6` (4.9 M parameters, 539 M MACs, 62 ms per inference on the
+STM32N6570-DK), the backbone of 2.2 and 2.4. 2.3's `efficientnet_b0_n6w` is
+the same with wider bottlenecks: expansion 4 in stages 2–4 and the residual
+stream doubled in stages 4–6 (12.1 M parameters, 1.18 G MACs, 91 ms), the more
+accurate and slower choice. **N6-B0** (`efficientnet_b0_n6`) is
+EfficientNet-B0's inverted-residual blocks
 with the three changes that let it survive INT8 on the N6 — ReLU6 instead of
 SiLU, no squeeze-and-excite, and a bounded residual stream (ReLU6 after each
 projection and residual add). B0 as published lost 14% of its WABAD AP to
 post-training quantization. N6-B0 runs at 128 bands (`--num_mels`) into a
-1,280-channel top convolution (`--embeddings_size`), 4.9 M parameters and 523 M
-MACs, 34 ms per inference on the STM32N6570-DK.
+1,280-channel top convolution (`--embeddings_size`).
 
 Two options reshape the EfficientNet backbones:
 
@@ -220,7 +221,7 @@ none died, and the widened model learned several times faster.
 ### Loss function
 
 The classifier head is always sigmoid + binary crossentropy. Soundscape
-recordings are inherently multi-label, so we always optimise per-class
+recordings are inherently multi-label, so we always optimize per-class
 probabilities even when the source label is single-class.
 
 ### Optimizer
@@ -488,7 +489,7 @@ The chunk PR-AUC metric is logged as `pr_auc` and does not select checkpoints.
 | `--depth_multiplier` | 1 | Block repeats per stage |
 | `--dw_kernel_size` | 5 | Depthwise kernel in stages 2–4: `5` or `3` |
 | `--stage_widths` | 32 86 342 683 | Base channels of the four stages, before `--alpha` (2.0: 32 64 128 256) |
-| `--backbone` | efficientnet_b0_n6w | `efficientnet_b0_n6w` (2.3: N6-B0 with wider bottlenecks, expansion 4 in stages 2–4 and the residual stream ×2 in stages 4–6), `efficientnet_b0_n6` (2.2, N6-B0: EfficientNet-B0 with ReLU6, no squeeze-and-excite and a bounded residual stream) or `dscnn` (releases up to 2.1); `--alpha`, `--depth_multiplier`, `--dw_kernel_size` and `--stage_widths` apply to `dscnn` only |
+| `--backbone` | efficientnet_b0_n6 | `efficientnet_b0_n6` (2.2 and 2.4, N6-B0: EfficientNet-B0 with ReLU6, no squeeze-and-excite and a bounded residual stream), `efficientnet_b0_n6w` (2.3: N6-B0 with wider bottlenecks, expansion 4 in stages 2–4 and the residual stream ×2 in stages 4–6) or `dscnn` (releases up to 2.1); `--alpha`, `--depth_multiplier`, `--dw_kernel_size` and `--stage_widths` apply to `dscnn` only |
 | `--b0_blocks` | the backbone's own | Stage table for the EfficientNet backbones: `expand,kernel,repeats,channels,stride` per stage, separated by `/` |
 | `--attention_stages` | none | EfficientNet stages (1-based) followed by a channel-attention block |
 | `--raw_exposure_gain` | 16 (raw) | Gain of the raw filterbank's second, clamped exposure, mixed per band into a knee compressor; 1 = one exposure (raw only) |

@@ -16,9 +16,10 @@ flowchart LR
     A["Train\nDS-CNN"] --> B["Quantize\nINT8 TFLite"] --> C["Deploy\nSTM32N6 NPU"]
 ```
 
-The current release, **2.1 Raw**, classifies 1,007 bird species from 2.5
-seconds of 24 kHz audio in **32 ms of NPU time** (92 ms per file on the board
-including the SD-card read), about 78x faster than real time. Raw models run
+The current release, **2.4 Raw**, classifies 1,007 bird species from 2.5
+seconds of 24 kHz audio in **62 ms** at 400 MHz (121 ms per file on the board
+including the SD-card read), about 40x faster than real time; 2.3 Raw is the
+most accurate model (91 ms). Raw models run
 entirely on the NPU; the hybrid model (2.0 Hybrid) computes its STFT on the
 Cortex-M55 first. See [Pre-trained Models](pretrained-models.md) for every
 release's accuracy and on-board figures.
@@ -61,9 +62,9 @@ what a bundle contains and how to run one on the board.
   + learned mel mixer), and `raw` (waveform → learned filterbank) — all
   quantization-friendly and all supported by the firmware.
 - **N6-B0 backbone**: EfficientNet-B0 with ReLU6, no squeeze-and-excite and a
-  bounded residual stream, built for INT8 on the N6. The default from 2.3
-  widens it where 2.2 used its width (`efficientnet_b0_n6w`); 2.2's N6-B0
-  (`--backbone efficientnet_b0_n6`) and the DS-CNN of the releases up to 2.1
+  bounded residual stream, built for INT8 on the N6. It is the default from
+  2.4 (`efficientnet_b0_n6`); 2.3's wider version
+  (`--backbone efficientnet_b0_n6w`) and the DS-CNN of the releases up to 2.1
   (`--backbone dscnn`, with its width, per-stage width and depth knobs) stay
   available.
 - **Head fine-tuning** (`finetune-head`): after training, refits the classifier

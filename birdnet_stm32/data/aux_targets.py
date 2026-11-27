@@ -65,7 +65,7 @@ def build(manifest_csv: str | Path, out_dir: str | Path, site_coords: dict | Non
     date_ok = date.notna().to_numpy() & (date.dt.year.fillna(0).to_numpy() >= 1900)
     targets = np.zeros((len(m), AUX_DIM), np.float32)
     targets[geo_ok, :3] = geo_unit(lat[geo_ok], lon[geo_ok])
-    doy = date.dt.dayofyear.fillna(1).to_numpy()
+    doy = date.dt.day_of_year.fillna(1).to_numpy()
     targets[date_ok, 3:] = day_angle(doy[date_ok])
     keys = np.array([sample_key(s) for s in m.sample_id.astype(str)], np.uint64)
     order = np.argsort(keys)
