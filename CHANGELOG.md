@@ -55,14 +55,15 @@ frames per 2.5 s) at 128 bands, into N6-B0 (`--backbone efficientnet_b0_n6`),
 trained on dataset v0.6.0, which adds recordings for the species with the least
 data, with soft labels from the BirdNET+ V3.0 Global 12K release. Then the
 classifier refit with `finetune-head` and four epochs of quantization-aware
-training (INT8 validation cMAP 0.7851 -> 0.7937). The INT8 model keeps 98.0% of
+training (INT8 validation cMAP 0.785 -> 0.794). The INT8 model keeps 98.0% of
 the float WABAD AUPRC (0.492 against 0.502). 4.88 M parameters, 5.6 MB as INT8,
 539 M MACs. It passed the release gates: Keras/TFLite parity, ONNX validation,
 INT8 catalog cMAP 0.741 against 0.747 float before QAT (gate: at most 0.05
 below), STM32N6 compilation (82 epochs, 2 in software; 1,751 kB of NPU
 activation memory, none in CPU RAM), on-target validation (cos 0.9999; 34.6 ms
-per inference on ST's validation firmware at 800 MHz CPU and 1 GHz NPU) and a 25-file board test (25/25 agree with the host on the top
-species; the largest difference of a near-threshold score is 0.34).
+per inference on ST's validation firmware at 800 MHz CPU and 1 GHz NPU) and a
+25-file board test (25/25 agree with the host on the top species; the largest
+difference of a near-threshold score is 0.34).
 
 ### Added
 
@@ -75,8 +76,8 @@ species; the largest difference of a near-threshold score is 0.34).
   (`expand,kernel,repeats,channels,stride` per stage), and
   `train --attention_stages` puts a channel-attention block (EdgeNeXt's
   transposed attention) after chosen stages. Both are recorded in the model
-  config. They carry the 2.5 size study; on the STM32N6570-DK, untrained,
-  N6-B0 runs 20 ms at half width and 24 ms at half depth, and attention after
+  config. They carry the 2.5 size study; on the STM32N6570-DK (ST's validation
+  firmware, 800 MHz CPU and 1 GHz NPU), untrained, N6-B0 runs 20 ms at half width and 24 ms at half depth, and attention after
   stages 3, 5 and 7 adds 11 ms. INT8 conversion gives the right-hand operand
   of every batched matmul a zero point of 0: XNNPACK, TFLite's default CPU
   delegate, ignores that zero point and shifted every attention output by

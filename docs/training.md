@@ -85,8 +85,7 @@ with the three changes that let it survive INT8 on the N6 — ReLU6 instead of
 SiLU, no squeeze-and-excite, and a bounded residual stream (ReLU6 after each
 projection and residual add). B0 as published lost 14% of its WABAD AP to
 post-training quantization. N6-B0 runs at 128 bands (`--num_mels`) into a
-1,280-channel top convolution (`--embeddings_size`), 4.9 M parameters and 523 M
-MACs, 62 ms per inference on the STM32N6570-DK.
+1,280-channel top convolution (`--embeddings_size`).
 
 Two options reshape the EfficientNet backbones:
 
@@ -222,7 +221,7 @@ none died, and the widened model learned several times faster.
 ### Loss function
 
 The classifier head is always sigmoid + binary crossentropy. Soundscape
-recordings are inherently multi-label, so we always optimise per-class
+recordings are inherently multi-label, so we always optimize per-class
 probabilities even when the source label is single-class.
 
 ### Optimizer

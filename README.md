@@ -228,7 +228,7 @@ a public passive acoustic monitoring benchmark — 59,418 annotated calls across
 | **`BirdNET_Tiny_N6_GLOBAL_1K_V2.4_Raw_INT8`** | 0.519 | 0.341 | 0.492 | 4.88 M | 62 ms (all NPU) |
 | BirdNET+ V3.0 preview 3.1, the teacher | 0.545 | 0.459 | 0.597 | 135 M | does not run on this hardware |
 
-![WABAD precision-recall curves by region for the 2.x models, the BirdNET+ V3.0 teacher and BirdNET V2.4](docs/assets/wabad_pr_by_region.png)
+![WABAD precision-recall curves by region for 2.3 Raw, 2.4 Raw, BirdNET+ V3.0 Release and BirdNET V2.4](docs/assets/wabad_pr_by_region.png)
 
 Precision against recall over every window-species decision, on the 434 species
 every plotted model covers; the BirdNET Tiny models in INT8 as flashed, the

@@ -55,7 +55,7 @@ class ModelConfig:
             default is what configs saved before the field existed were built
             with; ``train`` defaults to ``models.dscnn.STAGE_WIDTHS``.
         backbone: 'dscnn' (releases up to 2.1; configs saved before the field
-            existed), 'efficientnet_b0_n6' (N6-B0, 2.2) or 'efficientnet_b0_n6w'
+            existed), 'efficientnet_b0_n6' (N6-B0, 2.2 and 2.4) or 'efficientnet_b0_n6w'
             (that with wider bottlenecks, 2.3); alpha, depth_multiplier,
             dw_kernel_size and stage_widths do not apply to the EfficientNet
             ones. ``train`` defaults to 'efficientnet_b0_n6'.

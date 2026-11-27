@@ -168,7 +168,7 @@ By region (event recall @0.5 / window AUPRC):
 | Asia | 2,152 | 24 | 0.012 / 0.208 | 0.017 / 0.205 | 0.059 / 0.228 | 0.111 / 0.289 | 0.154 / **0.332** | **0.160** / **0.332** | 0.222 / 0.358 |
 | Africa | 1,865 | 25 | 0.054 / 0.243 | 0.060 / 0.292 | 0.146 / 0.297 | 0.210 / 0.346 | **0.318** / 0.382 | 0.284 / **0.430** | 0.135 / 0.351 |
 
-![WABAD precision-recall curves by region for the 2.x models, the BirdNET+ V3.0 teacher and BirdNET V2.4](assets/wabad_pr_by_region.png)
+![WABAD precision-recall curves by region for 2.3 Raw, 2.4 Raw, BirdNET+ V3.0 Release and BirdNET V2.4](assets/wabad_pr_by_region.png)
 
 The same comparison as curves: precision against recall over every
 window-species decision, on the 434 species every plotted model covers, with the
@@ -345,7 +345,7 @@ device timings because it does not run on this class of hardware at all.
 - **2.2's N6-B0 is 1.4x 2.1's MACs for 1.9x the NPU time** (62 ms against 32 ms):
   4.88 M parameters, 3.58 M in the backbone, 5.6 MB as INT8. Its activations take
   1,751 kB of NPU RAM (2.1: 945 kB), still none in CPU RAM; the two-exposure
-  frontend adds 0.8 ms and every op stays on the NPU.
+  frontend adds 0.9 ms on the validation firmware and every op stays on the NPU.
 - **2.3's wider N6-B0 is 2.2x 2.2's MACs for 1.5x the NPU time** (91 ms against
   62 ms): 12.15 M parameters, 10.85 M in the backbone, 13.2 MB as INT8, its
   13.8 MB of weights read from external flash. The wider layers sit after the
